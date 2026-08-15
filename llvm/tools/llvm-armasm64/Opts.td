@@ -8,9 +8,10 @@ class ARMAsm64Separate<string name> : Separate<["-", "/"], name>;
 
 def help : ARMAsm64Flag<"help">, HelpText<"Display available options">;
 def help_short : ARMAsm64Flag<"h">, Alias<help>;
-def errors : ARMAsm64JoinedOrSeparate<"errors">,
+def errors : ARMAsm64Separate<"errors">,
              MetaVarName<"<file>">,
              HelpText<"Redirect diagnostics to <file>">;
+def errors_short : ARMAsm64Separate<"e">, Alias<errors>;
 def include_path : ARMAsm64JoinedOrSeparate<"I">,
                    MetaVarName<"<dir>[;<dir>...]">,
                    HelpText<"Add directories to the include search path">;

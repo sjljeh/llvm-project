@@ -29,6 +29,7 @@
 #include "llvm/Option/Option.h"
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/Error.h"
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/LLVMDriver.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -78,14 +79,41 @@ static void printHelp(StringRef ProgName, const ARMAsm64OptTable &T) {
   T.printHelp(outs(), Usage.c_str(), "LLVM ARMASM64 Assembler");
 }
 
-static bool expandResponseFiles(int Argc, char **Argv,
-                                SmallVectorImpl<const char *> &ExpandedArgv,
-                                StringSaver &Saver) {
+static bool selectDiagnosticOutput(StringRef ProgName, const InputArgList &Args,
+                                   std::unique_ptr<raw_fd_ostream> &DiagFile,
+                                   raw_ostream *&DiagOS) {
+  DiagOS = &outs();
+  if (Arg *A = Args.getLastArg(OPT_errors)) {
+    std::error_code EC;
+    DiagFile =
+        std::make_unique<raw_fd_ostream>(A->getValue(), EC, sys::fs::OF_Text);
+    if (EC) {
+      WithColor::error(*DiagOS, ProgName)
+          << A->getValue() << ": " << EC.message() << '\n';
+      return false;
+    }
+    DiagOS = DiagFile.get();
+  }
+  return true;
+}
+
+static void handleDiagnostic(const SMDiagnostic &Diagnostic, void *Context) {
+  auto &OS = *static_cast<raw_ostream *>(Context);
+  if (Diagnostic.getLoc().isValid())
+    Diagnostic.getSourceMgr()->printIncludeStackForDiagnostic(
+        Diagnostic.getLoc(), OS);
+  Diagnostic.print(nullptr, OS);
+}
+
+static Error expandResponseFiles(int Argc, char **Argv,
+                                 SmallVectorImpl<const char *> &ExpandedArgv,
+                                 StringSaver &Saver) {
   ExpandedArgv.append(Argv, Argv + Argc);
   for (unsigned Depth = 0; Depth != 20; ++Depth) {
-    if (!cl::ExpandResponseFiles(Saver, cl::TokenizeWindowsCommandLine,
-                                 ExpandedArgv))
-      return false;
+    cl::ExpansionContext ECtx(Saver.getAllocator(),
+                              cl::TokenizeWindowsCommandLine);
+    if (Error Err = ECtx.expandResponseFiles(ExpandedArgv))
+      return Err;
 
     SmallVector<const char *, 20> RewrittenArgv;
     RewrittenArgv.push_back(ExpandedArgv.front());
@@ -103,11 +131,12 @@ static bool expandResponseFiles(int Argc, char **Argv,
       RewrittenArgv.push_back(ExpandedArgv[I]);
     }
     if (!FoundVia)
-      return true;
+      return Error::success();
     ExpandedArgv.assign(RewrittenArgv.begin(), RewrittenArgv.end());
   }
 
-  return false;
+  return createStringError(inconvertibleErrorCode(),
+                           "response file nesting limit exceeded");
 }
 
 static StringRef takeToken(StringRef &Text) {
@@ -395,11 +424,11 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape) {
 
 static int assembleInput(StringRef ProgName, StringRef InputFilename,
                          StringRef OutputFilename, StringRef Machine,
-                         const InputArgList &Args) {
+                         const InputArgList &Args, raw_ostream &DiagOS) {
   ErrorOr<std::unique_ptr<MemoryBuffer>> InputOrErr =
       MemoryBuffer::getFileOrSTDIN(InputFilename, /*IsText=*/true);
   if (std::error_code EC = InputOrErr.getError()) {
-    WithColor::error(errs(), ProgName)
+    WithColor::error(DiagOS, ProgName)
         << InputFilename << ": " << EC.message() << '\n';
     return 1;
   }
@@ -410,7 +439,7 @@ static int assembleInput(StringRef ProgName, StringRef InputFilename,
   std::string Error;
   const Target *TheTarget = TargetRegistry::lookupTarget(TheTriple, Error);
   if (!TheTarget) {
-    WithColor::error(errs(), ProgName) << Error << '\n';
+    WithColor::error(DiagOS, ProgName) << Error << '\n';
     return 1;
   }
 
@@ -419,6 +448,7 @@ static int assembleInput(StringRef ProgName, StringRef InputFilename,
   MCOptions.MCNoWarn = Args.hasArg(OPT_no_warn);
 
   SourceMgr SrcMgr;
+  SrcMgr.setDiagHandler(handleDiagnostic, &DiagOS);
   SrcMgr.AddNewSourceBuffer(
       translateInput(std::move(*InputOrErr), Args.hasArg(OPT_no_escape)),
       SMLoc());
@@ -440,12 +470,19 @@ static int assembleInput(StringRef ProgName, StringRef InputFilename,
       TheTriple, /*CPU=*/"", /*Features=*/"+fullfp16,+dotprod,+sve2"));
   std::unique_ptr<MCInstrInfo> MCII(TheTarget->createMCInstrInfo());
   if (!MRI || !MAI || !STI || !MCII) {
-    WithColor::error(errs(), ProgName)
+    WithColor::error(DiagOS, ProgName)
         << "unable to create AArch64 target information\n";
     return 1;
   }
 
   MCContext Ctx(TheTriple, *MAI, *MRI, *STI, &SrcMgr);
+  Ctx.setDiagnosticHandler([&DiagOS](const SMDiagnostic &Diagnostic, bool,
+                                     const SourceMgr &SrcMgr,
+                                     std::vector<const MDNode *> &) {
+    if (Diagnostic.getLoc().isValid())
+      SrcMgr.printIncludeStackForDiagnostic(Diagnostic.getLoc(), DiagOS);
+    Diagnostic.print(nullptr, DiagOS);
+  });
   std::unique_ptr<MCObjectFileInfo> MOFI(
       TheTarget->createMCObjectFileInfo(Ctx, /*PIC=*/false,
                                         /*LargeCodeModel=*/false));
@@ -459,7 +496,7 @@ static int assembleInput(StringRef ProgName, StringRef InputFilename,
   auto Out =
       std::make_unique<ToolOutputFile>(OutputFilename, EC, sys::fs::OF_None);
   if (EC) {
-    WithColor::error(errs(), ProgName)
+    WithColor::error(DiagOS, ProgName)
         << OutputFilename << ": " << EC.message() << '\n';
     return 1;
   }
@@ -483,7 +520,7 @@ static int assembleInput(StringRef ProgName, StringRef InputFilename,
   std::unique_ptr<MCTargetAsmParser> TargetParser(
       TheTarget->createMCAsmParser(*STI, *Parser, *MCII));
   if (!TargetParser) {
-    WithColor::error(errs(), ProgName)
+    WithColor::error(DiagOS, ProgName)
         << "AArch64 target does not support assembly parsing\n";
     return 1;
   }
@@ -503,19 +540,32 @@ int llvm_armasm64_main(int Argc, char **Argv, const ToolContext &) {
   BumpPtrAllocator Alloc;
   StringSaver Saver(Alloc);
   SmallVector<const char *, 20> ExpandedArgv;
-  if (!expandResponseFiles(Argc, Argv, ExpandedArgv, Saver)) {
-    WithColor::error(errs(), ProgName) << "unable to read response file\n";
+  ARMAsm64OptTable T;
+  if (Error Err = expandResponseFiles(Argc, Argv, ExpandedArgv, Saver)) {
+    unsigned MissingArgIndex, MissingArgCount;
+    ArrayRef<const char *> ArgvRef(ExpandedArgv);
+    InputArgList Args =
+        T.ParseArgs(ArgvRef.drop_front(), MissingArgIndex, MissingArgCount);
+    raw_ostream *DiagOS;
+    std::unique_ptr<raw_fd_ostream> DiagFile;
+    if (!selectDiagnosticOutput(ProgName, Args, DiagFile, DiagOS))
+      return 1;
+    WithColor::error(*DiagOS, ProgName) << toString(std::move(Err)) << '\n';
     return 1;
   }
 
-  ARMAsm64OptTable T;
   unsigned MissingArgIndex, MissingArgCount;
   ArrayRef<const char *> ArgvRef(ExpandedArgv);
   InputArgList Args =
       T.ParseArgs(ArgvRef.drop_front(), MissingArgIndex, MissingArgCount);
 
+  raw_ostream *DiagOS;
+  std::unique_ptr<raw_fd_ostream> DiagFile;
+  if (!selectDiagnosticOutput(ProgName, Args, DiagFile, DiagOS))
+    return 1;
+
   if (MissingArgCount) {
-    WithColor::error(errs(), ProgName)
+    WithColor::error(*DiagOS, ProgName)
         << "missing argument to '" << ArgvRef[MissingArgIndex + 1] << "'\n";
     return 1;
   }
@@ -523,11 +573,11 @@ int llvm_armasm64_main(int Argc, char **Argv, const ToolContext &) {
   for (Arg *A : Args.filtered(OPT_UNKNOWN)) {
     StringRef Spelling = A->getSpelling();
     std::string Nearest;
-    WithColor::error(errs(), ProgName)
+    WithColor::error(*DiagOS, ProgName)
         << "unknown argument '" << Spelling << "'";
     if (T.findNearest(Spelling, Nearest) < 2)
-      errs() << "; did you mean '" << Nearest << "'?";
-    errs() << '\n';
+      *DiagOS << "; did you mean '" << Nearest << "'?";
+    *DiagOS << '\n';
     return 1;
   }
 
@@ -541,19 +591,19 @@ int llvm_armasm64_main(int Argc, char **Argv, const ToolContext &) {
     Positional.push_back(A->getValue());
 
   if (Positional.empty()) {
-    WithColor::error(errs(), ProgName) << "missing input source file\n";
+    WithColor::error(*DiagOS, ProgName) << "missing input source file\n";
     return 1;
   }
   if (Positional.size() > 2 ||
       (Positional.size() == 2 && Args.hasArg(OPT_output))) {
-    WithColor::error(errs(), ProgName) << "too many positional arguments\n";
+    WithColor::error(*DiagOS, ProgName) << "too many positional arguments\n";
     return 1;
   }
 
   StringRef Machine = Args.getLastArgValue(OPT_machine, "ARM64");
   if (!Machine.equals_insensitive("ARM64") &&
       !Machine.equals_insensitive("ARM64EC")) {
-    WithColor::error(errs(), ProgName)
+    WithColor::error(*DiagOS, ProgName)
         << "invalid machine type '" << Machine << "'\n";
     return 1;
   }
@@ -567,5 +617,6 @@ int llvm_armasm64_main(int Argc, char **Argv, const ToolContext &) {
   LLVMInitializeAArch64TargetInfo();
   LLVMInitializeAArch64TargetMC();
   LLVMInitializeAArch64AsmParser();
-  return assembleInput(ProgName, Positional.front(), Output, Machine, Args);
+  return assembleInput(ProgName, Positional.front(), Output, Machine, Args,
+                       *DiagOS);
 }
