@@ -2454,7 +2454,7 @@ void AsmParser::DiagHandler(const SMDiagnostic &Diag, void *Context) {
                        Diag.getLineContents(), Diag.getRanges());
 
   if (Parser->SavedDiagHandler)
-    Parser->SavedDiagHandler(Diag, Parser->SavedDiagContext);
+    Parser->SavedDiagHandler(NewDiag, Parser->SavedDiagContext);
   else
     Parser->getContext().diagnose(NewDiag);
 }
