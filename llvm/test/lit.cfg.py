@@ -340,6 +340,7 @@ tools.extend(
         ToolSubst("OrcV2CBindingsVeryLazy", unresolved="ignore"),
         ToolSubst("dxil-dis", unresolved="ignore"),
         ToolSubst("llvm-calc-occupancy", unresolved="ignore"),
+        ToolSubst("llvm-armasm64", unresolved="ignore"),
     ]
 )
 

@@ -1,0 +1,6 @@
+# RUN: llvm-armasm64 -help | FileCheck %s
+
+# CHECK: OVERVIEW: LLVM ARMASM64 Assembler
+# CHECK: USAGE: llvm-armasm64{{(.exe)?}} [options] sourcefile [objectfile]
+# CHECK: OPTIONS:
+# CHECK: -help Display available options
