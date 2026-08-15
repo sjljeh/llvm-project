@@ -10,6 +10,23 @@
 # RUN: echo "-via %t.rsp" > %t.outer.rsp
 # RUN: not llvm-armasm64 -via %t.outer.rsp 2>&1 | FileCheck %s --check-prefix=ACCEPTED
 # RUN: not llvm-armasm64 /Fooutput.obj /Iinc -pd "COUNT SETA 1" missing.asm 2>&1 | FileCheck %s --check-prefix=ACCEPTED
+# RUN: not llvm-armasm64 -errors %t.errors %S/data-errors.asm %t.obj > %t.output 2>&1
+# RUN: FileCheck %s --check-prefix=REDIRECTED < %t.errors
+# RUN: count 0 < %t.output
+# RUN: llvm-armasm64 -e %t.errors %S/basic.asm %t.obj
+# RUN: count 0 < %t.errors
+# RUN: not llvm-armasm64 -e %t.missing-errors missing.asm %t.obj > %t.output 2>&1
+# RUN: FileCheck %s --check-prefix=ACCEPTED < %t.missing-errors
+# RUN: count 0 < %t.output
+# RUN: not llvm-armasm64 missing.asm %t.obj > %t.stdout 2> %t.stderr
+# RUN: FileCheck %s --check-prefix=ACCEPTED < %t.stdout
+# RUN: count 0 < %t.stderr
+# RUN: not llvm-armasm64 -errors %t.joined-errors -errorsjoined %S/basic.asm %t.obj > %t.output 2>&1
+# RUN: FileCheck %s --check-prefix=JOINED < %t.joined-errors
+# RUN: count 0 < %t.output
+# RUN: not llvm-armasm64 -errors %t.via-errors -via %t.missing.rsp > %t.output 2>&1
+# RUN: FileCheck %s --check-prefix=VIA-ERROR < %t.via-errors
+# RUN: count 0 < %t.output
 
 # HELP: OVERVIEW: LLVM ARMASM64 Assembler
 # HELP: -errors <file>
@@ -24,3 +41,6 @@
 # MACHINE: error: invalid machine type 'x64'
 # POSITIONAL: error: too many positional arguments
 # ACCEPTED: error: missing.asm: {{[Nn]o such file or directory|The system cannot find the file specified}}
+# REDIRECTED: error: unknown token in expression
+# JOINED: error: unknown argument '-errorsjoined'
+# VIA-ERROR: error: {{.*}}missing.rsp
