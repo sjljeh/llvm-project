@@ -185,7 +185,7 @@ static void splitOperands(StringRef Text,
   Operands.push_back(Text.drop_front(Start).trim());
 }
 
-static std::string translateString(StringRef String) {
+static std::string translateString(StringRef String, bool NoEscape) {
   std::string Translated;
   raw_string_ostream OS(Translated);
   OS << '"';
@@ -198,6 +198,8 @@ static std::string translateString(StringRef String) {
     } else if (I + 1 != String.size() && C == '$' && String[I + 1] == '$') {
       OS << '$';
       ++I;
+    } else if (NoEscape && C == '\\') {
+      OS << "\\\\";
     } else {
       OS << C;
     }
@@ -247,7 +249,7 @@ static std::string rewriteSymbols(StringRef Text,
 }
 
 static std::unique_ptr<MemoryBuffer>
-translateInput(std::unique_ptr<MemoryBuffer> Input) {
+translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape) {
   StringRef Remaining = Input->getBuffer();
   std::string Translated;
   raw_string_ostream OS(Translated);
@@ -357,7 +359,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input) {
             OS << ".byte (";
           } else if (Operand.size() >= 2 && Operand.front() == '"' &&
                      Operand.back() == '"')
-            OS << ".ascii " << translateString(Operand);
+            OS << ".ascii " << translateString(Operand, NoEscape);
           else {
             OS << ".byte " << rewriteSymbols(Operand, Constants);
           }
@@ -417,7 +419,9 @@ static int assembleInput(StringRef ProgName, StringRef InputFilename,
   MCOptions.MCNoWarn = Args.hasArg(OPT_no_warn);
 
   SourceMgr SrcMgr;
-  SrcMgr.AddNewSourceBuffer(translateInput(std::move(*InputOrErr)), SMLoc());
+  SrcMgr.AddNewSourceBuffer(
+      translateInput(std::move(*InputOrErr), Args.hasArg(OPT_no_escape)),
+      SMLoc());
   std::vector<std::string> IncludeDirs;
   for (StringRef Paths : Args.getAllArgValues(OPT_include_path)) {
     SmallVector<StringRef, 4> SplitPaths;
