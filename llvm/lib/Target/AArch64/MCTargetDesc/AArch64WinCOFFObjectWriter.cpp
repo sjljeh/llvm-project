@@ -16,6 +16,7 @@
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCFixup.h"
 #include "llvm/MC/MCObjectWriter.h"
+#include "llvm/MC/MCTargetOptions.h"
 #include "llvm/MC/MCValue.h"
 #include "llvm/MC/MCWinCOFFObjectWriter.h"
 #include "llvm/Support/Casting.h"
@@ -99,6 +100,12 @@ unsigned AArch64WinCOFFObjectWriter::getRelocType(
   case FK_Data_4:
     if (PCRel)
       return COFF::IMAGE_REL_ARM64_REL32;
+    // ARMASM64 uses ADDR64 relocations for symbolic DCD values even though the
+    // directive reserves four bytes.
+    if (!Spec &&
+        Ctx.getTargetOptions().getAssemblyLanguage().equals_insensitive(
+            "armasm64"))
+      return COFF::IMAGE_REL_ARM64_ADDR64;
     switch (Spec) {
     default:
       return COFF::IMAGE_REL_ARM64_ADDR32;
