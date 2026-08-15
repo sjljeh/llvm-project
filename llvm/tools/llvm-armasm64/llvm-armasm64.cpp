@@ -125,6 +125,100 @@ static StringRef unquoteIdentifier(StringRef Name) {
   return Name;
 }
 
+static StringRef stripComment(StringRef Line) {
+  char Quote = '\0';
+  bool Escaped = false;
+  for (size_t I = 0; I != Line.size(); ++I) {
+    char C = Line[I];
+    if (Escaped) {
+      Escaped = false;
+      continue;
+    }
+    if (Quote) {
+      if (C == '\\' && Quote != '|')
+        Escaped = true;
+      else if (C == Quote) {
+        if (Quote == '"' && I + 1 != Line.size() && Line[I + 1] == '"')
+          ++I;
+        else
+          Quote = '\0';
+      }
+      continue;
+    }
+    if (C == '"' || C == '\'' || C == '|')
+      Quote = C;
+    else if (C == ';')
+      return Line.take_front(I);
+  }
+  return Line;
+}
+
+static void splitOperands(StringRef Text,
+                          SmallVectorImpl<StringRef> &Operands) {
+  char Quote = '\0';
+  bool Escaped = false;
+  size_t Start = 0;
+  for (size_t I = 0; I != Text.size(); ++I) {
+    char C = Text[I];
+    if (Escaped) {
+      Escaped = false;
+      continue;
+    }
+    if (Quote) {
+      if (C == '\\' && Quote != '|')
+        Escaped = true;
+      else if (C == Quote) {
+        if (Quote == '"' && I + 1 != Text.size() && Text[I + 1] == '"')
+          ++I;
+        else
+          Quote = '\0';
+      }
+      continue;
+    }
+    if (C == '"' || C == '\'' || C == '|')
+      Quote = C;
+    else if (C == ',') {
+      Operands.push_back(Text.slice(Start, I).trim());
+      Start = I + 1;
+    }
+  }
+  Operands.push_back(Text.drop_front(Start).trim());
+}
+
+static std::string translateString(StringRef String) {
+  std::string Translated;
+  raw_string_ostream OS(Translated);
+  OS << '"';
+  String = String.drop_front().drop_back();
+  for (size_t I = 0; I != String.size(); ++I) {
+    char C = String[I];
+    if (I + 1 != String.size() && C == '"' && String[I + 1] == '"') {
+      OS << "\\\"";
+      ++I;
+    } else if (I + 1 != String.size() && C == '$' && String[I + 1] == '$') {
+      OS << '$';
+      ++I;
+    } else {
+      OS << C;
+    }
+  }
+  OS << '"';
+  return Translated;
+}
+
+static void collectExports(StringRef Remaining, StringSet<> &Exports) {
+  while (!Remaining.empty()) {
+    auto [Line, Rest] = Remaining.split('\n');
+    Remaining = Rest;
+    Line.consume_back("\r");
+    StringRef Tail = stripComment(Line).trim();
+    StringRef First = takeToken(Tail);
+    if (First.equals_insensitive("EXPORT") ||
+        First.equals_insensitive("GLOBAL"))
+      Exports.insert(unquoteIdentifier(takeToken(Tail)));
+  }
+}
+
 static std::string rewriteSymbols(StringRef Text,
                                   const StringMap<std::string> &Symbols) {
   std::string Rewritten;
@@ -159,23 +253,33 @@ translateInput(std::unique_ptr<MemoryBuffer> Input) {
   raw_string_ostream OS(Translated);
   StringMap<std::string> Constants;
   StringSet<> Exports;
+  collectExports(Remaining, Exports);
 
   while (!Remaining.empty()) {
     auto [Line, Rest] = Remaining.split('\n');
     Remaining = Rest;
     Line.consume_back("\r");
 
-    Line = Line.split(';').first;
+    Line = stripComment(Line);
     StringRef Statement = Line.trim();
     StringRef Tail = Statement;
     StringRef First = takeToken(Tail);
     StringRef AfterFirst = Tail;
     StringRef Second = takeToken(AfterFirst);
 
+    auto IsDataDirective = [](StringRef Token) {
+      return Token.equals_insensitive("DCB") || Token == "=" ||
+             Token.equals_insensitive("DCW") ||
+             Token.equals_insensitive("DCWU") ||
+             Token.equals_insensitive("DCD") ||
+             Token.equals_insensitive("DCDU") || Token == "&" ||
+             Token.equals_insensitive("DCQ") ||
+             Token.equals_insensitive("DCQU");
+    };
+
     if (First.equals_insensitive("EXPORT") ||
         First.equals_insensitive("GLOBAL")) {
       StringRef Name = unquoteIdentifier(takeToken(Tail));
-      Exports.insert(Name);
       OS << ".globl " << Name;
     } else if (First.equals_insensitive("IMPORT")) {
       OS << ".globl " << unquoteIdentifier(takeToken(Tail));
@@ -220,12 +324,51 @@ translateInput(std::unique_ptr<MemoryBuffer> Input) {
                First.equals_insensitive("ENDFUNC") ||
                Second.equals_insensitive("ENDP") ||
                Second.equals_insensitive("ENDFUNC")) {
-    } else if (First.equals_insensitive("DCD")) {
-      OS << ".long " << rewriteSymbols(Tail, Constants);
-    } else if (Second.equals_insensitive("DCD")) {
-      StringRef Name = unquoteIdentifier(First);
-      OS << ".def " << Name << "; .scl 6; .endef; " << Name << ":; .long "
-         << rewriteSymbols(AfterFirst, Constants);
+    } else if (IsDataDirective(First) || IsDataDirective(Second)) {
+      bool HasLabel = !IsDataDirective(First);
+      StringRef Directive = HasLabel ? Second : First;
+      StringRef Values = HasLabel ? AfterFirst : Tail;
+      bool IsByte = Directive.equals_insensitive("DCB") || Directive == "=";
+      bool IsWord = Directive.equals_insensitive("DCW") ||
+                    Directive.equals_insensitive("DCWU");
+      bool IsLong = Directive.equals_insensitive("DCD") ||
+                    Directive.equals_insensitive("DCDU") || Directive == "&";
+      bool IsUnaligned = Directive.equals_insensitive("DCWU") ||
+                         Directive.equals_insensitive("DCDU") ||
+                         Directive.equals_insensitive("DCQU");
+      unsigned Alignment = IsByte ? 1 : IsWord ? 2 : 4;
+      if (!IsUnaligned && Alignment != 1)
+        OS << ".balign " << Alignment << "; ";
+
+      if (HasLabel) {
+        StringRef Name = unquoteIdentifier(First);
+        if (!Exports.contains(Name))
+          OS << ".def " << Name << "; .scl 3; .endef; ";
+        OS << Name << ":; ";
+      }
+
+      if (IsByte) {
+        SmallVector<StringRef, 8> Operands;
+        splitOperands(Values, Operands);
+        for (auto [Index, Operand] : llvm::enumerate(Operands)) {
+          if (Index)
+            OS << "; ";
+          if (Operand.empty()) {
+            OS << ".byte (";
+          } else if (Operand.size() >= 2 && Operand.front() == '"' &&
+                     Operand.back() == '"')
+            OS << ".ascii " << translateString(Operand);
+          else {
+            OS << ".byte " << rewriteSymbols(Operand, Constants);
+          }
+        }
+      } else {
+        OS << (IsWord ? ".short " : IsLong ? ".long " : ".quad ");
+        if (Values.empty())
+          OS << '(';
+        else
+          OS << rewriteSymbols(Values, Constants);
+      }
     } else if (First.equals_insensitive("ALIGN")) {
       OS << ".balign " << Tail;
     } else if (First.equals_insensitive("SPACE")) {
@@ -289,9 +432,8 @@ static int assembleInput(StringRef ProgName, StringRef InputFilename,
   std::unique_ptr<MCAsmInfo> MAI(
       TheTarget->createMCAsmInfo(*MRI, TheTriple, MCOptions));
   // Microsoft ARMASM64 accepts these extensions without architecture flags.
-  std::unique_ptr<MCSubtargetInfo> STI(
-      TheTarget->createMCSubtargetInfo(
-          TheTriple, /*CPU=*/"", /*Features=*/"+fullfp16,+dotprod,+sve2"));
+  std::unique_ptr<MCSubtargetInfo> STI(TheTarget->createMCSubtargetInfo(
+      TheTriple, /*CPU=*/"", /*Features=*/"+fullfp16,+dotprod,+sve2"));
   std::unique_ptr<MCInstrInfo> MCII(TheTarget->createMCInstrInfo());
   if (!MRI || !MAI || !STI || !MCII) {
     WithColor::error(errs(), ProgName)
