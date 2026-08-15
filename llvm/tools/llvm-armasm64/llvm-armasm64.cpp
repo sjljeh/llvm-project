@@ -288,9 +288,10 @@ static int assembleInput(StringRef ProgName, StringRef InputFilename,
   std::unique_ptr<MCRegisterInfo> MRI(TheTarget->createMCRegInfo(TheTriple));
   std::unique_ptr<MCAsmInfo> MAI(
       TheTarget->createMCAsmInfo(*MRI, TheTriple, MCOptions));
+  // Microsoft ARMASM64 accepts these extensions without architecture flags.
   std::unique_ptr<MCSubtargetInfo> STI(
-      TheTarget->createMCSubtargetInfo(TheTriple, /*CPU=*/"",
-                                       /*Features=*/""));
+      TheTarget->createMCSubtargetInfo(
+          TheTriple, /*CPU=*/"", /*Features=*/"+fullfp16,+dotprod,+sve2"));
   std::unique_ptr<MCInstrInfo> MCII(TheTarget->createMCInstrInfo());
   if (!MRI || !MAI || !STI || !MCII) {
     WithColor::error(errs(), ProgName)
