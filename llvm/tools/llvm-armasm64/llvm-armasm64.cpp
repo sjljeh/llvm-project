@@ -182,6 +182,172 @@ static StringRef stripComment(StringRef Line) {
   return Line;
 }
 
+static ErrorOr<std::unique_ptr<MemoryBuffer>>
+openIncludeFile(StringRef Filename, StringRef IncludingFile,
+                ArrayRef<std::string> IncludeDirs,
+                SmallVectorImpl<char> &ResolvedPath) {
+  SmallVector<SmallString<256>, 4> Candidates;
+  if (sys::path::is_absolute(Filename)) {
+    Candidates.emplace_back(Filename);
+  } else {
+    SmallString<256> Path(sys::path::parent_path(IncludingFile));
+    sys::path::append(Path, Filename);
+    Candidates.push_back(Path);
+    Candidates.emplace_back(Filename);
+    for (StringRef IncludeDir : IncludeDirs) {
+      Path = IncludeDir;
+      sys::path::append(Path, Filename);
+      Candidates.push_back(Path);
+    }
+  }
+
+  std::error_code EC =
+      std::make_error_code(std::errc::no_such_file_or_directory);
+  for (const SmallString<256> &Candidate : Candidates) {
+    ErrorOr<std::unique_ptr<MemoryBuffer>> Buffer =
+        MemoryBuffer::getFile(Candidate, /*IsText=*/true);
+    if (Buffer) {
+      ResolvedPath.assign(Candidate.begin(), Candidate.end());
+      return Buffer;
+    }
+    EC = Buffer.getError();
+  }
+  return EC;
+}
+
+static void emitLineMarker(raw_ostream &OS, unsigned Line, StringRef Filename) {
+  OS << "# " << Line << " \"" << sys::path::convert_to_slash(Filename)
+     << "\"\n";
+}
+
+static Error expandIncludes(StringRef Remaining, StringRef Filename,
+                            ArrayRef<std::string> IncludeDirs, raw_ostream &OS,
+                            StringRef ProgName, bool NoWarn,
+                            raw_ostream &DiagOS, unsigned Depth = 0) {
+  if (Depth == 20)
+    return createStringError(Twine(Filename) +
+                             ": include nesting limit exceeded");
+
+  bool SawEnd = false;
+  unsigned LineNumber = 0;
+  while (!Remaining.empty()) {
+    ++LineNumber;
+    auto [Line, Rest] = Remaining.split('\n');
+    Remaining = Rest;
+    Line.consume_back("\r");
+
+    StringRef Tail = stripComment(Line).trim();
+    StringRef First = takeToken(Tail);
+    if (First.equals_insensitive("END")) {
+      SawEnd = true;
+      break;
+    }
+    if (!First.equals_insensitive("INCLUDE") &&
+        !First.equals_insensitive("GET")) {
+      OS << Line << '\n';
+      continue;
+    }
+
+    StringRef IncludedFilename = takeToken(Tail);
+    if (IncludedFilename.empty() || !Tail.empty() ||
+        IncludedFilename.front() == '"' || IncludedFilename.front() == '\'')
+      return createStringError(Twine(Filename) + ":" + Twine(LineNumber) +
+                               ": expected include file name");
+
+    SmallString<256> IncludedPath;
+    ErrorOr<std::unique_ptr<MemoryBuffer>> IncludedBuffer =
+        openIncludeFile(IncludedFilename, Filename, IncludeDirs, IncludedPath);
+    if (!IncludedBuffer)
+      return createStringError(Twine(Filename) + ":" + Twine(LineNumber) +
+                               ": unable to open include file '" +
+                               IncludedFilename +
+                               "': " + IncludedBuffer.getError().message());
+
+    emitLineMarker(OS, 1, IncludedPath);
+    if (Error Err = expandIncludes((*IncludedBuffer)->getBuffer(), IncludedPath,
+                                   IncludeDirs, OS, ProgName, NoWarn, DiagOS,
+                                   Depth + 1))
+      return Err;
+    emitLineMarker(OS, LineNumber + 1, Filename);
+  }
+
+  if (!SawEnd && Depth != 0)
+    return createStringError(Twine(Filename) +
+                             ": unexpected end of file; missing END directive");
+  if (!SawEnd && !NoWarn)
+    WithColor::warning(DiagOS, ProgName)
+        << Filename << ": missing END directive\n";
+  return Error::success();
+}
+
+static Expected<std::unique_ptr<MemoryBuffer>>
+expandInputIncludes(std::unique_ptr<MemoryBuffer> Input,
+                    ArrayRef<std::string> IncludeDirs, StringRef ProgName,
+                    bool NoWarn, raw_ostream &DiagOS) {
+  std::string Expanded;
+  raw_string_ostream OS(Expanded);
+  if (Error Err =
+          expandIncludes(Input->getBuffer(), Input->getBufferIdentifier(),
+                         IncludeDirs, OS, ProgName, NoWarn, DiagOS))
+    return std::move(Err);
+  return MemoryBuffer::getMemBufferCopy(Expanded, Input->getBufferIdentifier());
+}
+
+static void printDiagnostic(const SMDiagnostic &Diagnostic,
+                            const SourceMgr &SrcMgr, raw_ostream &OS) {
+  if (!Diagnostic.getLoc().isValid()) {
+    Diagnostic.print(nullptr, OS);
+    return;
+  }
+
+  SrcMgr.printIncludeStackForDiagnostic(Diagnostic.getLoc(), OS);
+  unsigned Buffer = SrcMgr.FindBufferContainingLoc(Diagnostic.getLoc());
+  if (!Buffer) {
+    Diagnostic.print(nullptr, OS);
+    return;
+  }
+
+  unsigned DiagnosticLine = SrcMgr.FindLineNumber(Diagnostic.getLoc(), Buffer);
+  unsigned PhysicalLine = 0;
+  unsigned MarkerPhysicalLine = 0;
+  unsigned MarkerSourceLine = 0;
+  std::string MarkerFilename;
+  StringRef Remaining = SrcMgr.getMemoryBuffer(Buffer)->getBuffer();
+  while (!Remaining.empty() && PhysicalLine != DiagnosticLine) {
+    ++PhysicalLine;
+    auto [Line, Rest] = Remaining.split('\n');
+    Remaining = Rest;
+    StringRef Tail = Line.trim();
+    if (!Tail.consume_front("#"))
+      continue;
+    StringRef SourceLine = takeToken(Tail);
+    unsigned ParsedSourceLine;
+    if (SourceLine.getAsInteger(10, ParsedSourceLine))
+      continue;
+    Tail = Tail.trim();
+    if (!Tail.consume_front("\""))
+      continue;
+    size_t EndQuote = Tail.find('"');
+    if (EndQuote == StringRef::npos)
+      continue;
+    MarkerPhysicalLine = PhysicalLine;
+    MarkerSourceLine = ParsedSourceLine;
+    MarkerFilename = Tail.take_front(EndQuote).str();
+  }
+
+  if (!MarkerPhysicalLine) {
+    Diagnostic.print(nullptr, OS);
+    return;
+  }
+
+  int SourceLine = MarkerSourceLine + DiagnosticLine - MarkerPhysicalLine - 1;
+  SMDiagnostic Remapped(SrcMgr, Diagnostic.getLoc(), MarkerFilename, SourceLine,
+                        Diagnostic.getColumnNo(), Diagnostic.getKind(),
+                        Diagnostic.getMessage(), Diagnostic.getLineContents(),
+                        Diagnostic.getRanges(), Diagnostic.getFixIts());
+  Remapped.print(nullptr, OS);
+}
+
 static void splitOperands(StringRef Text,
                           SmallVectorImpl<StringRef> &Operands) {
   char Quote = '\0';
@@ -308,8 +474,10 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape) {
              Token.equals_insensitive("DCQU");
     };
 
-    if (First.equals_insensitive("EXPORT") ||
-        First.equals_insensitive("GLOBAL")) {
+    if (First.starts_with("#")) {
+      OS << Line;
+    } else if (First.equals_insensitive("EXPORT") ||
+               First.equals_insensitive("GLOBAL")) {
       StringRef Name = unquoteIdentifier(takeToken(Tail));
       OS << ".globl " << Name;
     } else if (First.equals_insensitive("IMPORT")) {
@@ -447,11 +615,6 @@ static int assembleInput(StringRef ProgName, StringRef InputFilename,
   MCOptions.AssemblyLanguage = "armasm64";
   MCOptions.MCNoWarn = Args.hasArg(OPT_no_warn);
 
-  SourceMgr SrcMgr;
-  SrcMgr.setDiagHandler(handleDiagnostic, &DiagOS);
-  SrcMgr.AddNewSourceBuffer(
-      translateInput(std::move(*InputOrErr), Args.hasArg(OPT_no_escape)),
-      SMLoc());
   std::vector<std::string> IncludeDirs;
   for (StringRef Paths : Args.getAllArgValues(OPT_include_path)) {
     SmallVector<StringRef, 4> SplitPaths;
@@ -459,6 +622,21 @@ static int assembleInput(StringRef ProgName, StringRef InputFilename,
     for (StringRef Path : SplitPaths)
       IncludeDirs.push_back(Path.str());
   }
+
+  Expected<std::unique_ptr<MemoryBuffer>> ExpandedInput =
+      expandInputIncludes(std::move(*InputOrErr), IncludeDirs, ProgName,
+                          Args.hasArg(OPT_no_warn), DiagOS);
+  if (!ExpandedInput) {
+    WithColor::error(DiagOS, ProgName)
+        << toString(ExpandedInput.takeError()) << '\n';
+    return 1;
+  }
+
+  SourceMgr SrcMgr;
+  SrcMgr.setDiagHandler(handleDiagnostic, &DiagOS);
+  SrcMgr.AddNewSourceBuffer(
+      translateInput(std::move(*ExpandedInput), Args.hasArg(OPT_no_escape)),
+      SMLoc());
   SrcMgr.setIncludeDirs(IncludeDirs);
   SrcMgr.setVirtualFileSystem(vfs::getRealFileSystem());
 
@@ -479,9 +657,7 @@ static int assembleInput(StringRef ProgName, StringRef InputFilename,
   Ctx.setDiagnosticHandler([&DiagOS](const SMDiagnostic &Diagnostic, bool,
                                      const SourceMgr &SrcMgr,
                                      std::vector<const MDNode *> &) {
-    if (Diagnostic.getLoc().isValid())
-      SrcMgr.printIncludeStackForDiagnostic(Diagnostic.getLoc(), DiagOS);
-    Diagnostic.print(nullptr, DiagOS);
+    printDiagnostic(Diagnostic, SrcMgr, DiagOS);
   });
   std::unique_ptr<MCObjectFileInfo> MOFI(
       TheTarget->createMCObjectFileInfo(Ctx, /*PIC=*/false,
