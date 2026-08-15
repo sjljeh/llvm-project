@@ -5,11 +5,11 @@
 # RUN: not llvm-armasm64 -machine x64 input.asm 2>&1 | FileCheck %s --check-prefix=MACHINE
 # RUN: not llvm-armasm64 input.asm output.obj extra.obj 2>&1 | FileCheck %s --check-prefix=POSITIONAL
 # RUN: not llvm-armasm64 -o output.obj input.asm extra.obj 2>&1 | FileCheck %s --check-prefix=POSITIONAL
-# RUN: echo "-machine ARM64 /nologo input.asm output.obj" > %t.rsp
+# RUN: echo "-machine ARM64 /nologo missing.asm output.obj" > %t.rsp
 # RUN: not llvm-armasm64 -via %t.rsp 2>&1 | FileCheck %s --check-prefix=ACCEPTED
 # RUN: echo "-via %t.rsp" > %t.outer.rsp
 # RUN: not llvm-armasm64 -via %t.outer.rsp 2>&1 | FileCheck %s --check-prefix=ACCEPTED
-# RUN: not llvm-armasm64 /Fooutput.obj /Iinc -pd "COUNT SETA 1" input.asm 2>&1 | FileCheck %s --check-prefix=ACCEPTED
+# RUN: not llvm-armasm64 /Fooutput.obj /Iinc -pd "COUNT SETA 1" missing.asm 2>&1 | FileCheck %s --check-prefix=ACCEPTED
 
 # HELP: OVERVIEW: LLVM ARMASM64 Assembler
 # HELP: -errors <file>
@@ -23,4 +23,4 @@
 # MISSING: error: missing argument to '-machine'
 # MACHINE: error: invalid machine type 'x64'
 # POSITIONAL: error: too many positional arguments
-# ACCEPTED: error: assembly is not implemented
+# ACCEPTED: error: missing.asm: {{[Nn]o such file or directory|The system cannot find the file specified}}

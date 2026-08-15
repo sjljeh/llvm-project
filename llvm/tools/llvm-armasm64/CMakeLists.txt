@@ -3,8 +3,14 @@ if(NOT "AArch64" IN_LIST LLVM_TARGETS_TO_BUILD)
 endif()
 
 set(LLVM_LINK_COMPONENTS
+  AArch64AsmParser
+  AArch64Desc
+  AArch64Info
+  MC
+  MCParser
   Option
   Support
+  TargetParser
   )
 
 set(LLVM_TARGET_DEFINITIONS Opts.td)
