@@ -9,6 +9,8 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/MC/MCAsmBackend.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCCodeEmitter.h"
@@ -108,11 +110,55 @@ static bool expandResponseFiles(int Argc, char **Argv,
   return false;
 }
 
+static StringRef takeToken(StringRef &Text) {
+  Text = Text.ltrim();
+  size_t End = Text.find_first_of(" \t");
+  StringRef Token = Text.take_front(End);
+  Text = End == StringRef::npos ? StringRef() : Text.drop_front(End).ltrim();
+  return Token;
+}
+
+static StringRef unquoteIdentifier(StringRef Name) {
+  Name = Name.trim();
+  if (Name.consume_front("|") && Name.consume_back("|"))
+    return Name;
+  return Name;
+}
+
+static std::string rewriteSymbols(StringRef Text,
+                                  const StringMap<std::string> &Symbols) {
+  std::string Rewritten;
+  raw_string_ostream OS(Rewritten);
+  while (!Text.empty()) {
+    size_t Identifier = Text.find_if([](char C) {
+      return isAlpha(C) || C == '_' || C == '.' || C == '$' || C == '?';
+    });
+    if (Identifier == StringRef::npos) {
+      OS << Text;
+      break;
+    }
+    OS << Text.take_front(Identifier);
+    Text = Text.drop_front(Identifier);
+    size_t End = Text.find_if_not([](char C) {
+      return isAlnum(C) || C == '_' || C == '.' || C == '$' || C == '?';
+    });
+    if (End == StringRef::npos)
+      End = Text.size();
+    StringRef Name = Text.take_front(End);
+    auto It = Symbols.find(Name);
+    OS << (It == Symbols.end() ? Name : StringRef(It->second));
+    Text = Text.drop_front(End);
+  }
+  return Rewritten;
+}
+
 static std::unique_ptr<MemoryBuffer>
 translateInput(std::unique_ptr<MemoryBuffer> Input) {
   StringRef Remaining = Input->getBuffer();
   std::string Translated;
   raw_string_ostream OS(Translated);
+  StringMap<std::string> Constants;
+  StringSet<> Exports;
 
   while (!Remaining.empty()) {
     auto [Line, Rest] = Remaining.split('\n');
@@ -121,22 +167,79 @@ translateInput(std::unique_ptr<MemoryBuffer> Input) {
 
     Line = Line.split(';').first;
     StringRef Statement = Line.trim();
-    auto [Keyword, Tail] = Statement.split(' ');
-    Tail = Tail.trim();
+    StringRef Tail = Statement;
+    StringRef First = takeToken(Tail);
+    StringRef AfterFirst = Tail;
+    StringRef Second = takeToken(AfterFirst);
 
-    if (Keyword.equals_insensitive("EXPORT")) {
-      OS << ".globl " << Tail;
-    } else if (Keyword.equals_insensitive("AREA")) {
-      StringRef Name = Tail.split(',').first.trim();
-      if (Name.consume_front("|") && Name.consume_back("|"))
-        OS << ".section \"" << Name << "\",\"xr\"";
-      else
-        OS << ".section " << Name << ",\"xr\"";
-      OS << "; .p2align 3";
-    } else if (!Keyword.equals_insensitive("END")) {
-      OS << Line;
-      if (!Line.empty() && !isSpace(Line.front()) && !Statement.contains(' '))
-        OS << ':';
+    if (First.equals_insensitive("EXPORT") ||
+        First.equals_insensitive("GLOBAL")) {
+      StringRef Name = unquoteIdentifier(takeToken(Tail));
+      Exports.insert(Name);
+      OS << ".globl " << Name;
+    } else if (First.equals_insensitive("IMPORT")) {
+      OS << ".globl " << unquoteIdentifier(takeToken(Tail));
+    } else if (First.equals_insensitive("EXTERN")) {
+      // Unlike IMPORT, an unused EXTERN does not appear in the object.
+    } else if (First.equals_insensitive("AREA")) {
+      SmallVector<StringRef, 8> Attributes;
+      Tail.split(Attributes, ',', /*MaxSplit=*/-1, /*KeepEmpty=*/false);
+      StringRef Name = unquoteIdentifier(Attributes.front());
+      bool IsCode = false;
+      bool IsReadOnly = false;
+      bool IsNoInit = false;
+      unsigned Alignment = 3;
+      for (StringRef Attribute : ArrayRef(Attributes).drop_front()) {
+        Attribute = Attribute.trim();
+        IsCode |= Attribute.equals_insensitive("CODE");
+        IsReadOnly |= Attribute.equals_insensitive("READONLY");
+        IsNoInit |= Attribute.equals_insensitive("NOINIT");
+        if (Attribute.consume_front_insensitive("ALIGN="))
+          (void)Attribute.getAsInteger(0, Alignment);
+      }
+
+      StringRef Flags = IsCode       ? "xr"
+                        : IsNoInit   ? "bw"
+                        : IsReadOnly ? "dr"
+                                     : "dw";
+      OS << ".section \"" << Name << "\",\"" << Flags << "\""
+         << "; .p2align " << Alignment;
+    } else if (Second.equals_insensitive("EQU")) {
+      StringRef Name = unquoteIdentifier(First);
+      std::string TemporaryName = (".Larmasm$" + Name).str();
+      Constants[Name] = TemporaryName;
+      OS << ".equ " << TemporaryName << ", "
+         << rewriteSymbols(AfterFirst, Constants);
+    } else if (Second.equals_insensitive("PROC") ||
+               Second.equals_insensitive("FUNCTION")) {
+      StringRef Name = unquoteIdentifier(First);
+      if (!Exports.contains(Name))
+        OS << ".def " << Name << "; .scl 6; .endef; ";
+      OS << Name << ':';
+    } else if (First.equals_insensitive("ENDP") ||
+               First.equals_insensitive("ENDFUNC") ||
+               Second.equals_insensitive("ENDP") ||
+               Second.equals_insensitive("ENDFUNC")) {
+    } else if (First.equals_insensitive("DCD")) {
+      OS << ".long " << rewriteSymbols(Tail, Constants);
+    } else if (Second.equals_insensitive("DCD")) {
+      StringRef Name = unquoteIdentifier(First);
+      OS << ".def " << Name << "; .scl 6; .endef; " << Name << ":; .long "
+         << rewriteSymbols(AfterFirst, Constants);
+    } else if (First.equals_insensitive("ALIGN")) {
+      OS << ".balign " << Tail;
+    } else if (First.equals_insensitive("SPACE")) {
+      OS << ".space " << Tail;
+    } else if (!First.equals_insensitive("END")) {
+      bool IsLabel = !Line.empty() && !isSpace(Line.front()) && Second.empty();
+      if (IsLabel) {
+        StringRef Name = unquoteIdentifier(First);
+        if (!Exports.contains(Name))
+          OS << ".def " << Name << "; .scl 6; .endef; ";
+        OS << Name << ':';
+      } else {
+        OS << rewriteSymbols(Line, Constants);
+      }
     }
     OS << '\n';
   }
