@@ -9,13 +9,33 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/MC/MCAsmBackend.h"
+#include "llvm/MC/MCAsmInfo.h"
+#include "llvm/MC/MCCodeEmitter.h"
+#include "llvm/MC/MCContext.h"
+#include "llvm/MC/MCInstrInfo.h"
+#include "llvm/MC/MCObjectFileInfo.h"
+#include "llvm/MC/MCObjectWriter.h"
+#include "llvm/MC/MCParser/MCAsmParser.h"
+#include "llvm/MC/MCParser/MCTargetAsmParser.h"
+#include "llvm/MC/MCRegisterInfo.h"
+#include "llvm/MC/MCStreamer.h"
+#include "llvm/MC/MCSubtargetInfo.h"
+#include "llvm/MC/MCTargetOptions.h"
+#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Option/ArgList.h"
 #include "llvm/Option/Option.h"
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/LLVMDriver.h"
+#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/StringSaver.h"
+#include "llvm/Support/TargetSelect.h"
+#include "llvm/Support/ToolOutputFile.h"
+#include "llvm/Support/VirtualFileSystem.h"
 #include "llvm/Support/WithColor.h"
 
 using namespace llvm;
@@ -88,6 +108,144 @@ static bool expandResponseFiles(int Argc, char **Argv,
   return false;
 }
 
+static std::unique_ptr<MemoryBuffer>
+translateInput(std::unique_ptr<MemoryBuffer> Input) {
+  StringRef Remaining = Input->getBuffer();
+  std::string Translated;
+  raw_string_ostream OS(Translated);
+
+  while (!Remaining.empty()) {
+    auto [Line, Rest] = Remaining.split('\n');
+    Remaining = Rest;
+    Line.consume_back("\r");
+
+    Line = Line.split(';').first;
+    StringRef Statement = Line.trim();
+    auto [Keyword, Tail] = Statement.split(' ');
+    Tail = Tail.trim();
+
+    if (Keyword.equals_insensitive("EXPORT")) {
+      OS << ".globl " << Tail;
+    } else if (Keyword.equals_insensitive("AREA")) {
+      StringRef Name = Tail.split(',').first.trim();
+      if (Name.consume_front("|") && Name.consume_back("|"))
+        OS << ".section \"" << Name << "\",\"xr\"";
+      else
+        OS << ".section " << Name << ",\"xr\"";
+      OS << "; .p2align 3";
+    } else if (!Keyword.equals_insensitive("END")) {
+      OS << Line;
+      if (!Line.empty() && !isSpace(Line.front()) && !Statement.contains(' '))
+        OS << ':';
+    }
+    OS << '\n';
+  }
+
+  return MemoryBuffer::getMemBufferCopy(Translated,
+                                        Input->getBufferIdentifier());
+}
+
+static int assembleInput(StringRef ProgName, StringRef InputFilename,
+                         StringRef OutputFilename, StringRef Machine,
+                         const InputArgList &Args) {
+  ErrorOr<std::unique_ptr<MemoryBuffer>> InputOrErr =
+      MemoryBuffer::getFileOrSTDIN(InputFilename, /*IsText=*/true);
+  if (std::error_code EC = InputOrErr.getError()) {
+    WithColor::error(errs(), ProgName)
+        << InputFilename << ": " << EC.message() << '\n';
+    return 1;
+  }
+
+  Triple TheTriple(Machine.equals_insensitive("ARM64EC")
+                       ? "arm64ec-pc-windows-msvc"
+                       : "aarch64-pc-windows-msvc");
+  std::string Error;
+  const Target *TheTarget = TargetRegistry::lookupTarget(TheTriple, Error);
+  if (!TheTarget) {
+    WithColor::error(errs(), ProgName) << Error << '\n';
+    return 1;
+  }
+
+  MCTargetOptions MCOptions;
+  MCOptions.AssemblyLanguage = "armasm64";
+  MCOptions.MCNoWarn = Args.hasArg(OPT_no_warn);
+
+  SourceMgr SrcMgr;
+  SrcMgr.AddNewSourceBuffer(translateInput(std::move(*InputOrErr)), SMLoc());
+  std::vector<std::string> IncludeDirs;
+  for (StringRef Paths : Args.getAllArgValues(OPT_include_path)) {
+    SmallVector<StringRef, 4> SplitPaths;
+    Paths.split(SplitPaths, ';', /*MaxSplit=*/-1, /*KeepEmpty=*/false);
+    for (StringRef Path : SplitPaths)
+      IncludeDirs.push_back(Path.str());
+  }
+  SrcMgr.setIncludeDirs(IncludeDirs);
+  SrcMgr.setVirtualFileSystem(vfs::getRealFileSystem());
+
+  std::unique_ptr<MCRegisterInfo> MRI(TheTarget->createMCRegInfo(TheTriple));
+  std::unique_ptr<MCAsmInfo> MAI(
+      TheTarget->createMCAsmInfo(*MRI, TheTriple, MCOptions));
+  std::unique_ptr<MCSubtargetInfo> STI(
+      TheTarget->createMCSubtargetInfo(TheTriple, /*CPU=*/"",
+                                       /*Features=*/""));
+  std::unique_ptr<MCInstrInfo> MCII(TheTarget->createMCInstrInfo());
+  if (!MRI || !MAI || !STI || !MCII) {
+    WithColor::error(errs(), ProgName)
+        << "unable to create AArch64 target information\n";
+    return 1;
+  }
+
+  MCContext Ctx(TheTriple, *MAI, *MRI, *STI, &SrcMgr);
+  std::unique_ptr<MCObjectFileInfo> MOFI(
+      TheTarget->createMCObjectFileInfo(Ctx, /*PIC=*/false,
+                                        /*LargeCodeModel=*/false));
+  Ctx.setObjectFileInfo(MOFI.get());
+  Ctx.setMainFileName(InputFilename);
+  SmallString<128> CWD;
+  if (!sys::fs::current_path(CWD))
+    Ctx.setCompilationDir(CWD);
+
+  std::error_code EC;
+  auto Out =
+      std::make_unique<ToolOutputFile>(OutputFilename, EC, sys::fs::OF_None);
+  if (EC) {
+    WithColor::error(errs(), ProgName)
+        << OutputFilename << ": " << EC.message() << '\n';
+    return 1;
+  }
+
+  std::unique_ptr<buffer_ostream> BOS;
+  raw_pwrite_stream *OS = &Out->os();
+  if (!Out->os().supportsSeeking()) {
+    BOS = std::make_unique<buffer_ostream>(*OS);
+    OS = BOS.get();
+  }
+
+  std::unique_ptr<MCCodeEmitter> CE(TheTarget->createMCCodeEmitter(*MCII, Ctx));
+  std::unique_ptr<MCAsmBackend> MAB(
+      TheTarget->createMCAsmBackend(*STI, *MRI, MCOptions));
+  std::unique_ptr<MCObjectWriter> Writer = MAB->createObjectWriter(*OS);
+  std::unique_ptr<MCStreamer> Streamer(TheTarget->createMCObjectStreamer(
+      TheTriple, Ctx, std::move(MAB), std::move(Writer), std::move(CE), *STI));
+
+  std::unique_ptr<MCAsmParser> Parser(
+      createMCAsmParser(SrcMgr, Ctx, *Streamer, *MAI));
+  std::unique_ptr<MCTargetAsmParser> TargetParser(
+      TheTarget->createMCAsmParser(*STI, *Parser, *MCII));
+  if (!TargetParser) {
+    WithColor::error(errs(), ProgName)
+        << "AArch64 target does not support assembly parsing\n";
+    return 1;
+  }
+  Parser->setTargetParser(*TargetParser);
+
+  if (Parser->Run(/*NoInitialTextSection=*/true))
+    return 1;
+
+  Out->keep();
+  return 0;
+}
+
 } // namespace
 
 int llvm_armasm64_main(int Argc, char **Argv, const ToolContext &) {
@@ -155,8 +313,9 @@ int llvm_armasm64_main(int Argc, char **Argv, const ToolContext &) {
   StringRef Output = Args.getLastArgValue(
       OPT_output,
       Positional.size() == 2 ? Positional.back() : StringRef(DefaultOutput));
-  (void)Output;
 
-  WithColor::error(errs(), ProgName) << "assembly is not implemented\n";
-  return 1;
+  LLVMInitializeAArch64TargetInfo();
+  LLVMInitializeAArch64TargetMC();
+  LLVMInitializeAArch64AsmParser();
+  return assembleInput(ProgName, Positional.front(), Output, Machine, Args);
 }
