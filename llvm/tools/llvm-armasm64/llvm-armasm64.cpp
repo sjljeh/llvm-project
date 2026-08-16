@@ -3393,6 +3393,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
         return SourceError(toString(Area.takeError()));
       bool IsCode = false;
       bool IsReadOnly = false;
+      bool IsReadWrite = false;
       bool IsNoInit = false;
       bool IsPData = false;
       bool UsesCodeAlignment = false;
@@ -3402,9 +3403,10 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
         Attribute = Attribute.trim();
         if (Attribute.equals_insensitive("CODE")) {
           IsCode = true;
-        } else if (Attribute.equals_insensitive("DATA") ||
-                   Attribute.equals_insensitive("READWRITE")) {
-          // These are the defaults for writable data sections.
+        } else if (Attribute.equals_insensitive("DATA")) {
+          // This is the default section kind.
+        } else if (Attribute.equals_insensitive("READWRITE")) {
+          IsReadWrite = true;
         } else if (Attribute.equals_insensitive("READONLY")) {
           IsReadOnly = true;
         } else if (Attribute.equals_insensitive("NOINIT")) {
@@ -3439,10 +3441,12 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
         }
       }
 
-      std::string Flags = IsCode                  ? "xr"
-                          : IsNoInit              ? "bw"
-                          : IsReadOnly || IsPData ? "dr"
-                                                  : "dw";
+      bool IsWritable =
+          IsReadWrite || (!IsReadOnly && !IsCode && !IsPData);
+      std::string Flags = IsCode     ? (IsWritable ? "xrw" : "xr")
+                          : IsNoInit ? (IsWritable ? "bw" : "br")
+                          : IsWritable ? "dw"
+                                       : "dr";
       std::string SectionSuffix;
       raw_string_ostream SuffixOS(SectionSuffix);
       if (AssociativeArea) {
@@ -3457,8 +3461,9 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
           (Twine(Area->Name) + "{" + Area->ComdatSymbol + "}").str();
       bool IsNewArea = SeenAreas.insert(AreaKey).second;
       std::string AttributeSignature =
-          (Twine(IsCode) + "," + Twine(IsReadOnly) + "," + Twine(IsNoInit) +
-           "," + Twine(IsPData) + "," + Twine(UsesCodeAlignment) + "," +
+          (Twine(IsCode) + "," + Twine(IsReadOnly) + "," +
+           Twine(IsReadWrite) + "," + Twine(IsNoInit) + "," +
+           Twine(IsPData) + "," + Twine(UsesCodeAlignment) + "," +
            Twine(Alignment) + "," + SectionSuffix)
               .str();
       if (IsNewArea) {
