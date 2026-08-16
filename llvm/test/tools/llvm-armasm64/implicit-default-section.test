@@ -1,0 +1,46 @@
+# RUN: split-file %s %t
+# RUN: llvm-armasm64 %t/data.asm %t.data.obj
+# RUN: llvm-readobj --sections --symbols %t.data.obj | FileCheck %s --check-prefix=DATA
+# RUN: llvm-armasm64 %t/label.asm %t.label.obj
+# RUN: llvm-readobj --sections --symbols %t.label.obj | FileCheck %s --check-prefix=LABEL
+# RUN: llvm-armasm64 %t/instruction.asm %t.instruction.obj
+# RUN: llvm-objdump -s %t.instruction.obj | FileCheck %s --check-prefix=INSTRUCTION
+
+# DATA:      Name: __DefaultSection
+# DATA:      RawDataSize: 1
+# DATA:      IMAGE_SCN_ALIGN_8BYTES
+# DATA:      IMAGE_SCN_CNT_INITIALIZED_DATA
+# DATA:      IMAGE_SCN_MEM_READ
+# DATA:      IMAGE_SCN_MEM_WRITE
+# DATA:      Name: before
+# DATA-NEXT: Value: 0
+# DATA-NEXT: Section: __DefaultSection
+# DATA:      StorageClass: Static
+
+# LABEL:      Name: __DefaultSection
+# LABEL:      RawDataSize: 0
+# LABEL:      Name: before
+# LABEL-NEXT: Value: 0
+# LABEL-NEXT: Section: __DefaultSection
+# LABEL:      StorageClass: Static
+
+# INSTRUCTION:      Contents of section __DefaultSection:
+# INSTRUCTION-NEXT: 0000 1f2003d5
+
+#--- data.asm
+before  DCB 1
+        AREA |.data|, DATA, READWRITE
+        DCB 2
+        END
+
+#--- label.asm
+before
+        AREA |.data|, DATA, READWRITE
+        DCB 1
+        END
+
+#--- instruction.asm
+        nop
+        AREA |.text|, CODE, READONLY
+        ret
+        END

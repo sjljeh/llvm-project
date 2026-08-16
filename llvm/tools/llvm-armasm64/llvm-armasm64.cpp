@@ -2978,7 +2978,24 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
   unsigned NumericLabelScope = 0;
   std::string NumericLabelRoutName;
   DenseSet<unsigned> DefinedNumericLabels;
-  bool EmittedDefaultSection = false;
+  auto EnsureDefaultSection = [&]() {
+    if (!CurrentAreaName.empty())
+      return;
+    CurrentAreaName = "__DefaultSection";
+    CurrentAreaIsCode = false;
+    CurrentAreaIsNoInit = false;
+    CurrentAreaUsesCodeAlignment = false;
+    CurrentAreaAlignment = 8;
+    std::string AreaKey = "__DefaultSection{}";
+    SeenAreas.insert(AreaKey);
+    AreaAlignments[AreaKey] = CurrentAreaAlignment;
+    AreaCodeAlignments[AreaKey] = false;
+    CurrentAreaBaseSymbol =
+        (Twine(".Larmasm64_area_") + Twine(AreaBaseSymbolCount++)).str();
+    AreaBaseSymbols[AreaKey] = CurrentAreaBaseSymbol;
+    OS << ".section \"__DefaultSection\",\"dw\"; .p2align 3; "
+       << CurrentAreaBaseSymbol << ":\n";
+  };
 
   while (!Remaining.empty()) {
     auto [Line, Rest] = Remaining.split('\n');
@@ -3303,10 +3320,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
         return SourceError("A2209: Immediate value " + Twine(SignedSize) +
                            " out of range");
       CommonSymbols.insert(Name);
-      if (CurrentAreaName.empty() && !EmittedDefaultSection) {
-        OS << ".section \"__DefaultSection\",\"dw\"; .p2align 3\n";
-        EmittedDefaultSection = true;
-      }
+      EnsureDefaultSection();
       if (Size == 0)
         OS << ".globl " << Name;
       else
@@ -3356,6 +3370,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
       if (!IncludedBuffer)
         return SourceError("unable to open include file '" + IncludedFilename +
                            "': " + IncludedBuffer.getError().message());
+      EnsureDefaultSection();
       OS << ".incbin \"" << sys::path::convert_to_slash(IncludedPath) << '"';
     } else if (First.equals_insensitive("AREA")) {
       EmitLiteralPool();
@@ -3479,6 +3494,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
       StringRef Name = unquoteIdentifier(First);
       if (ConflictsWithObjectDefinition(Name))
         return SymbolConflict(Name);
+      EnsureDefaultSection();
       DefinedObjectSymbols.insert(Name);
       ActiveProcedureArea = CurrentAreaName;
       if (!Exports.contains(Name))
@@ -3499,6 +3515,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
             "A2093: improper program syntax; unexpected ENDP directive");
       ActiveProcedureArea.reset();
     } else if (IsStorageLine) {
+      EnsureDefaultSection();
       bool HasLabel = !isStorageDirective(First);
       StringRef Directive = HasLabel ? Second : First;
       StringRef Values = HasLabel ? AfterFirst : Tail;
@@ -3569,6 +3586,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
         OS << ".fill " << *Count / ValueSize << ", " << ValueSize << ", "
            << Value;
     } else if (IsDataLine) {
+      EnsureDefaultSection();
       bool HasLabel = !isDataDirective(First);
       StringRef Directive = HasLabel ? Second : First;
       StringRef Values = HasLabel ? AfterFirst : Tail;
@@ -3750,6 +3768,8 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
       StringRef RoutTail = First.equals_insensitive("ROUT") ? Tail : AfterFirst;
       if (!RoutTail.empty())
         return SourceError("A2003: improper line syntax");
+      if (Second.equals_insensitive("ROUT"))
+        EnsureDefaultSection();
       ++NumericLabelScope;
       NumericLabelRoutName =
           First.equals_insensitive("ROUT") ? std::string() : First.str();
@@ -3829,6 +3849,8 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
                            *ActiveProcedureArea);
       EmitLiteralPool();
     } else {
+      if (!First.empty())
+        EnsureDefaultSection();
       bool HasLabel =
           !Line.empty() && !isSpace(Line.front()) && !First.starts_with("#");
       if (HasLabel) {
