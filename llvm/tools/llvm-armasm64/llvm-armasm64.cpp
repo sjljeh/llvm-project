@@ -2898,6 +2898,11 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
   StringMap<std::string> AreaBaseSymbols;
   StringMap<uint64_t> AreaAlignments;
   StringMap<bool> AreaCodeAlignments;
+  StringMap<bool> AreaIsCode;
+  StringMap<bool> AreaIsNoInit;
+  StringMap<std::string> AreaFlags;
+  StringMap<std::string> AreaSectionSuffixes;
+  StringMap<std::string> AreaAttributeSignatures;
   unsigned AreaBaseSymbolCount = 0;
   unsigned AlignSymbolCount = 0;
   RegisterAliasMap RegisterAliases;
@@ -2990,6 +2995,11 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
     SeenAreas.insert(AreaKey);
     AreaAlignments[AreaKey] = CurrentAreaAlignment;
     AreaCodeAlignments[AreaKey] = false;
+    AreaIsCode[AreaKey] = false;
+    AreaIsNoInit[AreaKey] = false;
+    AreaFlags[AreaKey] = "dw";
+    AreaSectionSuffixes[AreaKey] = "";
+    AreaAttributeSignatures[AreaKey] = "data,readwrite,align=3";
     CurrentAreaBaseSymbol =
         (Twine(".Larmasm64_area_") + Twine(AreaBaseSymbolCount++)).str();
     AreaBaseSymbols[AreaKey] = CurrentAreaBaseSymbol;
@@ -3387,7 +3397,6 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
       bool IsPData = false;
       bool UsesCodeAlignment = false;
       unsigned Alignment = 3;
-      bool HasExplicitAlignment = false;
       std::optional<AreaName> AssociativeArea;
       for (StringRef Attribute : ArrayRef(Attributes).drop_front()) {
         Attribute = Attribute.trim();
@@ -3413,7 +3422,6 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
                 << " attribute does not pertain to a relocatable module; "
                    "ignored\n";
         } else if (Attribute.consume_front_insensitive("ALIGN=")) {
-          HasExplicitAlignment = true;
           Expected<uint64_t> Value = EvaluateAbsolute(Attribute);
           if (!Value)
             return SourceError(toString(Value.takeError()));
@@ -3431,40 +3439,61 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
         }
       }
 
-      StringRef Flags = IsCode                  ? "xr"
-                        : IsNoInit              ? "bw"
-                        : IsReadOnly || IsPData ? "dr"
-                                                : "dw";
-      CurrentAreaIsCode = IsCode;
-      CurrentAreaIsNoInit = IsNoInit;
-      CurrentAreaName = Area->Name.str();
-      OS << ".section \"" << Area->Name << "\",\"" << Flags << "\"";
+      std::string Flags = IsCode                  ? "xr"
+                          : IsNoInit              ? "bw"
+                          : IsReadOnly || IsPData ? "dr"
+                                                  : "dw";
+      std::string SectionSuffix;
+      raw_string_ostream SuffixOS(SectionSuffix);
       if (AssociativeArea) {
         if (AssociativeArea->ComdatSymbol.empty())
           return SourceError("A2003: improper line syntax");
-        OS << ",associative,\"" << AssociativeArea->ComdatSymbol << '\"';
+        SuffixOS << ",associative,\"" << AssociativeArea->ComdatSymbol << '\"';
       } else if (!Area->ComdatSymbol.empty()) {
-        OS << ",one_only,\"" << Area->ComdatSymbol << '\"';
+        SuffixOS << ",one_only,\"" << Area->ComdatSymbol << '\"';
       }
+      SuffixOS.flush();
       std::string AreaKey =
           (Twine(Area->Name) + "{" + Area->ComdatSymbol + "}").str();
       bool IsNewArea = SeenAreas.insert(AreaKey).second;
+      std::string AttributeSignature =
+          (Twine(IsCode) + "," + Twine(IsReadOnly) + "," + Twine(IsNoInit) +
+           "," + Twine(IsPData) + "," + Twine(UsesCodeAlignment) + "," +
+           Twine(Alignment) + "," + SectionSuffix)
+              .str();
       if (IsNewArea) {
         AreaAlignments[AreaKey] = 1ULL << Alignment;
         AreaCodeAlignments[AreaKey] = UsesCodeAlignment;
+        AreaIsCode[AreaKey] = IsCode;
+        AreaIsNoInit[AreaKey] = IsNoInit;
+        AreaFlags[AreaKey] = Flags;
+        AreaSectionSuffixes[AreaKey] = SectionSuffix;
+        AreaAttributeSignatures[AreaKey] = AttributeSignature;
         AreaBaseSymbols[AreaKey] =
             (Twine(".Larmasm64_area_") + Twine(AreaBaseSymbolCount++)).str();
+      } else {
+        if (AreaAttributeSignatures.lookup(AreaKey) != AttributeSignature &&
+            !NoWarn && !IgnoredWarnings.contains(4043))
+          WithColor::warning(DiagOS, ProgName)
+              << CurrentFilename << ":" << CurrentLine
+              << ": A4043: redefinition of section flags ignored\n";
+        IsCode = AreaIsCode.lookup(AreaKey);
+        IsNoInit = AreaIsNoInit.lookup(AreaKey);
+        Flags = AreaFlags.lookup(AreaKey);
+        SectionSuffix = AreaSectionSuffixes.lookup(AreaKey);
       }
-      CurrentAreaAlignment = HasExplicitAlignment
-                                 ? 1ULL << Alignment
-                                 : AreaAlignments.lookup(AreaKey);
-      CurrentAreaUsesCodeAlignment =
-          UsesCodeAlignment || AreaCodeAlignments.lookup(AreaKey);
+      CurrentAreaIsCode = IsCode;
+      CurrentAreaIsNoInit = IsNoInit;
+      CurrentAreaName = Area->Name.str();
+      CurrentAreaAlignment = AreaAlignments.lookup(AreaKey);
+      CurrentAreaUsesCodeAlignment = AreaCodeAlignments.lookup(AreaKey);
       CurrentAreaBaseSymbol = AreaBaseSymbols.lookup(AreaKey);
+      OS << ".section \"" << Area->Name << "\",\"" << Flags << "\""
+         << SectionSuffix;
       ++NumericLabelScope;
       NumericLabelRoutName.clear();
       DefinedNumericLabels.clear();
-      if (HasExplicitAlignment || IsNewArea)
+      if (IsNewArea)
         OS << "; .p2align " << Alignment;
       if (IsNewArea)
         OS << "; " << CurrentAreaBaseSymbol << ':';
