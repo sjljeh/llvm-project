@@ -1315,6 +1315,177 @@ static std::string rewriteSymbols(StringRef Text,
   return Rewritten;
 }
 
+enum class RegisterAliasKind { Single, Double, Quad };
+
+struct RegisterAlias {
+  RegisterAliasKind Kind = RegisterAliasKind::Single;
+  unsigned Number = 0;
+};
+
+using RegisterAliasMap = StringMap<RegisterAlias>;
+
+static std::optional<RegisterAliasKind>
+registerAliasKindForDirective(StringRef Directive) {
+  if (Directive.equals_insensitive("SN"))
+    return RegisterAliasKind::Single;
+  if (Directive.equals_insensitive("DN"))
+    return RegisterAliasKind::Double;
+  if (Directive.equals_insensitive("QN"))
+    return RegisterAliasKind::Quad;
+  return std::nullopt;
+}
+
+static std::optional<std::pair<RegisterAliasKind, unsigned>>
+parseExtensionRegisterName(StringRef Name) {
+  if (Name.size() < 2)
+    return std::nullopt;
+  RegisterAliasKind Kind;
+  switch (toLower(Name.front())) {
+  case 's':
+    Kind = RegisterAliasKind::Single;
+    break;
+  case 'd':
+    Kind = RegisterAliasKind::Double;
+    break;
+  case 'q':
+    Kind = RegisterAliasKind::Quad;
+    break;
+  default:
+    return std::nullopt;
+  }
+  unsigned Number;
+  if (Name.drop_front().getAsInteger(10, Number) || Number > 31)
+    return std::nullopt;
+  return std::make_pair(Kind, Number);
+}
+
+static bool isPredefinedRegisterName(StringRef Name) {
+  if (parseExtensionRegisterName(Name))
+    return true;
+  if (Name.equals_insensitive("sp") || Name.equals_insensitive("wsp") ||
+      Name.equals_insensitive("xzr") || Name.equals_insensitive("wzr") ||
+      Name.equals_insensitive("fp") || Name.equals_insensitive("lr") ||
+      Name.equals_insensitive("ip0") || Name.equals_insensitive("ip1"))
+    return true;
+  if (Name.size() < 2)
+    return false;
+  unsigned Number;
+  if (Name.drop_front().getAsInteger(10, Number))
+    return false;
+  switch (toLower(Name.front())) {
+  case 'x':
+  case 'w':
+  case 'b':
+  case 'h':
+  case 'v':
+  case 'z':
+    return Number <= 31;
+  case 'p':
+    return Number <= 15;
+  default:
+    return false;
+  }
+}
+
+static Expected<unsigned>
+parseRegisterAliasTarget(StringRef Expression, RegisterAliasKind Kind,
+                         const RegisterAliasMap &Aliases, bool NoEscape) {
+  Expression = Expression.trim();
+  if (auto It = Aliases.find(unquoteIdentifier(Expression));
+      It != Aliases.end()) {
+    if (It->second.Kind != Kind)
+      return createStringError(inconvertibleErrorCode(),
+                               "A2046: unknown or bad symbol type: " +
+                                   Expression);
+    return It->second.Number;
+  }
+
+  if (std::optional<std::pair<RegisterAliasKind, unsigned>> Register =
+          parseExtensionRegisterName(Expression)) {
+    if (Register->first != Kind)
+      return createStringError(inconvertibleErrorCode(),
+                               "A2046: unknown or bad symbol type: " +
+                                   Expression);
+    return Register->second;
+  }
+
+  VariableMap EmptyVariables;
+  StringMap<uint64_t> EmptyConstants;
+  VariableExpressionParser Parser(Expression, EmptyVariables, EmptyConstants,
+                                  NoEscape);
+  Expected<VariableValue> Value = Parser.parse();
+  if (!Value || Value->Kind != VariableKind::Arithmetic) {
+    if (!Value)
+      consumeError(Value.takeError());
+    return createStringError(inconvertibleErrorCode(),
+                             Expression.contains('.')
+                                 ? "A2003: improper line syntax"
+                                 : "A2046: unknown or bad symbol type: " +
+                                       Expression);
+  }
+  if (Value->Arithmetic > 31)
+    return createStringError(
+        inconvertibleErrorCode(),
+        "A2069: immediate value " +
+            Twine(static_cast<int64_t>(Value->Arithmetic)) +
+            " out of range; expected values: [0,1,..31]");
+
+  return Value->Arithmetic;
+}
+
+static std::string rewriteRegisterAliases(StringRef Text,
+                                          const RegisterAliasMap &Aliases) {
+  std::string Rewritten;
+  raw_string_ostream OS(Rewritten);
+  auto EmitAlias = [&](const RegisterAlias &Alias, StringRef Remaining) {
+    bool IsVectorUse =
+        Alias.Kind != RegisterAliasKind::Single &&
+        (Remaining.starts_with(".") || Remaining.starts_with("["));
+    char Prefix = IsVectorUse                               ? 'v'
+                  : Alias.Kind == RegisterAliasKind::Single ? 's'
+                  : Alias.Kind == RegisterAliasKind::Double ? 'd'
+                                                            : 'q';
+    OS << Prefix << Alias.Number;
+  };
+  while (!Text.empty()) {
+    size_t Identifier = Text.find_if(
+        [](char C) { return isAlpha(C) || C == '_' || C == '$' || C == '?'; });
+    size_t Bar = Text.find('|');
+    if (Bar != StringRef::npos &&
+        (Identifier == StringRef::npos || Bar < Identifier)) {
+      size_t End = Text.find('|', Bar + 1);
+      if (End != StringRef::npos) {
+        StringRef Name = Text.slice(Bar + 1, End);
+        if (auto It = Aliases.find(Name); It != Aliases.end()) {
+          OS << Text.take_front(Bar);
+          EmitAlias(It->second, Text.drop_front(End + 1));
+          Text = Text.drop_front(End + 1);
+          continue;
+        }
+      }
+    }
+    if (Identifier == StringRef::npos) {
+      OS << Text;
+      break;
+    }
+    OS << Text.take_front(Identifier);
+    Text = Text.drop_front(Identifier);
+    size_t End = Text.find_if_not(
+        [](char C) { return isAlnum(C) || C == '_' || C == '$' || C == '?'; });
+    if (End == StringRef::npos)
+      End = Text.size();
+    StringRef Name = Text.take_front(End);
+    auto It = Aliases.find(Name);
+    if (It == Aliases.end()) {
+      OS << Name;
+    } else {
+      EmitAlias(It->second, Text.drop_front(End));
+    }
+    Text = Text.drop_front(End);
+  }
+  return Rewritten;
+}
+
 static bool isSetDirective(StringRef Directive) {
   return Directive.equals_insensitive("SETA") ||
          Directive.equals_insensitive("SETL") ||
@@ -2115,6 +2286,8 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
   VariableMap Variables;
   StringSet<> Exports;
   StringSet<> DefinedSymbols;
+  RegisterAliasMap RegisterAliases;
+  SmallVector<std::pair<size_t, size_t>, 16> PendingRegisterAliasUses;
   collectExports(Remaining, Exports);
 
   for (StringRef Predefine : Predefines)
@@ -2149,6 +2322,11 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
                                Twine(CurrentFilename) + ":" +
                                    Twine(CurrentLine) + ": " + Message);
     };
+    auto SymbolConflict = [&](StringRef Name) -> Error {
+      return SourceError("A2026: multiple symbol definition or "
+                         "incompatibility: " +
+                         Name);
+    };
 
     if (First.starts_with("#")) {
       StringRef Marker = Statement;
@@ -2177,6 +2355,8 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
       if (!isValidVariableName(NameToken) || !Tail.empty())
         return SourceError("expected one variable name after " + First);
       StringRef Name = unquoteIdentifier(NameToken);
+      if (RegisterAliases.contains(Name))
+        return SymbolConflict(Name);
       if (Constants.contains(Name))
         return SourceError("variable name '" + Name + "' is already defined");
       if (Error Err = declareVariable(Name, *DeclarationKind, Variables))
@@ -2197,6 +2377,37 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
       OS << '\n';
       continue;
     }
+
+    if (std::optional<RegisterAliasKind> AliasKind =
+            registerAliasKindForDirective(Second)) {
+      StringRef Name = unquoteIdentifier(First);
+      if (!isValidVariableName(First) || AfterFirst.empty())
+        return SourceError("A2173: syntax error in expression");
+      auto Existing = RegisterAliases.find(Name);
+      if (Variables.contains(Name) || Constants.contains(Name) ||
+          DefinedSymbols.contains(Name) ||
+          (Existing != RegisterAliases.end() &&
+           Existing->second.Kind != *AliasKind))
+        return SymbolConflict(Name);
+      if (std::optional<std::pair<RegisterAliasKind, unsigned>> Register =
+              parseExtensionRegisterName(Name)) {
+        if (Register->first != *AliasKind)
+          return SymbolConflict(Name);
+      } else if (isPredefinedRegisterName(Name)) {
+        return SymbolConflict(Name);
+      }
+
+      Expected<unsigned> Target = parseRegisterAliasTarget(
+          AfterFirst, *AliasKind, RegisterAliases, NoEscape);
+      if (!Target)
+        return SourceError(toString(Target.takeError()));
+
+      RegisterAliases[Name] = RegisterAlias{*AliasKind, *Target};
+      OS << '\n';
+      continue;
+    }
+    if (Second.equals_insensitive("RN"))
+      return SourceError("A2034: unknown opcode: RN");
 
     std::string PCSymbol = (Twine("\"|") + Twine(PCSymbolCount) + "\"").str();
     bool UsesPC = false;
@@ -2220,11 +2431,19 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
     if (First.equals_insensitive("EXPORT") ||
         First.equals_insensitive("GLOBAL")) {
       StringRef Name = unquoteIdentifier(takeToken(Tail));
+      if (RegisterAliases.contains(Name))
+        return SymbolConflict(Name);
       OS << ".globl " << Name;
     } else if (First.equals_insensitive("IMPORT")) {
-      OS << ".globl " << unquoteIdentifier(takeToken(Tail));
+      StringRef Name = unquoteIdentifier(takeToken(Tail));
+      if (RegisterAliases.contains(Name))
+        return SymbolConflict(Name);
+      OS << ".globl " << Name;
     } else if (First.equals_insensitive("EXTERN")) {
       // Unlike IMPORT, an unused EXTERN does not appear in the object.
+      StringRef Name = unquoteIdentifier(takeToken(Tail));
+      if (RegisterAliases.contains(Name))
+        return SymbolConflict(Name);
     } else if (First.equals_insensitive("AREA")) {
       SmallVector<StringRef, 8> Attributes;
       Tail.split(Attributes, ',', /*MaxSplit=*/-1, /*KeepEmpty=*/false);
@@ -2250,6 +2469,8 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
          << "; .p2align " << Alignment;
     } else if (Second.equals_insensitive("EQU")) {
       StringRef Name = unquoteIdentifier(First);
+      if (RegisterAliases.contains(Name))
+        return SymbolConflict(Name);
       DefinedSymbols.insert(Name);
       std::string TemporaryName = (".Larmasm$" + Name).str();
       Constants[Name] = TemporaryName;
@@ -2265,6 +2486,8 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
     } else if (Second.equals_insensitive("PROC") ||
                Second.equals_insensitive("FUNCTION")) {
       StringRef Name = unquoteIdentifier(First);
+      if (RegisterAliases.contains(Name))
+        return SymbolConflict(Name);
       if (!Exports.contains(Name))
         OS << ".def " << Name << "; .scl 6; .endef; ";
       OS << Name << ':';
@@ -2290,6 +2513,8 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
 
       if (HasLabel) {
         StringRef Name = unquoteIdentifier(First);
+        if (RegisterAliases.contains(Name))
+          return SymbolConflict(Name);
         if (!Exports.contains(Name))
           OS << ".def " << Name << "; .scl 3; .endef; ";
         OS << Name << ":; ";
@@ -2330,14 +2555,26 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
       bool IsLabel = !Line.empty() && !isSpace(Line.front()) && Second.empty();
       if (IsLabel) {
         StringRef Name = unquoteIdentifier(First);
+        if (RegisterAliases.contains(Name))
+          return SymbolConflict(Name);
         if (!Exports.contains(Name))
           OS << ".def " << Name << "; .scl 6; .endef; ";
         OS << Name << ':';
       } else {
-        OS << rewriteSymbols(Line, Constants);
+        std::string Rewritten = rewriteSymbols(Line, Constants);
+        PendingRegisterAliasUses.emplace_back(OS.tell(), Rewritten.size());
+        OS << Rewritten;
       }
     }
     OS << '\n';
+  }
+
+  OS.flush();
+  for (size_t I = PendingRegisterAliasUses.size(); I != 0; --I) {
+    auto [Offset, Length] = PendingRegisterAliasUses[I - 1];
+    std::string Rewritten = rewriteRegisterAliases(
+        StringRef(Translated).substr(Offset, Length), RegisterAliases);
+    Translated.replace(Offset, Length, Rewritten);
   }
 
   return MemoryBuffer::getMemBufferCopy(Translated,
