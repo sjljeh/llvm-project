@@ -3392,6 +3392,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
       if (!Area)
         return SourceError(toString(Area.takeError()));
       bool IsCode = false;
+      bool IsData = false;
       bool IsReadOnly = false;
       bool IsReadWrite = false;
       bool IsNoInit = false;
@@ -3404,7 +3405,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
         if (Attribute.equals_insensitive("CODE")) {
           IsCode = true;
         } else if (Attribute.equals_insensitive("DATA")) {
-          // This is the default section kind.
+          IsData = true;
         } else if (Attribute.equals_insensitive("READWRITE")) {
           IsReadWrite = true;
         } else if (Attribute.equals_insensitive("READONLY")) {
@@ -3440,6 +3441,15 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
           return SourceError("A2041: unknown section flag: " + Attribute);
         }
       }
+
+      if (((IsCode && (IsData || IsNoInit)) ||
+           (IsReadOnly && IsReadWrite)) &&
+          !NoWarn && !IgnoredWarnings.contains(4172))
+        WithColor::warning(DiagOS, ProgName)
+            << CurrentFilename << ":" << CurrentLine
+            << ": A4172: illegal combination of section flags: section flags "
+               "can not be inferred, code and data/uninitialized, "
+               "readonly/readwrite\n";
 
       bool IsWritable =
           IsReadWrite || (!IsReadOnly && !IsCode && !IsPData);
