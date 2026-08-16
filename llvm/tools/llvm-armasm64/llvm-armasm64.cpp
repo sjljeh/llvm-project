@@ -2044,6 +2044,10 @@ static bool isSetDirective(StringRef Directive) {
          Directive.equals_insensitive("SETS");
 }
 
+static bool isEquDirective(StringRef Directive) {
+  return Directive.equals_insensitive("EQU") || Directive == "*";
+}
+
 static bool isDataDirective(StringRef Token) {
   return Token.equals_insensitive("DCB") || Token == "=" ||
          Token.equals_insensitive("DCW") || Token.equals_insensitive("DCWU") ||
@@ -2162,7 +2166,7 @@ static void recordDefinedSymbols(StringRef Line, StringRef First,
       DefinedSymbols.insert(unquoteIdentifier(Symbol));
   }
   if (!Line.empty() && !isSpace(Line.front()) &&
-      (Second.empty() || Second.equals_insensitive("EQU") ||
+      (Second.empty() || isEquDirective(Second) ||
        Second.equals_insensitive("PROC") ||
        Second.equals_insensitive("FUNCTION") ||
        Second.equals_insensitive("FIELD") ||
@@ -2921,7 +2925,7 @@ class AssemblyControlExpander {
           ++LineIndex;
           continue;
         }
-      } else if (Second.equals_insensitive("EQU")) {
+      } else if (isEquDirective(Second)) {
         StringRef Name = unquoteIdentifier(First);
         DefinedSymbols.insert(Name);
         VariableMap Effective = effectiveVariables();
@@ -3165,7 +3169,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
                                   SizeConstants, NoEscape));
       continue;
     }
-    if (SizeSecond.equals_insensitive("EQU")) {
+    if (isEquDirective(SizeSecond)) {
       VariableExpressionParser Parser(SizeAfterFirst, SizeVariables,
                                       SizeConstants, NoEscape);
       Expected<VariableValue> Value = Parser.parse();
@@ -3228,7 +3232,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
     } else if (SizeSecond.equals_insensitive("ADRL")) {
       Size = 8;
     } else if (!SizeSecond.empty() &&
-               !SizeSecond.equals_insensitive("EQU") &&
+               !isEquDirective(SizeSecond) &&
                !SizeSecond.equals_insensitive("PROC") &&
                !SizeSecond.equals_insensitive("FUNCTION") &&
                !SizeSecond.equals_insensitive("ROUT")) {
@@ -3829,7 +3833,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
         OS << "; .p2align " << Alignment;
       if (IsNewArea)
         OS << "; " << CurrentAreaBaseSymbol << ':';
-    } else if (Second.equals_insensitive("EQU")) {
+    } else if (isEquDirective(Second)) {
       StringRef Name = unquoteIdentifier(First);
       if (ConflictsWithObjectDefinition(Name))
         return SymbolConflict(Name);
