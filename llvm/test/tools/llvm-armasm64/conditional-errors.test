@@ -1,0 +1,59 @@
+# RUN: split-file %s %t
+# RUN: not llvm-armasm64 %t/string.asm %t.obj 2>&1 | FileCheck %s --check-prefix=STRING
+# RUN: not llvm-armasm64 %t/elif-expression.asm %t.obj 2>&1 | FileCheck %s --check-prefix=ELIF-EXPRESSION
+# RUN: not llvm-armasm64 %t/unmatched-else.asm %t.obj 2>&1 | FileCheck %s --check-prefix=UNMATCHED-ELSE
+# RUN: not llvm-armasm64 %t/duplicate-else.asm %t.obj 2>&1 | FileCheck %s --check-prefix=DUPLICATE-ELSE
+# RUN: not llvm-armasm64 %t/unmatched-endif.asm %t.obj 2>&1 | FileCheck %s --check-prefix=UNMATCHED-ENDIF
+# RUN: not llvm-armasm64 %t/missing-endif.asm %t.obj 2>&1 | FileCheck %s --check-prefix=MISSING-ENDIF
+# RUN: not llvm-armasm64 %t/unmatched-wend.asm %t.obj 2>&1 | FileCheck %s --check-prefix=UNMATCHED-WEND
+# RUN: not llvm-armasm64 %t/missing-wend.asm %t.obj 2>&1 | FileCheck %s --check-prefix=MISSING-WEND
+
+# STRING: string.asm:1: condition requires a numeric or logical expression
+# ELIF-EXPRESSION: elif-expression.asm:3: division by zero
+# UNMATCHED-ELSE: unmatched-else.asm:1: ELSE directive without a matching IF
+# DUPLICATE-ELSE: duplicate-else.asm:3: multiple ELSE directives in one IF structure
+# UNMATCHED-ENDIF: unmatched-endif.asm:1: ENDIF directive without a matching IF
+# MISSING-ENDIF: missing-endif.asm:3: unexpected END before ENDIF directive
+# UNMATCHED-WEND: unmatched-wend.asm:1: WEND directive without a matching WHILE
+# MISSING-WEND: missing-wend.asm:4: unexpected end of file; missing WEND directive
+
+#--- string.asm
+        IF "text"
+        ENDIF
+        END
+
+#--- elif-expression.asm
+        IF {TRUE}
+        DCB 1
+        ELIF 1 / 0 = 0
+        ENDIF
+        END
+
+#--- unmatched-else.asm
+        ELSE
+        END
+
+#--- duplicate-else.asm
+        IF {FALSE}
+        ELSE
+        ELSE
+        ENDIF
+        END
+
+#--- unmatched-endif.asm
+        ENDIF
+        END
+
+#--- missing-endif.asm
+        IF {TRUE}
+        DCB 1
+        END
+
+#--- unmatched-wend.asm
+        WEND
+        END
+
+#--- missing-wend.asm
+        WHILE {FALSE}
+        DCB 1
+        END
