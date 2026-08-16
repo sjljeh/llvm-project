@@ -348,6 +348,9 @@ static void splitOperands(StringRef Text,
       }
       continue;
     }
+    if (C == '|' && Text.slice(Start, I).trim().empty() &&
+        (I + 1 == Text.size() || Text[I + 1] == ','))
+      continue;
     if (C == '"' || C == '\'' || C == '|')
       Quote = C;
     else if (C == ',') {
@@ -2028,8 +2031,13 @@ struct AssemblySourceLine {
 };
 
 struct MacroDefinition {
+  struct Parameter {
+    std::string Name;
+    std::optional<std::string> DefaultValue;
+  };
+
   std::optional<std::string> LabelParameter;
-  SmallVector<std::string, 4> Parameters;
+  SmallVector<Parameter, 4> Parameters;
   SmallVector<AssemblySourceLine, 8> Body;
 };
 
@@ -2262,14 +2270,19 @@ class AssemblyControlExpander {
         if (!Parameter.consume_front("$"))
           return sourceError(Lines[PrototypeIndex],
                              "macro parameters must begin with '$'");
-        Parameter = Parameter.split('=').first.trim();
-        if (!isValidVariableName(Parameter))
+        size_t Equal = Parameter.find('=');
+        StringRef Name = Parameter.take_front(Equal).trim();
+        if (!isValidVariableName(Name))
           return sourceError(Lines[PrototypeIndex],
                              "invalid macro parameter name");
-        if (!ParameterNames.insert(Parameter).second)
+        if (!ParameterNames.insert(Name).second)
           return sourceError(Lines[PrototypeIndex],
-                             "duplicate macro parameter '" + Parameter + "'");
-        Definition.Parameters.push_back(Parameter.str());
+                             "duplicate macro parameter '" + Name + "'");
+        std::optional<std::string> DefaultValue;
+        if (Equal != StringRef::npos)
+          DefaultValue =
+              normalizeMacroArgument(Parameter.drop_front(Equal + 1));
+        Definition.Parameters.push_back({Name.str(), std::move(DefaultValue)});
       }
     }
     Definition.Body.append(Lines.begin() + PrototypeIndex + 1,
@@ -2296,8 +2309,11 @@ class AssemblyControlExpander {
     for (auto [Index, Parameter] : llvm::enumerate(Definition.Parameters)) {
       StringRef Argument =
           Index < Arguments.size() ? Arguments[Index].trim() : StringRef();
-      Bindings[Parameter] =
-          Argument == "|" ? std::string() : normalizeMacroArgument(Argument);
+      if (Argument == "|" && Parameter.DefaultValue)
+        Bindings[Parameter.Name] = *Parameter.DefaultValue;
+      else
+        Bindings[Parameter.Name] =
+            Argument == "|" ? std::string() : normalizeMacroArgument(Argument);
     }
     if (Definition.LabelParameter)
       Bindings[*Definition.LabelParameter] = HasLabel ? Label.str() : "";
@@ -2529,16 +2545,26 @@ class AssemblyControlExpander {
       }
 
       if (First.equals_insensitive("MEXIT")) {
-        if (!MacroParameters)
-          return sourceError(Line, "MEXIT directive outside a macro");
+        if (!MacroParameters) {
+          reportWarning(
+              Line, 4094,
+              "improper program syntax; unexpected MEND/MEXIT directive");
+          ++LineIndex;
+          continue;
+        }
         if (!Tail.empty())
           return sourceError(Line, "unexpected tokens after MEXIT directive");
         MacroExit = true;
         return Error::success();
       }
 
-      if (First.equals_insensitive("MEND"))
-        return sourceError(Line, "MEND directive without a matching MACRO");
+      if (First.equals_insensitive("MEND")) {
+        reportWarning(
+            Line, 4094,
+            "improper program syntax; unexpected MEND/MEXIT directive");
+        ++LineIndex;
+        continue;
+      }
 
       if (First.equals_insensitive("END")) {
         if (!Controls.empty())

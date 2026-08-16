@@ -5,8 +5,8 @@
 # RUN: not llvm-armasm64 %t/recursion.asm %t.obj 2>&1 | FileCheck %s --check-prefix=RECURSION
 # RUN: not llvm-armasm64 %t/missing-mend.asm %t.obj 2>&1 | FileCheck %s --check-prefix=MISSING-MEND
 # RUN: not llvm-armasm64 %t/duplicate.asm %t.obj 2>&1 | FileCheck %s --check-prefix=DUPLICATE
-# RUN: not llvm-armasm64 %t/mexit.asm %t.obj 2>&1 | FileCheck %s --check-prefix=MEXIT
-# RUN: not llvm-armasm64 %t/mend.asm %t.obj 2>&1 | FileCheck %s --check-prefix=MEND
+# RUN: llvm-armasm64 %t/mexit.asm %t.obj 2>&1 | FileCheck %s --check-prefix=MEXIT
+# RUN: llvm-armasm64 %t/mend.asm %t.obj 2>&1 | FileCheck %s --check-prefix=MEND
 
 # EXTRA: extra.asm:4: too many arguments to macro 'ONE'
 # LOCAL-OUTSIDE: local-outside.asm:1: local variables can only be declared within a macro
@@ -14,8 +14,8 @@
 # RECURSION: recursion.asm:3: assembly control nesting limit exceeded
 # MISSING-MEND: missing-mend.asm:6: unexpected end of file; missing MEND directive
 # DUPLICATE: duplicate.asm:6: macro name 'DUPLICATE' is already defined
-# MEXIT: mexit.asm:1: MEXIT directive outside a macro
-# MEND: mend.asm:1: MEND directive without a matching MACRO
+# MEXIT: warning: {{.*}}mexit.asm:1: A4094: improper program syntax; unexpected MEND/MEXIT directive
+# MEND: warning: {{.*}}mend.asm:1: A4094: improper program syntax; unexpected MEND/MEXIT directive
 
 #--- extra.asm
         MACRO
