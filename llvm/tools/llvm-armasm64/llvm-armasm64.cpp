@@ -2591,6 +2591,12 @@ class AssemblyControlExpander {
         continue;
       }
 
+      if (First.equals_insensitive("ENTRY")) {
+        reportWarning(Line, 4038, "unimplemented directive entry");
+        ++LineIndex;
+        continue;
+      }
+
       if (First.equals_insensitive("ASSERT")) {
         SmallVector<StringRef, 2> Operands;
         splitOperands(Tail, Operands);
@@ -2871,7 +2877,8 @@ expandAssemblyControl(std::unique_ptr<MemoryBuffer> Input,
 }
 
 static Expected<std::unique_ptr<MemoryBuffer>>
-translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
+translateInput(std::unique_ptr<MemoryBuffer> Input,
+               ArrayRef<std::string> IncludeDirs, StringRef ProgName,
                bool NoWarn, bool NoEscape,
                const DenseSet<unsigned> &IgnoredWarnings, raw_ostream &DiagOS,
                ArrayRef<std::string> Predefines) {
@@ -3333,6 +3340,17 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
       if (!Tail.empty())
         return SourceError("A2003: improper line syntax");
       EmitLiteralPool();
+    } else if (First.equals_insensitive("INCBIN")) {
+      StringRef IncludedFilename = takeToken(Tail);
+      if (IncludedFilename.empty() || !Tail.empty())
+        return SourceError("A2003: improper line syntax");
+      SmallString<256> IncludedPath;
+      ErrorOr<std::unique_ptr<MemoryBuffer>> IncludedBuffer = openIncludeFile(
+          IncludedFilename, CurrentFilename, IncludeDirs, IncludedPath);
+      if (!IncludedBuffer)
+        return SourceError("unable to open include file '" + IncludedFilename +
+                           "': " + IncludedBuffer.getError().message());
+      OS << ".incbin \"" << sys::path::convert_to_slash(IncludedPath) << '"';
     } else if (First.equals_insensitive("AREA")) {
       EmitLiteralPool();
       SmallVector<StringRef, 8> Attributes;
@@ -4000,9 +4018,10 @@ static int assembleInput(StringRef ProgName, StringRef InputFilename,
     return 1;
   }
 
-  Expected<std::unique_ptr<MemoryBuffer>> TranslatedInput = translateInput(
-      std::move(*ExpandedInput), ProgName, Args.hasArg(OPT_no_warn),
-      Args.hasArg(OPT_no_escape), IgnoredWarnings, DiagOS, Predefines);
+  Expected<std::unique_ptr<MemoryBuffer>> TranslatedInput =
+      translateInput(std::move(*ExpandedInput), IncludeDirs, ProgName,
+                     Args.hasArg(OPT_no_warn), Args.hasArg(OPT_no_escape),
+                     IgnoredWarnings, DiagOS, Predefines);
   if (!TranslatedInput) {
     WithColor::error(DiagOS, ProgName)
         << toString(TranslatedInput.takeError()) << '\n';
