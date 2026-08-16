@@ -1,0 +1,30 @@
+# RUN: split-file %s %t
+# RUN: not llvm-armasm64 %t/unknown.asm %t.obj 2>&1 | FileCheck %s --check-prefix=UNKNOWN
+# RUN: not llvm-armasm64 %t/pc-condition.asm %t.obj 2>&1 | FileCheck %s --check-prefix=PC-CONDITION
+# RUN: not llvm-armasm64 %t/pc-def.asm %t.obj 2>&1 | FileCheck %s --check-prefix=PC-DEF
+# RUN: not llvm-armasm64 %t/pc-set.asm %t.obj 2>&1 | FileCheck %s --check-prefix=PC-SET
+
+# UNKNOWN: unknown.asm:1: unknown built-in variable '{UNKNOWN}'
+# PC-CONDITION: pc-condition.asm:1: {PC} cannot be used in an assembly-time expression
+# PC-DEF: pc-def.asm:1: {PC} cannot be used in an assembly-time expression
+# PC-SET: pc-set.asm:2: {PC} cannot be used in an assembly-time expression
+
+#--- unknown.asm
+        IF {UNKNOWN}
+        ENDIF
+        END
+
+#--- pc-condition.asm
+        IF {PC}
+        ENDIF
+        END
+
+#--- pc-def.asm
+        IF :DEF:{PC}
+        ENDIF
+        END
+
+#--- pc-set.asm
+        GBLA VALUE
+VALUE   SETA {PC}
+        END
