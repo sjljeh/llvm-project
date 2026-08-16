@@ -30,6 +30,7 @@
 .section s_, "" ; .long 1
 .section s_a,"a"; .long 1
 .section s_b,"b"; .long 0
+.section s_br,"br"; .long 0
 .section s_d,"d"; .long 1
 .section s_D,"D"; .long 1
 .section s_n,"n"; .long 1
@@ -74,6 +75,14 @@
 // CHECK-NEXT:       IMAGE_SCN_CNT_UNINITIALIZED_DATA
 // CHECK-NEXT:       IMAGE_SCN_MEM_READ
 // CHECK-NEXT:       IMAGE_SCN_MEM_WRITE
+// CHECK-NEXT:     ]
+// CHECK:        }
+// CHECK:        Section {
+// CHECK:          Name: s_br
+// CHECK:          Characteristics [
+// CHECK-NEXT:       IMAGE_SCN_ALIGN_1BYTES
+// CHECK-NEXT:       IMAGE_SCN_CNT_UNINITIALIZED_DATA
+// CHECK-NEXT:       IMAGE_SCN_MEM_READ
 // CHECK-NEXT:     ]
 // CHECK:        }
 // CHECK:        Section {
