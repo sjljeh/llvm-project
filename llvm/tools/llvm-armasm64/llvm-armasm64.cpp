@@ -2978,6 +2978,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
   unsigned NumericLabelScope = 0;
   std::string NumericLabelRoutName;
   DenseSet<unsigned> DefinedNumericLabels;
+  bool EmittedDefaultSection = false;
 
   while (!Remaining.empty()) {
     auto [Line, Rest] = Remaining.split('\n');
@@ -3301,6 +3302,10 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
         return SourceError("A2209: Immediate value " + Twine(SignedSize) +
                            " out of range");
       CommonSymbols.insert(Name);
+      if (CurrentAreaName.empty() && !EmittedDefaultSection) {
+        OS << ".section \"__DefaultSection\",\"dw\"; .p2align 3\n";
+        EmittedDefaultSection = true;
+      }
       if (Size == 0)
         OS << ".globl " << Name;
       else
@@ -4180,7 +4185,7 @@ int llvm_armasm64_main(int Argc, char **Argv, const ToolContext &) {
     return 1;
   }
 
-  SmallString<256> DefaultOutput = Positional.front();
+  SmallString<256> DefaultOutput = sys::path::filename(Positional.front());
   sys::path::replace_extension(DefaultOutput, "obj");
   StringRef Output = Args.getLastArgValue(
       OPT_output,
