@@ -2150,6 +2150,12 @@ static void recordDefinedSymbols(StringRef Line, StringRef First,
     if (!Symbol.empty())
       DefinedSymbols.insert(unquoteIdentifier(Symbol));
   }
+  if (First.equals_insensitive("ALIAS")) {
+    SmallVector<StringRef, 2> Operands;
+    splitOperands(Tail, Operands);
+    if (Operands.size() == 2)
+      DefinedSymbols.insert(unquoteIdentifier(Operands[1]));
+  }
   if (First.equals_insensitive("COMMON")) {
     StringRef Symbol = takeToken(Tail).split(',').first;
     if (!Symbol.empty())
@@ -3519,6 +3525,25 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
       OS << ".def " << AssemblerName << "; .scl 2; .type "
          << (Spec->Type == ExportType::Function ? 32 : 0) << "; .endef; .globl "
          << AssemblerName;
+    } else if (First.equals_insensitive("ALIAS")) {
+      SmallVector<StringRef, 2> Operands;
+      splitOperands(Tail, Operands);
+      if (Operands.size() != 2 || Operands[0].empty() || Operands[1].empty())
+        return SourceError("A2003: improper line syntax");
+      StringRef Original = unquoteIdentifier(Operands[0]);
+      StringRef Alias = unquoteIdentifier(Operands[1]);
+      if (!DefinedObjectSymbols.contains(Original))
+        return SourceError("A2249: symbol '" + Original +
+                           "' is undefined or external");
+      if (Alias.empty() || DefinedObjectSymbols.contains(Alias) ||
+          ConflictsWithObjectDefinition(Alias))
+        return SymbolConflict(Alias);
+      DefinedObjectSymbols.insert(Alias);
+      std::string AssemblerAlias = getAssemblerSymbolName(Alias);
+      if (!Exports.contains(Alias))
+        OS << ".def " << AssemblerAlias << "; .scl 3; .endef; ";
+      OS << ".set " << AssemblerAlias << ", "
+         << getAssemblerSymbolName(Original);
     } else if (First.equals_insensitive("IMPORT") ||
                First.equals_insensitive("EXTERN")) {
       bool Conditional = First.equals_insensitive("EXTERN");
