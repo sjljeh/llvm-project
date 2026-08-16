@@ -3957,6 +3957,31 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
            << ".endif\n";
       OS << ".fill (" << Padding << " / " << FillSize << "), " << FillSize
          << ", " << Fill;
+    } else if (First.equals_insensitive("ADRL") ||
+               Second.equals_insensitive("ADRL")) {
+      EnsureDefaultSection();
+      bool HasLabel = Second.equals_insensitive("ADRL");
+      StringRef OperandsText = HasLabel ? AfterFirst : Tail;
+      SmallVector<StringRef, 2> Operands;
+      splitOperands(OperandsText, Operands);
+      if (Operands.size() != 2 || Operands[0].empty() || Operands[1].empty())
+        return SourceError("A2003: improper line syntax");
+
+      if (HasLabel) {
+        StringRef Name = unquoteIdentifier(First);
+        if (ConflictsWithObjectDefinition(Name))
+          return SymbolConflict(Name);
+        DefinedObjectSymbols.insert(Name);
+        std::string AssemblerName = getAssemblerSymbolName(Name);
+        if (!Exports.contains(Name))
+          OS << ".def " << AssemblerName << "; .scl 6; .endef; ";
+        OS << AssemblerName << ":; ";
+        SymbolSizes[Name] = 8;
+      }
+
+      std::string Target = normalizeSymbolicExpression(Operands[1], Constants);
+      OS << "adrp " << Operands[0] << ", " << Target << "; add " << Operands[0]
+         << ", " << Operands[0] << ", :lo12:" << Target;
     } else if (First.equals_insensitive("END")) {
       if (ActiveProcedureArea)
         return SourceError("A2057: missing ENDP directive in section " +
