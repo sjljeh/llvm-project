@@ -2003,6 +2003,9 @@ static Expected<AreaName> parseAreaName(StringRef Text) {
   } else {
     auto [UnquotedName, Rest] = Text.split('{');
     Name = UnquotedName.trim();
+    if (Name.find_first_of(" \t") != StringRef::npos)
+      return createStringError(inconvertibleErrorCode(),
+                               "A2003: improper line syntax: ,");
     Text = Rest.empty() ? StringRef() : Text.drop_front(UnquotedName.size());
   }
   if (Name.empty())
@@ -3385,9 +3388,13 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
     } else if (First.equals_insensitive("AREA")) {
       EmitLiteralPool();
       SmallVector<StringRef, 8> Attributes;
-      Tail.split(Attributes, ',', /*MaxSplit=*/-1, /*KeepEmpty=*/false);
-      if (Attributes.empty())
+      splitOperands(Tail, Attributes);
+      if (Attributes.front().empty())
         return SourceError("A2003: improper line syntax");
+      if (llvm::any_of(ArrayRef(Attributes).drop_front(),
+                       [](StringRef Attribute) { return Attribute.empty(); }))
+        return SourceError(
+            "A2146: illegal symbol ,; AREA attribute expected");
       Expected<AreaName> Area = parseAreaName(Attributes.front());
       if (!Area)
         return SourceError(toString(Area.takeError()));
