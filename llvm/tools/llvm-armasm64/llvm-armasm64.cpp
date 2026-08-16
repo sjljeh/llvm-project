@@ -358,13 +358,14 @@ static void splitOperands(StringRef Text,
   Operands.push_back(Text.drop_front(Start).trim());
 }
 
-enum class VariableKind { Arithmetic, Logical, String };
+enum class VariableKind { Arithmetic, Logical, String, RegisterRelative };
 
 struct VariableValue {
   VariableKind Kind = VariableKind::Arithmetic;
   uint64_t Arithmetic = 0;
   bool Logical = false;
   std::string String;
+  uint64_t RegisterBase = 0;
 
   static VariableValue arithmetic(uint64_t Value) {
     VariableValue Result;
@@ -385,9 +386,18 @@ struct VariableValue {
     Result.String = std::move(Value);
     return Result;
   }
+
+  static VariableValue registerRelative(uint64_t Base, uint64_t Offset) {
+    VariableValue Result;
+    Result.Kind = VariableKind::RegisterRelative;
+    Result.RegisterBase = Base;
+    Result.Arithmetic = Offset;
+    return Result;
+  }
 };
 
 using VariableMap = StringMap<VariableValue>;
+using RegisterRelativeMap = StringMap<VariableValue>;
 
 static constexpr uint64_t ARMAsmVersion = 145136248;
 
@@ -446,6 +456,8 @@ class VariableExpressionParser {
   const VariableMap &Variables;
   const StringMap<uint64_t> &Constants;
   const StringSet<> *DefinedSymbols;
+  const RegisterRelativeMap *RegisterRelativeValues;
+  const StringMap<uint64_t> *SymbolSizes;
   bool NoEscape;
   size_t Position = 0;
   std::string ErrorMessage;
@@ -689,6 +701,12 @@ class VariableExpressionParser {
       Result = VariableValue::arithmetic(It->second);
       return true;
     }
+    if (RegisterRelativeValues)
+      if (auto It = RegisterRelativeValues->find(Name);
+          It != RegisterRelativeValues->end()) {
+        Result = It->second;
+        return true;
+      }
     return fail("unknown variable or constant '" + Name + "'");
   }
 
@@ -722,6 +740,37 @@ class VariableExpressionParser {
       if (Result.Kind != VariableKind::Logical)
         return fail(":LNOT: requires a logical expression");
       Result.Logical = !Result.Logical;
+      return true;
+    }
+    if (consume("!")) {
+      if (!parseUnary(Result))
+        return false;
+      if (Result.Kind != VariableKind::Logical)
+        return fail("'!' requires a logical expression");
+      Result.Logical = !Result.Logical;
+      return true;
+    }
+    bool IsBase = consumeInsensitive(":BASE:");
+    if (IsBase || consumeInsensitive(":INDEX:")) {
+      if (!parseUnary(Result))
+        return false;
+      if (Result.Kind != VariableKind::RegisterRelative)
+        return fail(IsBase ? "wrong operand type for :BASE:"
+                           : "wrong operand type for :INDEX:");
+      Result = VariableValue::arithmetic(IsBase ? Result.RegisterBase
+                                                : Result.Arithmetic);
+      return true;
+    }
+    if (consume("?")) {
+      StringRef Name;
+      if (!parseIdentifier(Name))
+        return false;
+      if (!SymbolSizes)
+        return fail("unknown symbol '" + Name + "'");
+      auto It = SymbolSizes->find(Name);
+      if (It == SymbolSizes->end())
+        return fail("unknown symbol '" + Name + "'");
+      Result = VariableValue::arithmetic(It->second);
       return true;
     }
     if (consumeInsensitive(":RCONST:")) {
@@ -897,14 +946,18 @@ class VariableExpressionParser {
         return false;
       if (!Right.Arithmetic)
         return fail("division by zero");
-      Left.Arithmetic /= Right.Arithmetic;
+      Left.Arithmetic = APInt(64, Left.Arithmetic)
+                            .sdiv(APInt(64, Right.Arithmetic))
+                            .getZExtValue();
       return true;
     case BinaryOperator::Modulo:
       if (!Numeric())
         return false;
       if (!Right.Arithmetic)
         return fail("division by zero");
-      Left.Arithmetic %= Right.Arithmetic;
+      Left.Arithmetic = APInt(64, Left.Arithmetic)
+                            .srem(APInt(64, Right.Arithmetic))
+                            .getZExtValue();
       return true;
     case BinaryOperator::Concatenate:
       if (!requireKinds(Left, Right, VariableKind::String,
@@ -950,11 +1003,33 @@ class VariableExpressionParser {
       return true;
     }
     case BinaryOperator::Add:
+      if (Left.Kind == VariableKind::RegisterRelative &&
+          Right.Kind == VariableKind::Arithmetic) {
+        Left.Arithmetic += Right.Arithmetic;
+        return true;
+      }
+      if (Left.Kind == VariableKind::Arithmetic &&
+          Right.Kind == VariableKind::RegisterRelative) {
+        Left = VariableValue::registerRelative(
+            Right.RegisterBase, Left.Arithmetic + Right.Arithmetic);
+        return true;
+      }
       if (!Numeric())
         return false;
       Left.Arithmetic += Right.Arithmetic;
       return true;
     case BinaryOperator::Subtract:
+      if (Left.Kind == VariableKind::RegisterRelative &&
+          Right.Kind == VariableKind::Arithmetic) {
+        Left.Arithmetic -= Right.Arithmetic;
+        return true;
+      }
+      if (Left.Kind == VariableKind::RegisterRelative &&
+          Right.Kind == VariableKind::RegisterRelative &&
+          Left.RegisterBase == Right.RegisterBase) {
+        Left = VariableValue::arithmetic(Left.Arithmetic - Right.Arithmetic);
+        return true;
+      }
       if (!Numeric())
         return false;
       Left.Arithmetic -= Right.Arithmetic;
@@ -1043,11 +1118,16 @@ class VariableExpressionParser {
   }
 
 public:
-  VariableExpressionParser(StringRef Text, const VariableMap &Variables,
-                           const StringMap<uint64_t> &Constants, bool NoEscape,
-                           const StringSet<> *DefinedSymbols = nullptr)
+  VariableExpressionParser(
+      StringRef Text, const VariableMap &Variables,
+      const StringMap<uint64_t> &Constants, bool NoEscape,
+      const StringSet<> *DefinedSymbols = nullptr,
+      const RegisterRelativeMap *RegisterRelativeValues = nullptr,
+      const StringMap<uint64_t> *SymbolSizes = nullptr)
       : Text(Text), Variables(Variables), Constants(Constants),
-        DefinedSymbols(DefinedSymbols), NoEscape(NoEscape) {}
+        DefinedSymbols(DefinedSymbols),
+        RegisterRelativeValues(RegisterRelativeValues),
+        SymbolSizes(SymbolSizes), NoEscape(NoEscape) {}
 
   Expected<VariableValue> parse() {
     VariableValue Result;
@@ -1107,6 +1187,8 @@ static std::string formatSubstitution(const VariableValue &Variable) {
     return Variable.Logical ? "T" : "F";
   case VariableKind::String:
     return Variable.String;
+  case VariableKind::RegisterRelative:
+    llvm_unreachable("register-relative value cannot be substituted");
   }
   llvm_unreachable("unknown ARMASM variable type");
 }
@@ -1263,6 +1345,8 @@ static StringRef variableKindName(VariableKind Kind) {
     return "logical";
   case VariableKind::String:
     return "string";
+  case VariableKind::RegisterRelative:
+    return "register-relative";
   }
   llvm_unreachable("unknown ARMASM variable type");
 }
@@ -1559,6 +1643,22 @@ struct StorageMapField {
 };
 
 using StorageMapFieldMap = StringMap<StorageMapField>;
+
+static std::optional<unsigned> getStorageMapBaseEncoding(StringRef Register) {
+  Register = Register.trim();
+  if (Register.equals_insensitive("fp"))
+    return 63;
+  if (Register.equals_insensitive("lr"))
+    return 64;
+  if (Register.equals_insensitive("sp"))
+    return 65;
+  if (!Register.consume_front_insensitive("x"))
+    return std::nullopt;
+  unsigned Number;
+  if (Register.getAsInteger(10, Number) || Number > 30)
+    return std::nullopt;
+  return 34 + Number;
+}
 
 static std::optional<RegisterAliasKind>
 registerAliasKindForDirective(StringRef Directive) {
@@ -2681,6 +2781,8 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
   RegisterAliasMap RegisterAliases;
   StorageMapField CurrentStorageMap;
   StorageMapFieldMap StorageMapFields;
+  RegisterRelativeMap RegisterRelativeValues;
+  StringMap<uint64_t> SymbolSizes;
   struct PendingWeakExternal {
     std::string Name;
     std::string Fallback;
@@ -2787,7 +2889,8 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
     };
     auto Evaluate = [&](StringRef Expression) -> Expected<VariableValue> {
       VariableExpressionParser Parser(Expression, Variables, AbsoluteConstants,
-                                      NoEscape, &DefinedSymbols);
+                                      NoEscape, &DefinedSymbols,
+                                      &RegisterRelativeValues, &SymbolSizes);
       return Parser.parse();
     };
     auto EvaluateAbsolute = [&](StringRef Expression) -> Expected<uint64_t> {
@@ -2922,6 +3025,12 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
             DefinedSymbols.contains(Name) || isPredefinedRegisterName(Name))
           return SymbolConflict(Name);
         StorageMapFields[Name] = CurrentStorageMap;
+        SymbolSizes[Name] = *Size;
+        if (CurrentStorageMap.BaseRegister)
+          if (std::optional<unsigned> Base =
+                  getStorageMapBaseEncoding(*CurrentStorageMap.BaseRegister))
+            RegisterRelativeValues[Name] =
+                VariableValue::registerRelative(*Base, 0);
       }
       if (CurrentStorageMap.Offset > INT64_MAX - SignedSize)
         return SourceError("storage map offset overflow");
@@ -3284,6 +3393,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
         if (!Exports.contains(Name))
           OS << ".def " << Name << "; .scl 3; .endef; ";
         OS << Name << ":; ";
+        SymbolSizes[Name] = *Count;
       }
       if (Value == 0)
         OS << ".space " << *Count;
@@ -3315,6 +3425,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
       if (!IsUnaligned && Alignment != 1)
         OS << ".balign " << Alignment << "; ";
 
+      std::optional<std::string> DataLabel;
       if (HasLabel) {
         StringRef Name = unquoteIdentifier(First);
         if (ConflictsWithObjectDefinition(Name))
@@ -3323,6 +3434,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
         if (!Exports.contains(Name))
           OS << ".def " << Name << "; .scl 3; .endef; ";
         OS << Name << ":; ";
+        DataLabel = Name.str();
       }
       if (UsesPC)
         EmitPCLabel();
@@ -3334,6 +3446,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
           }))
         return SourceError("A2173: syntax error in expression");
 
+      uint64_t EmittedSize = 0;
       for (auto [Index, Operand] : llvm::enumerate(Operands)) {
         if (Index)
           OS << "; ";
@@ -3379,6 +3492,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
           EmitValue(IsSingle ? ".long " : ".quad ",
                     Twine(Float.bitcastToAPInt().getZExtValue()),
                     /*IsSymbolic=*/false);
+          EmittedSize += DataSize;
           continue;
         }
 
@@ -3389,6 +3503,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
                              : ".quad ",
                     normalizeSymbolicExpression(Operand, Constants),
                     /*IsSymbolic=*/true);
+          EmittedSize += DataSize;
           continue;
         }
 
@@ -3411,6 +3526,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
                              : ".quad ",
                     normalizeSymbolicExpression(Operand, Constants),
                     /*IsSymbolic=*/true);
+          EmittedSize += DataSize;
           continue;
         }
         if (Value->Kind == VariableKind::String) {
@@ -3427,6 +3543,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
             PreviousData = PreviousDataDefinition{0, 0, 1, /*Expression=*/{},
                                                   /*IsSymbolic=*/false};
           }
+          EmittedSize += Value->String.size();
           continue;
         }
         if (Value->Kind != VariableKind::Arithmetic)
@@ -3453,7 +3570,10 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
                       ? Twine(static_cast<int64_t>(Value->Arithmetic))
                       : Twine(Value->Arithmetic),
                   /*IsSymbolic=*/false);
+        EmittedSize += DataSize;
       }
+      if (DataLabel)
+        SymbolSizes[*DataLabel] = EmittedSize;
     } else if (First.equals_insensitive("ROUT") ||
                Second.equals_insensitive("ROUT")) {
       StringRef RoutTail = First.equals_insensitive("ROUT") ? Tail : AfterFirst;
@@ -3546,6 +3666,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
              << "; .endef; ";
         OS << Name << ':';
         if (!Second.empty()) {
+          SymbolSizes[Name] = 4;
           OS << "; ";
           std::string Rewritten = rewriteSymbols(Tail, Constants);
           PendingSymbolUses.emplace_back(OS.tell(), Rewritten.size());
