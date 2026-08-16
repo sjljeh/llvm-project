@@ -14,5 +14,5 @@
 # MISSING: error: {{.*}}include-missing.asm:2: unable to open include file 'does-not-exist.inc'
 # NO-END: error: {{.*}}include-missing-end.inc: unexpected end of file; missing END directive
 # MAIN-NO-END: warning: {{.*}}include-main-no-end.asm: A4045: missing END directive
-# INVALID: include-invalid.inc:1:{{[0-9]+}}: error: unknown token in expression
+# INVALID: include-invalid.inc:1: A2173: syntax error in expression
 # DUPLICATE: include-duplicate.inc:2:{{[0-9]+}}: error: symbol 'duplicate' is already defined

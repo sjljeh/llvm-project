@@ -41,6 +41,6 @@
 # MACHINE: error: invalid machine type 'x64'
 # POSITIONAL: error: too many positional arguments
 # ACCEPTED: error: missing.asm: {{[Nn]o such file or directory|The system cannot find the file specified}}
-# REDIRECTED: error: unknown token in expression
+# REDIRECTED: A2173: syntax error in expression
 # JOINED: error: unknown argument '-errorsjoined'
 # VIA-ERROR: error: {{.*}}missing.rsp
