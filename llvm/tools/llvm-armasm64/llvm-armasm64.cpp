@@ -36,6 +36,7 @@
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/Format.h"
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/LLVMDriver.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -289,6 +290,10 @@ openIncludeFile(StringRef Filename, StringRef IncludingFile,
 static void emitLineMarker(raw_ostream &OS, unsigned Line, StringRef Filename) {
   OS << "# " << Line << " \"" << sys::path::convert_to_slash(Filename)
      << "\"\n";
+}
+
+static void emitListingLineMarker(raw_ostream &OS, unsigned Line) {
+  OS << "# armasm64_listing " << Line << '\n';
 }
 
 static void printDiagnostic(const SMDiagnostic &Diagnostic,
@@ -2314,6 +2319,7 @@ class AssemblyControlExpander {
   StringSet<> DefinedSymbols;
   VariableMap BuiltinVariables;
   uint64_t StorageMapOffset = 0;
+  unsigned ListingLine = 0;
   VariableMap *LocalVariables = nullptr;
   const StringMap<std::string> *MacroParameters = nullptr;
 
@@ -2489,6 +2495,7 @@ class AssemblyControlExpander {
     if (Definition.LabelParameter)
       Bindings[*Definition.LabelParameter] = HasLabel ? Label.str() : "";
     else if (HasLabel) {
+      emitListingLineMarker(OS, ListingLine);
       emitLineMarker(OS, Invocation.Line, Invocation.Filename);
       OS << Label << '\n';
     }
@@ -2547,6 +2554,9 @@ class AssemblyControlExpander {
     size_t LineIndex = 0;
     while (LineIndex != Lines.size()) {
       const AssemblySourceLine &Line = Lines[LineIndex];
+      ListingLine = Kind == InputKind::Macro
+                        ? ListingLine + 1
+                        : std::max(ListingLine + 1, Line.Line);
       BuiltinVariables["INPUTFILE"] = VariableValue::string(Line.Filename);
       BuiltinVariables["LINENUM"] = VariableValue::arithmetic(Line.Line);
       bool Active = Controls.empty() || Controls.back().Active;
@@ -2755,6 +2765,7 @@ class AssemblyControlExpander {
         if (Kind == InputKind::Macro)
           return sourceError(Line, "END directive inside a macro expansion");
         if (Kind == InputKind::MainFile) {
+          emitListingLineMarker(OS, ListingLine);
           emitLineMarker(OS, Line.Line, Line.Filename);
           OS << Line.Text << '\n';
         }
@@ -2935,6 +2946,7 @@ class AssemblyControlExpander {
           EmittedLine =
               rewriteVariables(EmittedLine, *LocalVariables, NoEscape);
       }
+      emitListingLineMarker(OS, ListingLine);
       emitLineMarker(OS, Line.Line, Line.Filename);
       OS << EmittedLine << '\n';
       ++LineIndex;
@@ -3230,6 +3242,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
 
   std::string CurrentFilename = Input->getBufferIdentifier().str();
   unsigned CurrentLine = 0;
+  unsigned CurrentListingLine = 0;
   unsigned PCSymbolCount = 0;
   bool CurrentAreaIsCode = false;
   bool CurrentAreaIsNoInit = false;
@@ -3238,6 +3251,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
   std::string CurrentAreaName;
   std::string CurrentAreaBaseSymbol;
   std::optional<std::string> ActiveProcedureArea;
+  bool AtProcedureStart = false;
   unsigned NumericLabelScope = 0;
   std::string NumericLabelRoutName;
   DenseSet<unsigned> DefinedNumericLabels;
@@ -3325,6 +3339,13 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
 
     if (First == "#") {
       StringRef Marker = Tail;
+      StringRef MarkerKind = takeToken(Marker);
+      if (MarkerKind == "armasm64_listing") {
+        if (Marker.getAsInteger(10, CurrentListingLine))
+          return SourceError("invalid internal listing line marker");
+        continue;
+      }
+      Marker = Tail;
       StringRef SourceLine = takeToken(Marker);
       unsigned ParsedLine;
       Marker = Marker.trim();
@@ -3493,6 +3514,15 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
           std::to_string(NumericLabelScope * 100 + NumericLabel->Number);
       First = NumericLabelToken;
     }
+    auto EmitNumericLabel = [&]() {
+      assert(NumericLabel && "expected numeric local label");
+      std::string SymbolName;
+      raw_string_ostream SymbolOS(SymbolName);
+      SymbolOS << "_lc" << format("%03u", NumericLabel->Number) << '_'
+               << format("%06u", CurrentListingLine) << '_';
+      OS << ".def " << SymbolName << "; .scl 6; .endef; " << SymbolName
+         << ":; " << First << ':';
+    };
     bool IsDataLine = isDataDirective(First) || isDataDirective(Second);
     bool IsStorageLine =
         isStorageDirective(First) || isStorageDirective(Second);
@@ -3854,6 +3884,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
       EnsureDefaultSection();
       DefinedObjectSymbols.insert(Name);
       ActiveProcedureArea = CurrentAreaName;
+      AtProcedureStart = true;
       std::string AssemblerName = getAssemblerSymbolName(Name);
       if (!Exports.contains(Name))
         OS << ".def " << AssemblerName << "; .scl 6; .endef; ";
@@ -3872,6 +3903,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
         return SourceError(
             "A2093: improper program syntax; unexpected ENDP directive");
       ActiveProcedureArea.reset();
+      AtProcedureStart = false;
     } else if (IsStorageLine) {
       EnsureDefaultSection();
       bool HasLabel = !isStorageDirective(First);
@@ -3936,7 +3968,8 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
             OS << ".def " << AssemblerName << "; .scl 3; .endef; ";
           OS << AssemblerName << ":; ";
         } else {
-          OS << Name << ":; ";
+          EmitNumericLabel();
+          OS << "; ";
         }
         if (!NumericLabel)
           SymbolSizes[Name] = *Count;
@@ -3984,7 +4017,8 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
             OS << ".def " << AssemblerName << "; .scl 3; .endef; ";
           OS << AssemblerName << ":; ";
         } else {
-          OS << Name << ":; ";
+          EmitNumericLabel();
+          OS << "; ";
         }
         if (!NumericLabel)
           DataLabel = Name.str();
@@ -4134,13 +4168,25 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
       }
       if (DataLabel)
         SymbolSizes[*DataLabel] = EmittedSize;
+      AtProcedureStart = false;
     } else if (First.equals_insensitive("ROUT") ||
                Second.equals_insensitive("ROUT")) {
       StringRef RoutTail = First.equals_insensitive("ROUT") ? Tail : AfterFirst;
       if (!RoutTail.empty())
         return SourceError("A2003: improper line syntax");
-      if (Second.equals_insensitive("ROUT"))
+      if (Second.equals_insensitive("ROUT")) {
         EnsureDefaultSection();
+        StringRef Name = unquoteIdentifier(First);
+        if (ConflictsWithObjectDefinition(Name) ||
+            DefinedObjectSymbols.contains(Name))
+          return SymbolConflict(Name);
+        DefinedObjectSymbols.insert(Name);
+        std::string AssemblerName = getAssemblerSymbolName(Name);
+        if (!Exports.contains(Name))
+          OS << ".def " << AssemblerName << "; .scl 3; .endef; ";
+        OS << ".set " << AssemblerName << ", " << CurrentAreaBaseSymbol;
+        SymbolSizes[Name] = 0;
+      }
       ++NumericLabelScope;
       NumericLabelRoutName =
           First.equals_insensitive("ROUT") ? std::string() : First.str();
@@ -4230,8 +4276,12 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
           return SymbolConflict(Name);
         DefinedObjectSymbols.insert(Name);
         std::string AssemblerName = getAssemblerSymbolName(Name);
-        if (!Exports.contains(Name))
-          OS << ".def " << AssemblerName << "; .scl 6; .endef; ";
+        if (!Exports.contains(Name)) {
+          OS << ".def " << AssemblerName << "; .scl 6; ";
+          if (AtProcedureStart)
+            OS << ".type 32; ";
+          OS << ".endef; ";
+        }
         OS << AssemblerName << ":; ";
         SymbolSizes[Name] = 8;
       }
@@ -4239,6 +4289,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
       std::string Target = normalizeSymbolicExpression(Operands[1], Constants);
       OS << "adrp " << Operands[0] << ", " << Target << "; add " << Operands[0]
          << ", " << Operands[0] << ", :lo12:" << Target;
+      AtProcedureStart = false;
     } else if (First.equals_insensitive("B") ||
                First.equals_insensitive("BL") ||
                Second.equals_insensitive("B") ||
@@ -4259,8 +4310,12 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
           return SymbolConflict(Name);
         DefinedObjectSymbols.insert(Name);
         std::string AssemblerName = getAssemblerSymbolName(Name);
-        if (!Exports.contains(Name))
-          OS << ".def " << AssemblerName << "; .scl 6; .endef; ";
+        if (!Exports.contains(Name)) {
+          OS << ".def " << AssemblerName << "; .scl 6; ";
+          if (AtProcedureStart)
+            OS << ".type 32; ";
+          OS << ".endef; ";
+        }
         OS << AssemblerName << ":; ";
         SymbolSizes[Name] = 4;
       }
@@ -4273,6 +4328,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
           ExpressionOffset, Target.size(), 4, Target,
           /*IsSymbolic=*/true, /*ReplaceWithCurrentLocation=*/true,
           /*IsInstruction=*/true};
+      AtProcedureStart = false;
     } else if (First.equals_insensitive("KEEP")) {
       SmallVector<StringRef, 2> Operands;
       splitOperands(Tail, Operands);
@@ -4295,12 +4351,16 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
             return SymbolConflict(Name);
           DefinedObjectSymbols.insert(Name);
           std::string AssemblerName = getAssemblerSymbolName(Name);
-          if (!Exports.contains(Name))
+          if (!Exports.contains(Name)) {
             OS << ".def " << AssemblerName << "; .scl "
-               << (CurrentAreaIsCode ? 6 : 3) << "; .endef; ";
+               << (CurrentAreaIsCode ? 6 : 3) << "; ";
+            if (CurrentAreaIsCode && AtProcedureStart)
+              OS << ".type 32; ";
+            OS << ".endef; ";
+          }
           OS << AssemblerName << ':';
         } else {
-          OS << Name << ':';
+          EmitNumericLabel();
         }
         if (!Second.empty()) {
           if (!NumericLabel)
@@ -4382,11 +4442,13 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
           OS << Rewritten;
         }
       }
-      if ((HasLabel && !Second.empty()) || (!HasLabel && !First.empty()))
+      if ((HasLabel && !Second.empty()) || (!HasLabel && !First.empty())) {
         PreviousData = PreviousDataDefinition{
             0, 0, 4, /*Expression=*/{}, /*IsSymbolic=*/false,
             /*ReplaceWithCurrentLocation=*/false,
             /*IsInstruction=*/true};
+        AtProcedureStart = false;
+      }
     }
     OS << '\n';
   }
