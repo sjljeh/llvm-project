@@ -8,6 +8,7 @@
 named   ROUT
 outside nop
 proc    PROC
+#line 100 "virtual-source.asm"
 inside  nop
 later   nop
         ENDP
