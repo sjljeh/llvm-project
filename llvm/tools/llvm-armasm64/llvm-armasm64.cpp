@@ -2978,9 +2978,15 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
     unsigned Size;
     std::string Expression;
     bool IsSymbolic;
+    bool ReplaceWithCurrentLocation = false;
   };
   std::optional<PreviousDataDefinition> PreviousData;
-  SmallVector<std::pair<size_t, size_t>, 4> RelocatedExpressions;
+  struct RelocatedExpression {
+    size_t Offset;
+    size_t Length;
+    bool ReplaceWithCurrentLocation;
+  };
+  SmallVector<RelocatedExpression, 4> RelocatedExpressions;
   struct LiteralPoolEntry {
     std::string Label;
     std::string Expression;
@@ -3418,8 +3424,9 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
         return SourceError("A2206: Must specify a relocation target");
       }
       if (PreviousData->IsSymbolic)
-        RelocatedExpressions.emplace_back(PreviousData->ExpressionOffset,
-                                          PreviousData->ExpressionLength);
+        RelocatedExpressions.push_back(
+            {PreviousData->ExpressionOffset, PreviousData->ExpressionLength,
+             PreviousData->ReplaceWithCurrentLocation});
       OS << ".reloc . - " << PreviousData->Size << ", " << RelocationName
          << ", " << Expression;
       PreviousData.reset();
@@ -3761,7 +3768,8 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
           OS << ExpressionString;
           PreviousData =
               PreviousDataDefinition{ExpressionOffset, ExpressionString.size(),
-                                     DataSize, ExpressionString, IsSymbolic};
+                                     DataSize, ExpressionString, IsSymbolic,
+                                     /*ReplaceWithCurrentLocation=*/false};
         };
 
         if (IsSingle || IsDouble) {
@@ -3844,7 +3852,9 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
               OS << static_cast<unsigned>(static_cast<unsigned char>(Byte));
             }
             PreviousData = PreviousDataDefinition{0, 0, 1, /*Expression=*/{},
-                                                  /*IsSymbolic=*/false};
+                                                  /*IsSymbolic=*/false,
+                                                  /*ReplaceWithCurrentLocation=*/
+                                                      false};
           }
           EmittedSize += Value->String.size();
           continue;
@@ -3982,6 +3992,39 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
       std::string Target = normalizeSymbolicExpression(Operands[1], Constants);
       OS << "adrp " << Operands[0] << ", " << Target << "; add " << Operands[0]
          << ", " << Operands[0] << ", :lo12:" << Target;
+    } else if (First.equals_insensitive("B") ||
+               First.equals_insensitive("BL") ||
+               Second.equals_insensitive("B") ||
+               Second.equals_insensitive("BL")) {
+      EnsureDefaultSection();
+      bool HasLabel = Second.equals_insensitive("B") ||
+                      Second.equals_insensitive("BL");
+      StringRef Mnemonic = HasLabel ? Second : First;
+      StringRef TargetText = HasLabel ? AfterFirst : Tail;
+      SmallVector<StringRef, 2> Operands;
+      splitOperands(TargetText, Operands);
+      if (Operands.size() != 1 || Operands[0].empty())
+        return SourceError("A2003: improper line syntax");
+
+      if (HasLabel) {
+        StringRef Name = unquoteIdentifier(First);
+        if (ConflictsWithObjectDefinition(Name))
+          return SymbolConflict(Name);
+        DefinedObjectSymbols.insert(Name);
+        std::string AssemblerName = getAssemblerSymbolName(Name);
+        if (!Exports.contains(Name))
+          OS << ".def " << AssemblerName << "; .scl 6; .endef; ";
+        OS << AssemblerName << ":; ";
+        SymbolSizes[Name] = 4;
+      }
+
+      std::string Target = normalizeSymbolicExpression(Operands[0], Constants);
+      OS << Mnemonic << ' ';
+      size_t ExpressionOffset = OS.tell();
+      OS << Target;
+      PreviousData = PreviousDataDefinition{
+          ExpressionOffset, Target.size(), 4, Target,
+          /*IsSymbolic=*/true, /*ReplaceWithCurrentLocation=*/true};
     } else if (First.equals_insensitive("END")) {
       if (ActiveProcedureArea)
         return SourceError("A2057: missing ENDP directive in section " +
@@ -4086,6 +4129,10 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
           OS << Rewritten;
         }
       }
+      if ((HasLabel && !Second.empty()) || (!HasLabel && !First.empty()))
+        PreviousData = PreviousDataDefinition{
+            0, 0, 4, /*Expression=*/{}, /*IsSymbolic=*/false,
+            /*ReplaceWithCurrentLocation=*/false};
     }
     OS << '\n';
   }
@@ -4116,10 +4163,11 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
          << '\n';
 
   OS.flush();
-  for (auto [Offset, Length] : llvm::reverse(RelocatedExpressions)) {
-    std::string Zero(Length, ' ');
-    Zero.front() = '0';
-    Translated.replace(Offset, Length, Zero);
+  for (const RelocatedExpression &Expression :
+       llvm::reverse(RelocatedExpressions)) {
+    std::string Replacement(Expression.Length, ' ');
+    Replacement.front() = Expression.ReplaceWithCurrentLocation ? '.' : '0';
+    Translated.replace(Expression.Offset, Expression.Length, Replacement);
   }
   for (size_t I = PendingSymbolUses.size(); I != 0; --I) {
     auto [Offset, Length] = PendingSymbolUses[I - 1];
