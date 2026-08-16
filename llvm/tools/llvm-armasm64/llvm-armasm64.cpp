@@ -3043,6 +3043,8 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
   StringRef Remaining = Input->getBuffer();
   std::string Translated;
   raw_string_ostream OS(Translated);
+  OS << ".def @comp.id; .scl 3; .endef; .set @comp.id, 17010072\n"
+        ".def @feat.00; .scl 3; .endef; .set @feat.00, 16\n";
   StringMap<std::string> Constants;
   StringMap<uint64_t> AbsoluteConstants;
   VariableMap Variables;
