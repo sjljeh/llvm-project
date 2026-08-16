@@ -1,0 +1,13 @@
+# RUN: not llvm-armasm64 %S/Inputs/variable-undeclared.asm %t.obj 2>&1 | FileCheck %s --check-prefix=UNDECLARED
+# RUN: not llvm-armasm64 %S/Inputs/variable-type.asm %t.obj 2>&1 | FileCheck %s --check-prefix=TYPE
+# RUN: not llvm-armasm64 %S/Inputs/variable-declaration.asm %t.obj 2>&1 | FileCheck %s --check-prefix=DECLARATION
+# RUN: not llvm-armasm64 %S/Inputs/variable-expression.asm %t.obj 2>&1 | FileCheck %s --check-prefix=EXPRESSION
+# RUN: not llvm-armasm64 %S/Inputs/variable-dollar.asm %t.obj 2>&1 | FileCheck %s --check-prefix=DOLLAR
+# RUN: not llvm-armasm64 %S/Inputs/variable-include.asm %t.obj 2>&1 | FileCheck %s --check-prefix=INCLUDE
+
+# UNDECLARED: variable-undeclared.asm:2: assignment to undeclared variable 'COUNT'
+# TYPE: variable-type.asm:3: cannot assign arithmetic value to logical variable 'FLAG'
+# DECLARATION: variable-declaration.asm:2: expected one variable name after GBLA
+# EXPRESSION: variable-expression.asm:3: division by zero
+# DOLLAR: variable-dollar.asm:2: dollar character in string must be doubled
+# INCLUDE: variable-error.inc:2: division by zero

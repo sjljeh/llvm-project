@@ -1,0 +1,19 @@
+# RUN: llvm-armasm64 -pd "COUNT SETA 7" %S/Inputs/predefine-arithmetic.asm %t-a.obj
+# RUN: llvm-objdump -s %t-a.obj | FileCheck %s --check-prefix=ARITHMETIC
+# RUN: llvm-armasm64 -predefine 'TEXT SETS "XY"' %S/Inputs/predefine-string.asm %t-s.obj
+# RUN: llvm-objdump -s %t-s.obj | FileCheck %s --check-prefix=STRING
+# RUN: llvm-armasm64 -pd "FLAG SETL {TRUE}" %S/Inputs/predefine-logical.asm %t-l.obj
+# RUN: llvm-objdump -s %t-l.obj | FileCheck %s --check-prefix=LOGICAL
+# RUN: llvm-armasm64 -pd "COUNT SETA 7" %S/Inputs/predefine-reset.asm %t-r.obj
+# RUN: llvm-objdump -s %t-r.obj | FileCheck %s --check-prefix=RESET
+# RUN: not llvm-armasm64 -pd "COUNT SETA" %S/basic.asm %t.obj 2>&1 | FileCheck %s --check-prefix=INVALID
+
+# ARITHMETIC: Contents of section .data:
+# ARITHMETIC-NEXT: 0000 07000000
+# STRING: Contents of section .data:
+# STRING-NEXT: 0000 5859
+# LOGICAL: Contents of section .data:
+# LOGICAL-NEXT: 0000 54
+# RESET: Contents of section .data:
+# RESET-NEXT: 0000 00000000
+# INVALID: error: invalid predefine 'COUNT SETA': expected '<variable> SETA|SETL|SETS <expression>'
