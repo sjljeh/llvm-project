@@ -2158,7 +2158,9 @@ static void recordDefinedSymbols(StringRef Line, StringRef First,
   if (!Line.empty() && !isSpace(Line.front()) &&
       (Second.empty() || Second.equals_insensitive("EQU") ||
        Second.equals_insensitive("PROC") ||
-       Second.equals_insensitive("FUNCTION") || isDataDirective(Second) ||
+       Second.equals_insensitive("FUNCTION") ||
+       Second.equals_insensitive("FIELD") ||
+       Second.equals_insensitive("ROUT") || isDataDirective(Second) ||
        isStorageDirective(Second)))
     DefinedSymbols.insert(unquoteIdentifier(First));
 }
@@ -3287,6 +3289,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
     StringRef AfterFirst = Tail;
     StringRef Second = takeToken(AfterFirst);
 
+    bool FirstWasDefined = DefinedSymbols.contains(unquoteIdentifier(First));
     recordDefinedSymbols(Line, First, Second, Tail, DefinedSymbols);
 
     auto SourceError = [&](const Twine &Message) -> Error {
@@ -3443,7 +3446,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
         StringRef Name = unquoteIdentifier(First);
         if (!isValidVariableName(First) || HasInternalSymbol(Name) ||
             Variables.contains(Name) || Constants.contains(Name) ||
-            DefinedSymbols.contains(Name) || isPredefinedRegisterName(Name))
+            FirstWasDefined || isPredefinedRegisterName(Name))
           return SymbolConflict(Name);
         StorageMapFields[Name] = CurrentStorageMap;
         SymbolSizes[Name] = *Size;
