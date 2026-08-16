@@ -1,0 +1,11 @@
+# RUN: split-file %s %t
+# RUN: cd %t && llvm-armasm64 input/source.asm
+# RUN: llvm-readobj --file-headers %t/source.obj | FileCheck %s
+# RUN: not test -e %t/input/source.obj
+
+# CHECK: Format: COFF-ARM64
+
+#--- input/source.asm
+        AREA |.text|, CODE, READONLY
+        ret
+        END
