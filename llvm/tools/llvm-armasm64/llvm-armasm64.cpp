@@ -6,6 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
@@ -1482,6 +1483,7 @@ class AssemblyControlExpander {
   StringRef ProgName;
   bool NoWarn;
   bool NoEscape;
+  const DenseSet<unsigned> &IgnoredWarnings;
   raw_ostream &DiagOS;
   raw_ostream &OS;
   VariableMap &Variables;
@@ -1519,11 +1521,15 @@ class AssemblyControlExpander {
     return substituteVariables(Expanded, Effective);
   }
 
-  Expected<bool> evaluateCondition(StringRef Expression) {
+  Expected<VariableValue> evaluateExpression(StringRef Expression) {
     VariableMap Effective = effectiveVariables();
     VariableExpressionParser Parser(Expression, Effective, Constants, NoEscape,
                                     &DefinedSymbols);
-    Expected<VariableValue> Value = Parser.parse();
+    return Parser.parse();
+  }
+
+  Expected<bool> evaluateCondition(StringRef Expression) {
+    Expected<VariableValue> Value = evaluateExpression(Expression);
     if (!Value)
       return Value.takeError();
     if (Value->Kind == VariableKind::Logical)
@@ -1533,6 +1539,15 @@ class AssemblyControlExpander {
     return createStringError(inconvertibleErrorCode(),
                              "condition requires a numeric or logical "
                              "expression");
+  }
+
+  void reportWarning(const AssemblySourceLine &Line, unsigned Code,
+                     StringRef Message) {
+    if (NoWarn || IgnoredWarnings.contains(Code))
+      return;
+    WithColor::warning(DiagOS, ProgName)
+        << Line.Filename << ":" << Line.Line << ": A" << Code << ": " << Message
+        << '\n';
   }
 
   Expected<bool> evaluateConditionLine(const AssemblySourceLine &Line) {
@@ -1824,6 +1839,48 @@ class AssemblyControlExpander {
         continue;
       }
 
+      if (First.equals_insensitive("ASSERT")) {
+        SmallVector<StringRef, 2> Operands;
+        splitOperands(Tail, Operands);
+        if (Operands.front().empty())
+          return sourceError(Line, "expected assertion expression");
+        Expected<VariableValue> Value = evaluateExpression(Operands.front());
+        if (!Value)
+          return sourceError(Line, toString(Value.takeError()));
+        if (Value->Kind != VariableKind::Logical)
+          return sourceError(Line,
+                             "A2067: illegal expression type; expected bool");
+        if (!Value->Logical)
+          return sourceError(Line, "A2170: assertion failed");
+        ++LineIndex;
+        continue;
+      }
+
+      if (First.equals_insensitive("INFO") || First == "!") {
+        SmallVector<StringRef, 3> Operands;
+        splitOperands(Tail, Operands);
+        if (Operands.size() != 2 || Operands[0].empty() || Operands[1].empty())
+          return sourceError(Line, "A2003: improper line syntax");
+        Expected<VariableValue> Condition = evaluateExpression(Operands[0]);
+        if (!Condition)
+          return sourceError(Line, toString(Condition.takeError()));
+        if (Condition->Kind != VariableKind::Arithmetic)
+          return sourceError(
+              Line,
+              "A2061: illegal expression type; expected absolute numeric");
+        Expected<VariableValue> Message = evaluateExpression(Operands[1]);
+        if (!Message)
+          return sourceError(Line, toString(Message.takeError()));
+        if (Message->Kind != VariableKind::String)
+          return sourceError(Line,
+                             "A2068: illegal expression type; expected string");
+        if (Condition->Arithmetic)
+          return sourceError(Line, "A2170: assertion failed");
+        reportWarning(Line, 4058, Message->String);
+        ++LineIndex;
+        continue;
+      }
+
       if (First.equals_insensitive("MEXIT")) {
         if (!MacroParameters)
           return sourceError(Line, "MEXIT directive outside a macro");
@@ -1998,20 +2055,23 @@ class AssemblyControlExpander {
       return createStringError(
           Twine(InputFilename) +
           ": unexpected end of file; missing END directive");
-    if (!SawEnd && Kind == InputKind::MainFile && !NoWarn)
+    if (!SawEnd && Kind == InputKind::MainFile && !NoWarn &&
+        !IgnoredWarnings.contains(4045))
       WithColor::warning(DiagOS, ProgName)
-          << InputFilename << ": missing END directive\n";
+          << InputFilename << ": A4045: missing END directive\n";
     return Error::success();
   }
 
 public:
   AssemblyControlExpander(ArrayRef<std::string> IncludeDirs, StringRef ProgName,
-                          bool NoWarn, bool NoEscape, raw_ostream &DiagOS,
-                          raw_ostream &OS, VariableMap &Variables,
+                          bool NoWarn, bool NoEscape,
+                          const DenseSet<unsigned> &IgnoredWarnings,
+                          raw_ostream &DiagOS, raw_ostream &OS,
+                          VariableMap &Variables,
                           StringMap<uint64_t> &Constants)
       : IncludeDirs(IncludeDirs), ProgName(ProgName), NoWarn(NoWarn),
-        NoEscape(NoEscape), DiagOS(DiagOS), OS(OS), Variables(Variables),
-        Constants(Constants) {}
+        NoEscape(NoEscape), IgnoredWarnings(IgnoredWarnings), DiagOS(DiagOS),
+        OS(OS), Variables(Variables), Constants(Constants) {}
 
   Error run(std::unique_ptr<MemoryBuffer> Input) {
     return processFile(std::move(Input), /*IsMainFile=*/true,
@@ -2022,8 +2082,9 @@ public:
 static Expected<std::unique_ptr<MemoryBuffer>>
 expandAssemblyControl(std::unique_ptr<MemoryBuffer> Input,
                       ArrayRef<std::string> IncludeDirs, StringRef ProgName,
-                      bool NoWarn, bool NoEscape, raw_ostream &DiagOS,
-                      ArrayRef<std::string> Predefines) {
+                      bool NoWarn, bool NoEscape,
+                      const DenseSet<unsigned> &IgnoredWarnings,
+                      raw_ostream &DiagOS, ArrayRef<std::string> Predefines) {
   VariableMap Variables;
   StringMap<uint64_t> Constants;
   for (StringRef Predefine : Predefines)
@@ -2036,7 +2097,8 @@ expandAssemblyControl(std::unique_ptr<MemoryBuffer> Input,
   raw_string_ostream OS(Expanded);
   std::string Filename = Input->getBufferIdentifier().str();
   AssemblyControlExpander Expander(IncludeDirs, ProgName, NoWarn, NoEscape,
-                                   DiagOS, OS, Variables, Constants);
+                                   IgnoredWarnings, DiagOS, OS, Variables,
+                                   Constants);
   if (Error Err = Expander.run(std::move(Input)))
     return std::move(Err);
   return MemoryBuffer::getMemBufferCopy(Expanded, Filename);
@@ -2285,6 +2347,20 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
 static int assembleInput(StringRef ProgName, StringRef InputFilename,
                          StringRef OutputFilename, StringRef Machine,
                          const InputArgList &Args, raw_ostream &DiagOS) {
+  DenseSet<unsigned> IgnoredWarnings;
+  for (StringRef ValueList : Args.getAllArgValues(OPT_ignore)) {
+    SmallVector<StringRef, 4> Values;
+    ValueList.split(Values, ',', /*MaxSplit=*/-1, /*KeepEmpty=*/true);
+    for (StringRef Value : Values) {
+      unsigned Number;
+      if (Value.getAsInteger(10, Number)) {
+        WithColor::error(DiagOS, ProgName) << "A2182: warning value expected\n";
+        return 1;
+      }
+      IgnoredWarnings.insert(Number);
+    }
+  }
+
   ErrorOr<std::unique_ptr<MemoryBuffer>> InputOrErr =
       MemoryBuffer::getFileOrSTDIN(InputFilename, /*IsText=*/true);
   if (std::error_code EC = InputOrErr.getError()) {
@@ -2318,7 +2394,7 @@ static int assembleInput(StringRef ProgName, StringRef InputFilename,
   std::vector<std::string> Predefines = Args.getAllArgValues(OPT_predefine);
   Expected<std::unique_ptr<MemoryBuffer>> ExpandedInput = expandAssemblyControl(
       std::move(*InputOrErr), IncludeDirs, ProgName, Args.hasArg(OPT_no_warn),
-      Args.hasArg(OPT_no_escape), DiagOS, Predefines);
+      Args.hasArg(OPT_no_escape), IgnoredWarnings, DiagOS, Predefines);
   if (!ExpandedInput) {
     WithColor::error(DiagOS, ProgName)
         << toString(ExpandedInput.takeError()) << '\n';
