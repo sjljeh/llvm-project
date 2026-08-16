@@ -724,6 +724,29 @@ class VariableExpressionParser {
       Result.Logical = !Result.Logical;
       return true;
     }
+    if (consumeInsensitive(":RCONST:")) {
+      StringRef Name;
+      if (!parseIdentifier(Name))
+        return false;
+      unsigned Register;
+      if (Name.equals_insensitive("fp"))
+        Register = 29;
+      else if (Name.equals_insensitive("lr"))
+        Register = 30;
+      else if (Name.equals_insensitive("sp") ||
+               Name.equals_insensitive("wsp") ||
+               Name.equals_insensitive("xzr") || Name.equals_insensitive("wzr"))
+        Register = 31;
+      else {
+        StringRef Number = Name;
+        if ((!Number.consume_front_insensitive("x") &&
+             !Number.consume_front_insensitive("w")) ||
+            Number.getAsInteger(10, Register) || Register > 30)
+          return fail(":RCONST: requires a general-purpose register");
+      }
+      Result = VariableValue::arithmetic(Register);
+      return true;
+    }
     if (consumeInsensitive(":STR:")) {
       if (!parseUnary(Result))
         return false;
@@ -828,6 +851,7 @@ class VariableExpressionParser {
         {"<<", BinaryOperator::ShiftLeft, 4},
         {">>", BinaryOperator::ShiftRight, 4},
         {"&&", BinaryOperator::LogicalAnd, 1},
+        {"||", BinaryOperator::LogicalOr, 1},
         {"*", BinaryOperator::Multiply, 6},
         {"/", BinaryOperator::Divide, 6},
         {"%", BinaryOperator::Modulo, 6},
@@ -1769,6 +1793,83 @@ static bool isStorageDirective(StringRef Token) {
          Token.equals_insensitive("FILL") || Token == "%";
 }
 
+struct AreaName {
+  StringRef Name;
+  StringRef ComdatSymbol;
+};
+
+static Expected<AreaName> parseAreaName(StringRef Text) {
+  Text = Text.trim();
+  StringRef Name;
+  if (Text.consume_front("|")) {
+    size_t End = Text.find('|');
+    if (End == StringRef::npos)
+      return createStringError(inconvertibleErrorCode(),
+                               "unterminated area name");
+    Name = Text.take_front(End);
+    Text = Text.drop_front(End + 1).trim();
+  } else {
+    auto [UnquotedName, Rest] = Text.split('{');
+    Name = UnquotedName.trim();
+    Text = Rest.empty() ? StringRef() : Text.drop_front(UnquotedName.size());
+  }
+  if (Name.empty())
+    return createStringError(inconvertibleErrorCode(), "expected area name");
+  if (Text.empty())
+    return AreaName{Name, {}};
+  if (!Text.consume_front("{") || !Text.consume_back("}"))
+    return createStringError(inconvertibleErrorCode(),
+                             "invalid COMDAT area name");
+  StringRef ComdatSymbol = unquoteIdentifier(Text.trim());
+  if (ComdatSymbol.empty())
+    return createStringError(inconvertibleErrorCode(),
+                             "expected COMDAT symbol");
+  return AreaName{Name, ComdatSymbol};
+}
+
+static StringRef getARM64RelocationName(uint64_t Type) {
+  switch (Type) {
+  case COFF::IMAGE_REL_ARM64_ABSOLUTE:
+    return "IMAGE_REL_ARM64_ABSOLUTE";
+  case COFF::IMAGE_REL_ARM64_ADDR32:
+    return "IMAGE_REL_ARM64_ADDR32";
+  case COFF::IMAGE_REL_ARM64_ADDR32NB:
+    return "IMAGE_REL_ARM64_ADDR32NB";
+  case COFF::IMAGE_REL_ARM64_BRANCH26:
+    return "IMAGE_REL_ARM64_BRANCH26";
+  case COFF::IMAGE_REL_ARM64_PAGEBASE_REL21:
+    return "IMAGE_REL_ARM64_PAGEBASE_REL21";
+  case COFF::IMAGE_REL_ARM64_REL21:
+    return "IMAGE_REL_ARM64_REL21";
+  case COFF::IMAGE_REL_ARM64_PAGEOFFSET_12A:
+    return "IMAGE_REL_ARM64_PAGEOFFSET_12A";
+  case COFF::IMAGE_REL_ARM64_PAGEOFFSET_12L:
+    return "IMAGE_REL_ARM64_PAGEOFFSET_12L";
+  case COFF::IMAGE_REL_ARM64_SECREL:
+    return "IMAGE_REL_ARM64_SECREL";
+  case COFF::IMAGE_REL_ARM64_SECREL_LOW12A:
+    return "IMAGE_REL_ARM64_SECREL_LOW12A";
+  case COFF::IMAGE_REL_ARM64_SECREL_HIGH12A:
+    return "IMAGE_REL_ARM64_SECREL_HIGH12A";
+  case COFF::IMAGE_REL_ARM64_SECREL_LOW12L:
+    return "IMAGE_REL_ARM64_SECREL_LOW12L";
+  case COFF::IMAGE_REL_ARM64_TOKEN:
+    return "IMAGE_REL_ARM64_TOKEN";
+  case COFF::IMAGE_REL_ARM64_SECTION:
+    return "IMAGE_REL_ARM64_SECTION";
+  case COFF::IMAGE_REL_ARM64_ADDR64:
+    return "IMAGE_REL_ARM64_ADDR64";
+  case COFF::IMAGE_REL_ARM64_BRANCH19:
+    return "IMAGE_REL_ARM64_BRANCH19";
+  case COFF::IMAGE_REL_ARM64_BRANCH14:
+    return "IMAGE_REL_ARM64_BRANCH14";
+  case COFF::IMAGE_REL_ARM64_REL32:
+    return "IMAGE_REL_ARM64_REL32";
+  default:
+    return {};
+  }
+}
+
 static void recordDefinedSymbols(StringRef Line, StringRef First,
                                  StringRef Second, StringRef Tail,
                                  StringSet<> &DefinedSymbols) {
@@ -2347,6 +2448,10 @@ class AssemblyControlExpander {
                                  : "unexpected END before WEND directive");
         if (Kind == InputKind::Macro)
           return sourceError(Line, "END directive inside a macro expansion");
+        if (Kind == InputKind::MainFile) {
+          emitLineMarker(OS, Line.Line, Line.Filename);
+          OS << Line.Text << '\n';
+        }
         SawEnd = true;
         break;
       }
@@ -2562,10 +2667,12 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
   StringMap<uint64_t> AbsoluteConstants;
   VariableMap Variables;
   ExportMap Exports;
+  StringMap<std::pair<std::string, unsigned>> ExportLocations;
   StringSet<> DefinedSymbols;
   StringSet<> DefinedObjectSymbols;
   StringSet<> ExternalSymbols;
   StringSet<> CommonSymbols;
+  StringSet<> SeenAreas;
   RegisterAliasMap RegisterAliases;
   StorageMapField CurrentStorageMap;
   StorageMapFieldMap StorageMapFields;
@@ -2577,6 +2684,15 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
   };
   SmallVector<PendingWeakExternal, 4> PendingWeakExternals;
   SmallVector<std::pair<size_t, size_t>, 16> PendingSymbolUses;
+  struct PreviousDataDefinition {
+    size_t ExpressionOffset;
+    size_t ExpressionLength;
+    unsigned Size;
+    std::string Expression;
+    bool IsSymbolic;
+  };
+  std::optional<PreviousDataDefinition> PreviousData;
+  SmallVector<std::pair<size_t, size_t>, 4> RelocatedExpressions;
   struct LiteralPoolEntry {
     std::string Label;
     std::string Expression;
@@ -2623,7 +2739,10 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
   std::string CurrentFilename = Input->getBufferIdentifier().str();
   unsigned CurrentLine = 0;
   unsigned PCSymbolCount = 0;
+  bool CurrentAreaIsCode = false;
   bool CurrentAreaIsNoInit = false;
+  std::string CurrentAreaName;
+  std::optional<std::string> ActiveProcedureArea;
 
   while (!Remaining.empty()) {
     auto [Line, Rest] = Remaining.split('\n');
@@ -2686,6 +2805,10 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
         continue;
       }
     }
+
+    bool IsRelocDirective = First.equals_insensitive("RELOC");
+    if (!First.empty() && !IsRelocDirective)
+      PreviousData.reset();
 
     std::optional<VariableKind> DeclarationKind;
     if (First.equals_insensitive("GBLA"))
@@ -2828,6 +2951,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
       StringRef Name = Spec->Name;
       if (HasInternalSymbol(Name))
         return SymbolConflict(Name);
+      ExportLocations[Name] = {CurrentFilename, CurrentLine};
       OS << ".def " << Name << "; .scl 2; .type "
          << (Spec->Type == ExportType::Function ? 32 : 0) << "; .endef; .globl "
          << Name;
@@ -2919,6 +3043,37 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
         OS << ".globl " << Name;
       else
         OS << ".armasm64_common " << Name << ", " << Size;
+    } else if (First.equals_insensitive("RELOC")) {
+      SmallVector<StringRef, 2> Operands;
+      splitOperands(Tail, Operands);
+      if (Operands.empty() || Operands.size() > 2 || Operands[0].empty() ||
+          (Operands.size() == 2 && Operands[1].empty()))
+        return SourceError("A2003: improper line syntax");
+      if (!PreviousData)
+        return SourceError("A2203: RELOC directive must follow an instruction "
+                           "or data definition directive");
+
+      Expected<uint64_t> Type = EvaluateAbsolute(Operands[0]);
+      if (!Type)
+        return SourceError(toString(Type.takeError()));
+      StringRef RelocationName = getARM64RelocationName(*Type);
+      if (RelocationName.empty())
+        return SourceError("A2204: Unknown relocation type " + Twine(*Type));
+
+      std::string Expression;
+      if (Operands.size() == 2) {
+        Expression = normalizeSymbolicExpression(Operands[1], Constants);
+      } else if (PreviousData->IsSymbolic) {
+        Expression = PreviousData->Expression;
+      } else {
+        return SourceError("A2206: Must specify a relocation target");
+      }
+      if (PreviousData->IsSymbolic)
+        RelocatedExpressions.emplace_back(PreviousData->ExpressionOffset,
+                                          PreviousData->ExpressionLength);
+      OS << ".reloc . - " << PreviousData->Size << ", " << RelocationName
+         << ", " << Expression;
+      PreviousData.reset();
     } else if (First.equals_insensitive("LTORG")) {
       if (!Tail.empty())
         return SourceError("A2003: improper line syntax");
@@ -2927,27 +3082,54 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
       EmitLiteralPool();
       SmallVector<StringRef, 8> Attributes;
       Tail.split(Attributes, ',', /*MaxSplit=*/-1, /*KeepEmpty=*/false);
-      StringRef Name = unquoteIdentifier(Attributes.front());
+      if (Attributes.empty())
+        return SourceError("A2003: improper line syntax");
+      Expected<AreaName> Area = parseAreaName(Attributes.front());
+      if (!Area)
+        return SourceError(toString(Area.takeError()));
       bool IsCode = false;
       bool IsReadOnly = false;
       bool IsNoInit = false;
+      bool IsPData = false;
       unsigned Alignment = 3;
+      bool HasExplicitAlignment = false;
+      std::optional<AreaName> AssociativeArea;
       for (StringRef Attribute : ArrayRef(Attributes).drop_front()) {
         Attribute = Attribute.trim();
         IsCode |= Attribute.equals_insensitive("CODE");
         IsReadOnly |= Attribute.equals_insensitive("READONLY");
         IsNoInit |= Attribute.equals_insensitive("NOINIT");
-        if (Attribute.consume_front_insensitive("ALIGN="))
+        IsPData |= Attribute.equals_insensitive("PDATA");
+        if (Attribute.consume_front_insensitive("ALIGN=")) {
+          HasExplicitAlignment = true;
           (void)Attribute.getAsInteger(0, Alignment);
+        } else if (Attribute.consume_front_insensitive("ASSOC=")) {
+          Expected<AreaName> Associated = parseAreaName(Attribute);
+          if (!Associated)
+            return SourceError(toString(Associated.takeError()));
+          AssociativeArea = *Associated;
+        }
       }
 
-      StringRef Flags = IsCode       ? "xr"
-                        : IsNoInit   ? "bw"
-                        : IsReadOnly ? "dr"
-                                     : "dw";
+      StringRef Flags = IsCode                  ? "xr"
+                        : IsNoInit              ? "bw"
+                        : IsReadOnly || IsPData ? "dr"
+                                                : "dw";
+      CurrentAreaIsCode = IsCode;
       CurrentAreaIsNoInit = IsNoInit;
-      OS << ".section \"" << Name << "\",\"" << Flags << "\""
-         << "; .p2align " << Alignment;
+      CurrentAreaName = Area->Name.str();
+      OS << ".section \"" << Area->Name << "\",\"" << Flags << "\"";
+      if (AssociativeArea) {
+        if (AssociativeArea->ComdatSymbol.empty())
+          return SourceError("A2003: improper line syntax");
+        OS << ",associative,\"" << AssociativeArea->ComdatSymbol << '\"';
+      } else if (!Area->ComdatSymbol.empty()) {
+        OS << ",one_only,\"" << Area->ComdatSymbol << '\"';
+      }
+      std::string AreaKey =
+          (Twine(Area->Name) + "{" + Area->ComdatSymbol + "}").str();
+      if (HasExplicitAlignment || SeenAreas.insert(AreaKey).second)
+        OS << "; .p2align " << Alignment;
     } else if (Second.equals_insensitive("EQU")) {
       StringRef Name = unquoteIdentifier(First);
       if (ConflictsWithObjectDefinition(Name))
@@ -2968,10 +3150,14 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
          << rewriteSymbols(AfterFirst, Constants);
     } else if (Second.equals_insensitive("PROC") ||
                Second.equals_insensitive("FUNCTION")) {
+      if (ActiveProcedureArea)
+        return SourceError("A2092: improper program syntax; missing ENDP "
+                           "directive or nested function definition");
       StringRef Name = unquoteIdentifier(First);
       if (ConflictsWithObjectDefinition(Name))
         return SymbolConflict(Name);
       DefinedObjectSymbols.insert(Name);
+      ActiveProcedureArea = CurrentAreaName;
       if (!Exports.contains(Name))
         OS << ".def " << Name << "; .scl 6; .endef; ";
       OS << Name << ':';
@@ -2979,6 +3165,16 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
                First.equals_insensitive("ENDFUNC") ||
                Second.equals_insensitive("ENDP") ||
                Second.equals_insensitive("ENDFUNC")) {
+      StringRef EndTail = First.equals_insensitive("ENDP") ||
+                                  First.equals_insensitive("ENDFUNC")
+                              ? Tail
+                              : AfterFirst;
+      if (!EndTail.empty())
+        return SourceError("A2003: improper line syntax: " + EndTail);
+      if (!ActiveProcedureArea)
+        return SourceError(
+            "A2093: improper program syntax; unexpected ENDP directive");
+      ActiveProcedureArea.reset();
     } else if (IsStorageLine) {
       bool HasLabel = !isStorageDirective(First);
       StringRef Directive = HasLabel ? Second : First;
@@ -3066,6 +3262,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
                          Directive.equals_insensitive("DCFSU") ||
                          Directive.equals_insensitive("DCFDU");
       unsigned Alignment = IsByte ? 1 : IsWord ? 2 : 4;
+      unsigned DataSize = IsByte ? 1 : IsWord ? 2 : IsLong ? 4 : 8;
       if (!IsUnaligned && Alignment != 1)
         OS << ".balign " << Alignment << "; ";
 
@@ -3091,6 +3288,16 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
       for (auto [Index, Operand] : llvm::enumerate(Operands)) {
         if (Index)
           OS << "; ";
+        auto EmitValue = [&](StringRef Prefix, const Twine &Expression,
+                             bool IsSymbolic) {
+          std::string ExpressionString = Expression.str();
+          OS << Prefix;
+          size_t ExpressionOffset = OS.tell();
+          OS << ExpressionString;
+          PreviousData =
+              PreviousDataDefinition{ExpressionOffset, ExpressionString.size(),
+                                     DataSize, ExpressionString, IsSymbolic};
+        };
 
         if (IsSingle || IsDouble) {
           APFloat Float(IsSingle ? APFloat::IEEEsingle()
@@ -3120,17 +3327,19 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
                     ? "A2022: Floating point value can not be represented in "
                       "single precision"
                     : "A2220: Floating point value out of range");
-          OS << (IsSingle ? ".long " : ".quad ")
-             << Float.bitcastToAPInt().getZExtValue();
+          EmitValue(IsSingle ? ".long " : ".quad ",
+                    Twine(Float.bitcastToAPInt().getZExtValue()),
+                    /*IsSymbolic=*/false);
           continue;
         }
 
         if (UsesPC && Operand.contains(PCSymbol)) {
-          OS << (IsByte   ? ".byte "
-                 : IsWord ? ".short "
-                 : IsLong ? ".long "
-                          : ".quad ")
-             << normalizeSymbolicExpression(Operand, Constants);
+          EmitValue(IsByte   ? ".byte "
+                    : IsWord ? ".short "
+                    : IsLong ? ".long "
+                             : ".quad ",
+                    normalizeSymbolicExpression(Operand, Constants),
+                    /*IsSymbolic=*/true);
           continue;
         }
 
@@ -3147,11 +3356,12 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
           if (IsWord)
             return SourceError(
                 "A2061: illegal expression type; expected absolute numeric");
-          OS << (IsByte   ? ".byte "
-                 : IsWord ? ".short "
-                 : IsLong ? ".long "
-                          : ".quad ")
-             << normalizeSymbolicExpression(Operand, Constants);
+          EmitValue(IsByte   ? ".byte "
+                    : IsWord ? ".short "
+                    : IsLong ? ".long "
+                             : ".quad ",
+                    normalizeSymbolicExpression(Operand, Constants),
+                    /*IsSymbolic=*/true);
           continue;
         }
         if (Value->Kind == VariableKind::String) {
@@ -3165,6 +3375,8 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
                 OS << ", ";
               OS << static_cast<unsigned>(static_cast<unsigned char>(Byte));
             }
+            PreviousData = PreviousDataDefinition{0, 0, 1, /*Expression=*/{},
+                                                  /*IsSymbolic=*/false};
           }
           continue;
         }
@@ -3184,28 +3396,45 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
           return SourceError("A2209: Immediate value " +
                              Twine(static_cast<int64_t>(Value->Arithmetic)) +
                              " out of range");
-        OS << (IsByte   ? ".byte "
-               : IsWord ? ".short "
-               : IsLong ? ".long "
-                        : ".quad ")
-           << (static_cast<int64_t>(Value->Arithmetic) < 0
-                   ? Twine(static_cast<int64_t>(Value->Arithmetic))
-                   : Twine(Value->Arithmetic));
+        EmitValue(IsByte   ? ".byte "
+                  : IsWord ? ".short "
+                  : IsLong ? ".long "
+                           : ".quad ",
+                  static_cast<int64_t>(Value->Arithmetic) < 0
+                      ? Twine(static_cast<int64_t>(Value->Arithmetic))
+                      : Twine(Value->Arithmetic),
+                  /*IsSymbolic=*/false);
       }
+    } else if (First.equals_insensitive("ROUT") ||
+               Second.equals_insensitive("ROUT")) {
+      StringRef RoutTail = First.equals_insensitive("ROUT") ? Tail : AfterFirst;
+      if (!RoutTail.empty())
+        return SourceError("A2003: improper line syntax");
     } else if (First.equals_insensitive("ALIGN")) {
       OS << ".balign " << Tail;
     } else if (First.equals_insensitive("END")) {
+      if (ActiveProcedureArea)
+        return SourceError("A2057: missing ENDP directive in section " +
+                           *ActiveProcedureArea);
       EmitLiteralPool();
     } else {
-      bool IsLabel = !Line.empty() && !isSpace(Line.front()) && Second.empty();
-      if (IsLabel) {
+      bool HasLabel =
+          !Line.empty() && !isSpace(Line.front()) && !First.starts_with("#");
+      if (HasLabel) {
         StringRef Name = unquoteIdentifier(First);
         if (ConflictsWithObjectDefinition(Name))
           return SymbolConflict(Name);
         DefinedObjectSymbols.insert(Name);
         if (!Exports.contains(Name))
-          OS << ".def " << Name << "; .scl 6; .endef; ";
+          OS << ".def " << Name << "; .scl " << (CurrentAreaIsCode ? 6 : 3)
+             << "; .endef; ";
         OS << Name << ':';
+        if (!Second.empty()) {
+          OS << "; ";
+          std::string Rewritten = rewriteSymbols(Tail, Constants);
+          PendingSymbolUses.emplace_back(OS.tell(), Rewritten.size());
+          OS << Rewritten;
+        }
       } else {
         bool RewroteLiteralLoad = false;
         if (First.equals_insensitive("LDR")) {
@@ -3284,13 +3513,21 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
 
   EmitLiteralPool();
 
+  if (ActiveProcedureArea)
+    return createStringError(inconvertibleErrorCode(),
+                             Twine(CurrentFilename) + ":" + Twine(CurrentLine) +
+                                 ": A2057: missing ENDP directive in section " +
+                                 *ActiveProcedureArea);
+
   for (const auto &Export : Exports)
     if (!DefinedObjectSymbols.contains(Export.first()) &&
-        !CommonSymbols.contains(Export.first()))
+        !CommonSymbols.contains(Export.first())) {
+      const auto &Location = ExportLocations.find(Export.first())->second;
       return createStringError(
           inconvertibleErrorCode(),
-          Twine(CurrentFilename) + ":" + Twine(CurrentLine) +
+          Twine(Location.first) + ":" + Twine(Location.second) +
               ": A2023: undefined symbol: " + Export.first());
+    }
   OS.flush();
   for (const PendingWeakExternal &Weak : PendingWeakExternals)
     if (!Weak.Conditional || containsIdentifier(Translated, Weak.Name))
@@ -3298,6 +3535,11 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
          << ", " << Weak.Search << '\n';
 
   OS.flush();
+  for (auto [Offset, Length] : llvm::reverse(RelocatedExpressions)) {
+    std::string Zero(Length, ' ');
+    Zero.front() = '0';
+    Translated.replace(Offset, Length, Zero);
+  }
   for (size_t I = PendingSymbolUses.size(); I != 0; --I) {
     auto [Offset, Length] = PendingSymbolUses[I - 1];
     std::string Rewritten = rewriteRegisterAliases(
