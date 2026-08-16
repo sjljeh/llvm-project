@@ -1,0 +1,57 @@
+# RUN: split-file %s %t
+# RUN: not llvm-armasm64 %t/unexpected-endp.asm %t.obj 2>&1 | FileCheck %s --check-prefix=UNEXPECTED-ENDP
+# RUN: not llvm-armasm64 %t/nested-proc.asm %t.obj 2>&1 | FileCheck %s --check-prefix=NESTED-PROC
+# RUN: not llvm-armasm64 %t/missing-endp.asm %t.obj 2>&1 | FileCheck %s --check-prefix=MISSING-ENDP
+# RUN: not llvm-armasm64 %t/endp-operands.asm %t.obj 2>&1 | FileCheck %s --check-prefix=ENDP-OPERANDS
+# RUN: not llvm-armasm64 %t/reloc-position.asm %t.obj 2>&1 | FileCheck %s --check-prefix=RELOC-POSITION
+# RUN: not llvm-armasm64 %t/reloc-type.asm %t.obj 2>&1 | FileCheck %s --check-prefix=RELOC-TYPE
+# RUN: not llvm-armasm64 %t/reloc-target.asm %t.obj 2>&1 | FileCheck %s --check-prefix=RELOC-TARGET
+
+# UNEXPECTED-ENDP: unexpected-endp.asm:2: A2093: improper program syntax; unexpected ENDP directive
+# NESTED-PROC: nested-proc.asm:3: A2092: improper program syntax; missing ENDP directive or nested function definition
+# MISSING-ENDP: missing-endp.asm:4: A2057: missing ENDP directive in section .text
+# ENDP-OPERANDS: endp-operands.asm:4: A2003: improper line syntax: junk
+# RELOC-POSITION: reloc-position.asm:2: A2203: RELOC directive must follow an instruction or data definition directive
+# RELOC-TYPE: reloc-type.asm:3: A2204: Unknown relocation type 99
+# RELOC-TARGET: reloc-target.asm:3: A2206: Must specify a relocation target
+
+#--- unexpected-endp.asm
+        AREA |.text|, CODE, READONLY
+        ENDP
+        END
+
+#--- nested-proc.asm
+        AREA |.text|, CODE, READONLY
+first   PROC
+second  PROC
+        END
+
+#--- missing-endp.asm
+        AREA |.text|, CODE, READONLY
+first   PROC
+        ret
+        END
+
+#--- endp-operands.asm
+        AREA |.text|, CODE, READONLY
+first   PROC
+        ret
+        ENDP junk
+
+#--- reloc-position.asm
+        AREA |.pdata|, PDATA
+        RELOC 2
+        END
+
+#--- reloc-type.asm
+        AREA |.pdata|, PDATA
+        DCD target
+        RELOC 99
+target  DCD 0
+        END
+
+#--- reloc-target.asm
+        AREA |.pdata|, PDATA
+        DCD 0
+        RELOC 2
+        END
