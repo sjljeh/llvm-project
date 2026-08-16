@@ -2673,6 +2673,11 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
   StringSet<> ExternalSymbols;
   StringSet<> CommonSymbols;
   StringSet<> SeenAreas;
+  StringMap<std::string> AreaBaseSymbols;
+  StringMap<uint64_t> AreaAlignments;
+  StringMap<bool> AreaCodeAlignments;
+  unsigned AreaBaseSymbolCount = 0;
+  unsigned AlignSymbolCount = 0;
   RegisterAliasMap RegisterAliases;
   StorageMapField CurrentStorageMap;
   StorageMapFieldMap StorageMapFields;
@@ -2741,7 +2746,10 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
   unsigned PCSymbolCount = 0;
   bool CurrentAreaIsCode = false;
   bool CurrentAreaIsNoInit = false;
+  bool CurrentAreaUsesCodeAlignment = false;
+  uint64_t CurrentAreaAlignment = 8;
   std::string CurrentAreaName;
+  std::string CurrentAreaBaseSymbol;
   std::optional<std::string> ActiveProcedureArea;
 
   while (!Remaining.empty()) {
@@ -3091,23 +3099,49 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
       bool IsReadOnly = false;
       bool IsNoInit = false;
       bool IsPData = false;
+      bool UsesCodeAlignment = false;
       unsigned Alignment = 3;
       bool HasExplicitAlignment = false;
       std::optional<AreaName> AssociativeArea;
       for (StringRef Attribute : ArrayRef(Attributes).drop_front()) {
         Attribute = Attribute.trim();
-        IsCode |= Attribute.equals_insensitive("CODE");
-        IsReadOnly |= Attribute.equals_insensitive("READONLY");
-        IsNoInit |= Attribute.equals_insensitive("NOINIT");
-        IsPData |= Attribute.equals_insensitive("PDATA");
-        if (Attribute.consume_front_insensitive("ALIGN=")) {
+        if (Attribute.equals_insensitive("CODE")) {
+          IsCode = true;
+        } else if (Attribute.equals_insensitive("DATA") ||
+                   Attribute.equals_insensitive("READWRITE")) {
+          // These are the defaults for writable data sections.
+        } else if (Attribute.equals_insensitive("READONLY")) {
+          IsReadOnly = true;
+        } else if (Attribute.equals_insensitive("NOINIT")) {
+          IsNoInit = true;
+        } else if (Attribute.equals_insensitive("PDATA")) {
+          IsPData = true;
+        } else if (Attribute.equals_insensitive("CODEALIGN")) {
+          UsesCodeAlignment = true;
+        } else if (Attribute.equals_insensitive("COMDEF") ||
+                   Attribute.equals_insensitive("COMMON")) {
+          if (!NoWarn && !IgnoredWarnings.contains(4039))
+            WithColor::warning(DiagOS, ProgName)
+                << CurrentFilename << ":" << CurrentLine
+                << ": A4039: " << Attribute
+                << " attribute does not pertain to a relocatable module; "
+                   "ignored\n";
+        } else if (Attribute.consume_front_insensitive("ALIGN=")) {
           HasExplicitAlignment = true;
-          (void)Attribute.getAsInteger(0, Alignment);
+          Expected<uint64_t> Value = EvaluateAbsolute(Attribute);
+          if (!Value)
+            return SourceError(toString(Value.takeError()));
+          if (*Value > 31)
+            return SourceError("A2209: Immediate value " + Attribute +
+                               " out of range");
+          Alignment = *Value;
         } else if (Attribute.consume_front_insensitive("ASSOC=")) {
           Expected<AreaName> Associated = parseAreaName(Attribute);
           if (!Associated)
             return SourceError(toString(Associated.takeError()));
           AssociativeArea = *Associated;
+        } else {
+          return SourceError("A2041: unknown section flag: " + Attribute);
         }
       }
 
@@ -3128,8 +3162,23 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
       }
       std::string AreaKey =
           (Twine(Area->Name) + "{" + Area->ComdatSymbol + "}").str();
-      if (HasExplicitAlignment || SeenAreas.insert(AreaKey).second)
+      bool IsNewArea = SeenAreas.insert(AreaKey).second;
+      if (IsNewArea) {
+        AreaAlignments[AreaKey] = 1ULL << Alignment;
+        AreaCodeAlignments[AreaKey] = UsesCodeAlignment;
+        AreaBaseSymbols[AreaKey] =
+            (Twine(".Larmasm64_area_") + Twine(AreaBaseSymbolCount++)).str();
+      }
+      CurrentAreaAlignment = HasExplicitAlignment
+                                 ? 1ULL << Alignment
+                                 : AreaAlignments.lookup(AreaKey);
+      CurrentAreaUsesCodeAlignment =
+          UsesCodeAlignment || AreaCodeAlignments.lookup(AreaKey);
+      CurrentAreaBaseSymbol = AreaBaseSymbols.lookup(AreaKey);
+      if (HasExplicitAlignment || IsNewArea)
         OS << "; .p2align " << Alignment;
+      if (IsNewArea)
+        OS << "; " << CurrentAreaBaseSymbol << ':';
     } else if (Second.equals_insensitive("EQU")) {
       StringRef Name = unquoteIdentifier(First);
       if (ConflictsWithObjectDefinition(Name))
@@ -3411,7 +3460,74 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
       if (!RoutTail.empty())
         return SourceError("A2003: improper line syntax");
     } else if (First.equals_insensitive("ALIGN")) {
-      OS << ".balign " << Tail;
+      SmallVector<StringRef, 4> Operands;
+      splitOperands(Tail, Operands);
+      if (Operands.size() > 4 ||
+          llvm::any_of(ArrayRef(Operands).drop_front(),
+                       [](StringRef Operand) { return Operand.empty(); }))
+        return SourceError("A2003: improper line syntax");
+
+      uint64_t Alignment = 4;
+      uint64_t Offset = 0;
+      uint64_t Fill = 0;
+      uint64_t FillSize = 1;
+      bool HasFill = Operands.size() >= 3;
+      if (!Operands.front().empty()) {
+        Expected<uint64_t> Value = EvaluateAbsolute(Operands[0]);
+        if (!Value)
+          return SourceError(toString(Value.takeError()));
+        Alignment = *Value;
+      }
+      if (!isPowerOf2_64(Alignment) || Alignment > (1ULL << 31))
+        return SourceError("A2209: Immediate value " + Twine(Alignment) +
+                           " out of range");
+      if (Operands.size() >= 2) {
+        Expected<uint64_t> Value = EvaluateAbsolute(Operands[1]);
+        if (!Value)
+          return SourceError(toString(Value.takeError()));
+        Offset = *Value;
+      }
+      if (HasFill) {
+        Expected<uint64_t> Value = EvaluateAbsolute(Operands[2]);
+        if (!Value)
+          return SourceError(toString(Value.takeError()));
+        Fill = *Value;
+        FillSize = CurrentAreaIsCode ? 4 : 1;
+      } else if (CurrentAreaIsCode && CurrentAreaUsesCodeAlignment) {
+        Fill = 0xd503201f;
+        FillSize = 4;
+      }
+      if (Operands.size() == 4) {
+        Expected<uint64_t> Value = EvaluateAbsolute(Operands[3]);
+        if (!Value)
+          return SourceError(toString(Value.takeError()));
+        FillSize = *Value;
+      }
+      if (FillSize != 1 && FillSize != 2 && FillSize != 4)
+        return SourceError("A2197: value size must be 1, 2, or 4");
+      if (CurrentAreaBaseSymbol.empty())
+        return SourceError("A2088: no current AREA");
+      if (Alignment > CurrentAreaAlignment && !NoWarn &&
+          !IgnoredWarnings.contains(4228))
+        WithColor::warning(DiagOS, ProgName)
+            << CurrentFilename << ":" << CurrentLine
+            << ": A4228: Alignment value exceeds AREA alignment; alignment "
+               "not guaranteed\n";
+
+      std::string Here =
+          (Twine(".Larmasm64_align_") + Twine(AlignSymbolCount++)).str();
+      std::string Padding =
+          (Twine("((") + Twine(Offset) + " - (" + Here + " - " +
+           CurrentAreaBaseSymbol + ")) & (" + Twine(Alignment) + " - 1))")
+              .str();
+      OS << Here << ":\n";
+      if (FillSize != 1)
+        OS << ".if ((" << Padding << " % " << FillSize << ") != 0)\n"
+           << ".error \"A2226: The given alignment pad doesn't evenly divide "
+              "the number of padding bytes\"\n"
+           << ".endif\n";
+      OS << ".fill (" << Padding << " / " << FillSize << "), " << FillSize
+         << ", " << Fill;
     } else if (First.equals_insensitive("END")) {
       if (ActiveProcedureArea)
         return SourceError("A2057: missing ENDP directive in section " +
