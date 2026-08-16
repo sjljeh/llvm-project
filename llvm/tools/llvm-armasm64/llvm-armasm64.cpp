@@ -437,7 +437,12 @@ using RegisterRelativeMap = StringMap<VariableValue>;
 
 static constexpr uint64_t ARMAsmVersion = 145136248;
 
-static std::optional<VariableValue> getBuiltinVariable(StringRef Name) {
+static std::optional<VariableValue>
+getBuiltinVariable(StringRef Name, const VariableMap *Context = nullptr) {
+  if (Context)
+    for (const auto &Variable : *Context)
+      if (Variable.getKey().equals_insensitive(Name))
+        return Variable.getValue();
   if (Name.equals_insensitive("TRUE"))
     return VariableValue::logical(true);
   if (Name.equals_insensitive("FALSE"))
@@ -448,11 +453,21 @@ static std::optional<VariableValue> getBuiltinVariable(StringRef Name) {
     return VariableValue::string("\"-arch 4t\"");
   if (Name.equals_insensitive("ARMASM_VERSION"))
     return VariableValue::arithmetic(ARMAsmVersion);
+  if (Name.equals_insensitive("CODESIZE") ||
+      Name.equals_insensitive("CONFIG"))
+    return VariableValue::arithmetic(32);
+  if (Name.equals_insensitive("ENDIAN"))
+    return VariableValue::string("little");
+  if (Name.equals_insensitive("FPU"))
+    return VariableValue::string("vfpv3");
+  if (Name.equals_insensitive("OPT"))
+    return VariableValue::arithmetic(1);
   return std::nullopt;
 }
 
-static bool isBuiltinVariable(StringRef Name) {
-  return getBuiltinVariable(Name).has_value();
+static bool isBuiltinVariable(StringRef Name,
+                              const VariableMap *Context = nullptr) {
+  return getBuiltinVariable(Name, Context).has_value();
 }
 
 class VariableExpressionParser {
@@ -494,6 +509,7 @@ class VariableExpressionParser {
   const StringSet<> *DefinedSymbols;
   const RegisterRelativeMap *RegisterRelativeValues;
   const StringMap<uint64_t> *SymbolSizes;
+  const VariableMap *BuiltinVariables;
   bool NoEscape;
   size_t Position = 0;
   std::string ErrorMessage;
@@ -703,7 +719,8 @@ class VariableExpressionParser {
         return false;
       if (Name.equals_insensitive("PC"))
         return fail("{PC} cannot be used in an assembly-time expression");
-      if (std::optional<VariableValue> Value = getBuiltinVariable(Name)) {
+      if (std::optional<VariableValue> Value =
+              getBuiltinVariable(Name, BuiltinVariables)) {
         Result = std::move(*Value);
         return true;
       }
@@ -878,7 +895,8 @@ class VariableExpressionParser {
           return false;
         if (Name.equals_insensitive("PC"))
           return fail("{PC} cannot be used in an assembly-time expression");
-        Result = VariableValue::logical(isBuiltinVariable(Name));
+        Result = VariableValue::logical(
+            isBuiltinVariable(Name, BuiltinVariables));
         return true;
       }
       StringRef Name;
@@ -1159,11 +1177,13 @@ public:
       const StringMap<uint64_t> &Constants, bool NoEscape,
       const StringSet<> *DefinedSymbols = nullptr,
       const RegisterRelativeMap *RegisterRelativeValues = nullptr,
-      const StringMap<uint64_t> *SymbolSizes = nullptr)
+      const StringMap<uint64_t> *SymbolSizes = nullptr,
+      const VariableMap *BuiltinVariables = nullptr)
       : Text(Text), Variables(Variables), Constants(Constants),
         DefinedSymbols(DefinedSymbols),
         RegisterRelativeValues(RegisterRelativeValues),
-        SymbolSizes(SymbolSizes), NoEscape(NoEscape) {}
+        SymbolSizes(SymbolSizes), BuiltinVariables(BuiltinVariables),
+        NoEscape(NoEscape) {}
 
   Expected<VariableValue> parse() {
     VariableValue Result;
@@ -1291,7 +1311,8 @@ static std::string substituteVariables(StringRef Line,
 static std::string rewriteVariables(StringRef Text,
                                     const VariableMap &Variables, bool NoEscape,
                                     StringRef PCSymbol = {},
-                                    bool *UsesPC = nullptr) {
+                                    bool *UsesPC = nullptr,
+                                    const VariableMap *BuiltinVariables = nullptr) {
   std::string Rewritten;
   raw_string_ostream OS(Rewritten);
   auto EmitVariable = [&](const VariableValue &Variable) {
@@ -1335,7 +1356,8 @@ static std::string rewriteVariables(StringRef Text,
           I = End + 1;
           continue;
         }
-        if (std::optional<VariableValue> Variable = getBuiltinVariable(Name)) {
+        if (std::optional<VariableValue> Variable =
+                getBuiltinVariable(Name, BuiltinVariables)) {
           EmitVariable(*Variable);
           I = End + 1;
           continue;
@@ -1404,9 +1426,10 @@ static Error declareVariable(StringRef Name, VariableKind Kind,
 static Error assignVariable(StringRef Name, StringRef Directive,
                             StringRef Expression, bool ImplicitDeclaration,
                             VariableMap &Variables,
-                            const StringMap<uint64_t> &Constants, bool NoEscape,
-                            const VariableMap *ExpressionVariables = nullptr,
-                            const StringSet<> *DefinedSymbols = nullptr) {
+                             const StringMap<uint64_t> &Constants, bool NoEscape,
+                             const VariableMap *ExpressionVariables = nullptr,
+                             const StringSet<> *DefinedSymbols = nullptr,
+                             const VariableMap *BuiltinVariables = nullptr) {
   VariableKind Kind =
       Directive.equals_insensitive("SETA")   ? VariableKind::Arithmetic
       : Directive.equals_insensitive("SETL") ? VariableKind::Logical
@@ -1429,7 +1452,9 @@ static Error assignVariable(StringRef Name, StringRef Directive,
 
   VariableExpressionParser Parser(
       Expression, ExpressionVariables ? *ExpressionVariables : Variables,
-      Constants, NoEscape, DefinedSymbols);
+      Constants, NoEscape, DefinedSymbols,
+      /*RegisterRelativeValues=*/nullptr, /*SymbolSizes=*/nullptr,
+      BuiltinVariables);
   Expected<VariableValue> Value = Parser.parse();
   if (!Value)
     return Value.takeError();
@@ -2288,6 +2313,8 @@ class AssemblyControlExpander {
   StringMap<uint64_t> &Constants;
   StringMap<MacroDefinition> Macros;
   StringSet<> DefinedSymbols;
+  VariableMap BuiltinVariables;
+  uint64_t StorageMapOffset = 0;
   VariableMap *LocalVariables = nullptr;
   const StringMap<std::string> *MacroParameters = nullptr;
 
@@ -2322,7 +2349,9 @@ class AssemblyControlExpander {
   Expected<VariableValue> evaluateExpression(StringRef Expression) {
     VariableMap Effective = effectiveVariables();
     VariableExpressionParser Parser(Expression, Effective, Constants, NoEscape,
-                                    &DefinedSymbols);
+                                    &DefinedSymbols,
+                                    /*RegisterRelativeValues=*/nullptr,
+                                    /*SymbolSizes=*/nullptr, &BuiltinVariables);
     return Parser.parse();
   }
 
@@ -2485,7 +2514,8 @@ class AssemblyControlExpander {
     VariableMap Effective = effectiveVariables();
     return assignVariable(Name, Directive, Expression,
                           /*ImplicitDeclaration=*/false, Target, Constants,
-                          NoEscape, &Effective, &DefinedSymbols);
+                          NoEscape, &Effective, &DefinedSymbols,
+                          &BuiltinVariables);
   }
 
   Error processFile(std::unique_ptr<MemoryBuffer> Input, bool IsMainFile,
@@ -2518,6 +2548,8 @@ class AssemblyControlExpander {
     size_t LineIndex = 0;
     while (LineIndex != Lines.size()) {
       const AssemblySourceLine &Line = Lines[LineIndex];
+      BuiltinVariables["INPUTFILE"] = VariableValue::string(Line.Filename);
+      BuiltinVariables["LINENUM"] = VariableValue::arithmetic(Line.Line);
       bool Active = Controls.empty() || Controls.back().Active;
       std::string SubstitutedLine = prepareLine(Line);
       StringRef Statement = stripComment(SubstitutedLine).trim();
@@ -2788,6 +2820,43 @@ class AssemblyControlExpander {
         continue;
       }
 
+      if (First.equals_insensitive("AREA")) {
+        SmallVector<StringRef, 8> Attributes;
+        splitOperands(Tail, Attributes);
+        if (!Attributes.empty()) {
+          Expected<AreaName> Area = parseAreaName(Attributes.front());
+          if (Area)
+            BuiltinVariables["AREANAME"] =
+                VariableValue::string(Area->Name.str());
+          else
+            consumeError(Area.takeError());
+        }
+      } else if (First.equals_insensitive("MAP") || First == "^") {
+        SmallVector<StringRef, 2> Operands;
+        splitOperands(Tail, Operands);
+        Expected<VariableValue> Value = evaluateExpression(Operands.front());
+        if (Value && Value->Kind == VariableKind::Arithmetic) {
+          StorageMapOffset = Value->Arithmetic;
+          BuiltinVariables["VAR"] =
+              VariableValue::arithmetic(StorageMapOffset);
+        } else if (!Value) {
+          consumeError(Value.takeError());
+        }
+      } else if (First.equals_insensitive("FIELD") || First == "#" ||
+                 Second.equals_insensitive("FIELD") || Second == "#") {
+        StringRef Expression = First.equals_insensitive("FIELD") || First == "#"
+                                   ? Tail
+                                   : AfterFirst;
+        Expected<VariableValue> Value = evaluateExpression(Expression);
+        if (Value && Value->Kind == VariableKind::Arithmetic) {
+          StorageMapOffset += Value->Arithmetic;
+          BuiltinVariables["VAR"] =
+              VariableValue::arithmetic(StorageMapOffset);
+        } else if (!Value) {
+          consumeError(Value.takeError());
+        }
+      }
+
       recordDefinedSymbols(SubstitutedLine, First, Second, Tail,
                            DefinedSymbols);
 
@@ -2849,7 +2918,10 @@ class AssemblyControlExpander {
         DefinedSymbols.insert(Name);
         VariableMap Effective = effectiveVariables();
         VariableExpressionParser Parser(AfterFirst, Effective, Constants,
-                                        NoEscape, &DefinedSymbols);
+                                        NoEscape, &DefinedSymbols,
+                                        /*RegisterRelativeValues=*/nullptr,
+                                        /*SymbolSizes=*/nullptr,
+                                        &BuiltinVariables);
         Expected<VariableValue> Value = Parser.parse();
         if (Value && Value->Kind == VariableKind::Arithmetic)
           Constants[Name] = Value->Arithmetic;
@@ -2891,13 +2963,20 @@ class AssemblyControlExpander {
 public:
   AssemblyControlExpander(ArrayRef<std::string> IncludeDirs, StringRef ProgName,
                           bool NoWarn, bool NoEscape,
-                          const DenseSet<unsigned> &IgnoredWarnings,
-                          raw_ostream &DiagOS, raw_ostream &OS,
-                          VariableMap &Variables,
-                          StringMap<uint64_t> &Constants)
+                           const DenseSet<unsigned> &IgnoredWarnings,
+                           raw_ostream &DiagOS, raw_ostream &OS,
+                           VariableMap &Variables,
+                           StringMap<uint64_t> &Constants, StringRef CommandLine)
       : IncludeDirs(IncludeDirs), ProgName(ProgName), NoWarn(NoWarn),
         NoEscape(NoEscape), IgnoredWarnings(IgnoredWarnings), DiagOS(DiagOS),
-        OS(OS), Variables(Variables), Constants(Constants) {}
+        OS(OS), Variables(Variables), Constants(Constants) {
+    BuiltinVariables["AREANAME"] = VariableValue::string("");
+    BuiltinVariables["COMMANDLINE"] =
+        VariableValue::string(CommandLine.str());
+    BuiltinVariables["INPUTFILE"] = VariableValue::string("");
+    BuiltinVariables["LINENUM"] = VariableValue::arithmetic(0);
+    BuiltinVariables["VAR"] = VariableValue::arithmetic(0);
+  }
 
   Error run(std::unique_ptr<MemoryBuffer> Input) {
     return processFile(std::move(Input), /*IsMainFile=*/true,
@@ -2910,7 +2989,8 @@ expandAssemblyControl(std::unique_ptr<MemoryBuffer> Input,
                       ArrayRef<std::string> IncludeDirs, StringRef ProgName,
                       bool NoWarn, bool NoEscape,
                       const DenseSet<unsigned> &IgnoredWarnings,
-                      raw_ostream &DiagOS, ArrayRef<std::string> Predefines) {
+                      raw_ostream &DiagOS, ArrayRef<std::string> Predefines,
+                      StringRef CommandLine) {
   VariableMap Variables;
   StringMap<uint64_t> Constants;
   for (StringRef Predefine : Predefines)
@@ -2923,8 +3003,8 @@ expandAssemblyControl(std::unique_ptr<MemoryBuffer> Input,
   raw_string_ostream OS(Expanded);
   std::string Filename = Input->getBufferIdentifier().str();
   AssemblyControlExpander Expander(IncludeDirs, ProgName, NoWarn, NoEscape,
-                                   IgnoredWarnings, DiagOS, OS, Variables,
-                                   Constants);
+                                    IgnoredWarnings, DiagOS, OS, Variables,
+                                    Constants, CommandLine);
   if (Error Err = Expander.run(std::move(Input)))
     return std::move(Err);
   return MemoryBuffer::getMemBufferCopy(Expanded, Filename);
@@ -2935,13 +3015,14 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
                ArrayRef<std::string> IncludeDirs, StringRef ProgName,
                bool NoWarn, bool NoEscape,
                const DenseSet<unsigned> &IgnoredWarnings, raw_ostream &DiagOS,
-               ArrayRef<std::string> Predefines) {
+               ArrayRef<std::string> Predefines, StringRef CommandLine) {
   StringRef Remaining = Input->getBuffer();
   std::string Translated;
   raw_string_ostream OS(Translated);
   StringMap<std::string> Constants;
   StringMap<uint64_t> AbsoluteConstants;
   VariableMap Variables;
+  VariableMap BuiltinVariables;
   ExportMap Exports;
   StringMap<std::pair<std::string, unsigned>> ExportLocations;
   StringSet<> DefinedSymbols;
@@ -3032,6 +3113,13 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
       return createStringError(inconvertibleErrorCode(),
                                 "invalid predefine '" + Predefine +
                                     "': " + toString(std::move(Err)));
+
+  BuiltinVariables["AREANAME"] = VariableValue::string("");
+  BuiltinVariables["COMMANDLINE"] = VariableValue::string(CommandLine.str());
+  BuiltinVariables["INPUTFILE"] =
+      VariableValue::string(Input->getBufferIdentifier().str());
+  BuiltinVariables["LINENUM"] = VariableValue::arithmetic(0);
+  BuiltinVariables["VAR"] = VariableValue::arithmetic(0);
 
   VariableMap SizeVariables = Variables;
   StringMap<uint64_t> SizeConstants = AbsoluteConstants;
@@ -3184,6 +3272,13 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
     Line.consume_back("\r");
     ++CurrentLine;
 
+    BuiltinVariables["AREANAME"] =
+        VariableValue::string(CurrentAreaName);
+    BuiltinVariables["INPUTFILE"] = VariableValue::string(CurrentFilename);
+    BuiltinVariables["LINENUM"] = VariableValue::arithmetic(CurrentLine);
+    BuiltinVariables["VAR"] =
+        VariableValue::arithmetic(CurrentStorageMap.Offset);
+
     std::string SubstitutedLine = substituteVariables(Line, Variables);
     Line = stripComment(SubstitutedLine);
     StringRef Statement = Line.trim();
@@ -3213,8 +3308,9 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
     };
     auto Evaluate = [&](StringRef Expression) -> Expected<VariableValue> {
       VariableExpressionParser Parser(Expression, Variables, AbsoluteConstants,
-                                      NoEscape, &DefinedSymbols,
-                                      &RegisterRelativeValues, &SymbolSizes);
+                                       NoEscape, &DefinedSymbols,
+                                       &RegisterRelativeValues, &SymbolSizes,
+                                       &BuiltinVariables);
       return Parser.parse();
     };
     auto EvaluateAbsolute = [&](StringRef Expression) -> Expected<uint64_t> {
@@ -3271,10 +3367,11 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
       if (!isValidVariableName(First) || AfterFirst.empty())
         return SourceError("expected variable assignment expression");
       if (Error Err =
-              assignVariable(Name, Second, AfterFirst,
-                             /*ImplicitDeclaration=*/false, Variables,
-                             AbsoluteConstants, NoEscape,
-                             /*ExpressionVariables=*/nullptr, &DefinedSymbols))
+               assignVariable(Name, Second, AfterFirst,
+                              /*ImplicitDeclaration=*/false, Variables,
+                              AbsoluteConstants, NoEscape,
+                              /*ExpressionVariables=*/nullptr, &DefinedSymbols,
+                              &BuiltinVariables))
         return SourceError(toString(std::move(Err)));
       OS << '\n';
       continue;
@@ -3366,7 +3463,8 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
     std::string PCSymbol = (Twine("\"|") + Twine(PCSymbolCount) + "\"").str();
     bool UsesPC = false;
     std::string RewrittenLine =
-        rewriteVariables(Line, Variables, NoEscape, PCSymbol, &UsesPC);
+        rewriteVariables(Line, Variables, NoEscape, PCSymbol, &UsesPC,
+                         &BuiltinVariables);
     if (UsesPC)
       ++PCSymbolCount;
     Line = RewrittenLine;
@@ -3715,7 +3813,10 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
                                      : (".Larmasm$" + Name).str());
       Constants[Name] = AssemblerName;
       VariableExpressionParser Parser(AfterFirst, Variables, AbsoluteConstants,
-                                      NoEscape, &DefinedSymbols);
+                                      NoEscape, &DefinedSymbols,
+                                      /*RegisterRelativeValues=*/nullptr,
+                                      /*SymbolSizes=*/nullptr,
+                                      &BuiltinVariables);
       Expected<VariableValue> Value = Parser.parse();
       if (Value && Value->Kind == VariableKind::Arithmetic)
         AbsoluteConstants[Name] = Value->Arithmetic;
@@ -4312,7 +4413,8 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
 
 static int assembleInput(StringRef ProgName, StringRef InputFilename,
                          StringRef OutputFilename, StringRef Machine,
-                         const InputArgList &Args, raw_ostream &DiagOS) {
+                         const InputArgList &Args, raw_ostream &DiagOS,
+                         StringRef CommandLine) {
   DenseSet<unsigned> IgnoredWarnings;
   for (StringRef ValueList : Args.getAllArgValues(OPT_ignore)) {
     SmallVector<StringRef, 4> Values;
@@ -4360,7 +4462,8 @@ static int assembleInput(StringRef ProgName, StringRef InputFilename,
   std::vector<std::string> Predefines = Args.getAllArgValues(OPT_predefine);
   Expected<std::unique_ptr<MemoryBuffer>> ExpandedInput = expandAssemblyControl(
       std::move(*InputOrErr), IncludeDirs, ProgName, Args.hasArg(OPT_no_warn),
-      Args.hasArg(OPT_no_escape), IgnoredWarnings, DiagOS, Predefines);
+      Args.hasArg(OPT_no_escape), IgnoredWarnings, DiagOS, Predefines,
+      CommandLine);
   if (!ExpandedInput) {
     WithColor::error(DiagOS, ProgName)
         << toString(ExpandedInput.takeError()) << '\n';
@@ -4370,7 +4473,7 @@ static int assembleInput(StringRef ProgName, StringRef InputFilename,
   Expected<std::unique_ptr<MemoryBuffer>> TranslatedInput =
       translateInput(std::move(*ExpandedInput), IncludeDirs, ProgName,
                      Args.hasArg(OPT_no_warn), Args.hasArg(OPT_no_escape),
-                     IgnoredWarnings, DiagOS, Predefines);
+                     IgnoredWarnings, DiagOS, Predefines, CommandLine);
   if (!TranslatedInput) {
     WithColor::error(DiagOS, ProgName)
         << toString(TranslatedInput.takeError()) << '\n';
@@ -4535,9 +4638,20 @@ int llvm_armasm64_main(int Argc, char **Argv, const ToolContext &) {
       OPT_output,
       Positional.size() == 2 ? Positional.back() : StringRef(DefaultOutput));
 
+  std::string CommandLine;
+  raw_string_ostream CommandLineOS(CommandLine);
+  CommandLineOS << ProgName;
+  for (StringRef Argument : ArrayRef(ExpandedArgv).drop_front()) {
+    CommandLineOS << ' ';
+    if (Argument.find_first_of(" \t") == StringRef::npos)
+      CommandLineOS << Argument;
+    else
+      CommandLineOS << '"' << Argument << '"';
+  }
+
   LLVMInitializeAArch64TargetInfo();
   LLVMInitializeAArch64TargetMC();
   LLVMInitializeAArch64AsmParser();
   return assembleInput(ProgName, Positional.front(), Output, Machine, Args,
-                       *DiagOS);
+                       *DiagOS, CommandLine);
 }
