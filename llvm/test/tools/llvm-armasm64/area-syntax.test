@@ -1,0 +1,24 @@
+# RUN: split-file %s %t
+# RUN: llvm-armasm64 %t/quoted-comma.asm %t.obj
+# RUN: llvm-readobj --sections %t.obj | FileCheck %s --check-prefix=QUOTED
+# RUN: not llvm-armasm64 %t/empty-attribute.asm %t.obj 2>&1 | FileCheck %s --check-prefix=EMPTY
+# RUN: not llvm-armasm64 %t/unquoted-space.asm %t.obj 2>&1 | FileCheck %s --check-prefix=SPACE
+
+# QUOTED: Name: section,name
+# QUOTED: RawDataSize: 1
+
+# EMPTY: empty-attribute.asm:1: A2146: illegal symbol ,; AREA attribute expected
+# SPACE: unquoted-space.asm:1: A2003: improper line syntax: ,
+
+#--- quoted-comma.asm
+        AREA |section,name|, DATA, READWRITE
+        DCB 1
+        END
+
+#--- empty-attribute.asm
+        AREA empty_attr, DATA,,READWRITE,
+        END
+
+#--- unquoted-space.asm
+        AREA section name, DATA, READWRITE
+        END
