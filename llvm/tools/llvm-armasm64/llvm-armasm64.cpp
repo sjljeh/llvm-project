@@ -366,6 +366,26 @@ struct VariableValue {
 
 using VariableMap = StringMap<VariableValue>;
 
+static constexpr uint64_t ARMAsmVersion = 145136248;
+
+static std::optional<VariableValue> getBuiltinVariable(StringRef Name) {
+  if (Name.equals_insensitive("TRUE"))
+    return VariableValue::logical(true);
+  if (Name.equals_insensitive("FALSE"))
+    return VariableValue::logical(false);
+  if (Name.equals_insensitive("ARCHITECTURE"))
+    return VariableValue::string("not specified");
+  if (Name.equals_insensitive("CPU"))
+    return VariableValue::string("\"-arch 4t\"");
+  if (Name.equals_insensitive("ARMASM_VERSION"))
+    return VariableValue::arithmetic(ARMAsmVersion);
+  return std::nullopt;
+}
+
+static bool isBuiltinVariable(StringRef Name) {
+  return getBuiltinVariable(Name).has_value();
+}
+
 class VariableExpressionParser {
   enum class BinaryOperator {
     Multiply,
@@ -402,6 +422,7 @@ class VariableExpressionParser {
   StringRef Text;
   const VariableMap &Variables;
   const StringMap<uint64_t> &Constants;
+  const StringSet<> *DefinedSymbols;
   bool NoEscape;
   size_t Position = 0;
   std::string ErrorMessage;
@@ -453,6 +474,17 @@ class VariableExpressionParser {
     while (Position != Text.size() && isIdentifierChar(Text[Position]))
       ++Position;
     Name = Text.slice(Start, Position);
+    return true;
+  }
+
+  bool parseBuiltinName(StringRef &Name) {
+    skipSpace();
+    assert(Text[Position] == '{');
+    size_t End = Text.find('}', ++Position);
+    if (End == StringRef::npos)
+      return fail("unterminated built-in variable name");
+    Name = Text.slice(Position, End);
+    Position = End + 1;
     return true;
   }
 
@@ -594,13 +626,17 @@ class VariableExpressionParser {
     }
     if (Text[Position] == '"')
       return parseString(Result);
-    if (consumeInsensitive("{TRUE}")) {
-      Result = VariableValue::logical(true);
-      return true;
-    }
-    if (consumeInsensitive("{FALSE}")) {
-      Result = VariableValue::logical(false);
-      return true;
+    if (Text[Position] == '{') {
+      StringRef Name;
+      if (!parseBuiltinName(Name))
+        return false;
+      if (Name.equals_insensitive("PC"))
+        return fail("{PC} cannot be used in an assembly-time expression");
+      if (std::optional<VariableValue> Value = getBuiltinVariable(Name)) {
+        Result = std::move(*Value);
+        return true;
+      }
+      return fail("unknown built-in variable '{" + Name + "}'");
     }
     if (Text[Position] == '\'') {
       ++Position;
@@ -704,13 +740,24 @@ class VariableExpressionParser {
       return true;
     }
     if (consumeInsensitive(":DEF:")) {
+      skipSpace();
+      if (Position != Text.size() && Text[Position] == '{') {
+        StringRef Name;
+        if (!parseBuiltinName(Name))
+          return false;
+        if (Name.equals_insensitive("PC"))
+          return fail("{PC} cannot be used in an assembly-time expression");
+        Result = VariableValue::logical(isBuiltinVariable(Name));
+        return true;
+      }
       StringRef Name;
       std::string SavedError = std::move(ErrorMessage);
       if (!parseIdentifier(Name))
         return false;
       ErrorMessage = std::move(SavedError);
-      Result = VariableValue::logical(Variables.contains(Name) ||
-                                      Constants.contains(Name));
+      Result = VariableValue::logical(
+          Variables.contains(Name) || Constants.contains(Name) ||
+          (DefinedSymbols && DefinedSymbols->contains(Name)));
       return true;
     }
     return parsePrimary(Result);
@@ -950,9 +997,10 @@ class VariableExpressionParser {
 
 public:
   VariableExpressionParser(StringRef Text, const VariableMap &Variables,
-                           const StringMap<uint64_t> &Constants, bool NoEscape)
+                           const StringMap<uint64_t> &Constants, bool NoEscape,
+                           const StringSet<> *DefinedSymbols = nullptr)
       : Text(Text), Variables(Variables), Constants(Constants),
-        NoEscape(NoEscape) {}
+        DefinedSymbols(DefinedSymbols), NoEscape(NoEscape) {}
 
   Expected<VariableValue> parse() {
     VariableValue Result;
@@ -1075,10 +1123,20 @@ static std::string substituteVariables(StringRef Line,
   return Substituted;
 }
 
-static std::string
-rewriteVariables(StringRef Text, const VariableMap &Variables, bool NoEscape) {
+static std::string rewriteVariables(StringRef Text,
+                                    const VariableMap &Variables, bool NoEscape,
+                                    StringRef PCSymbol = {},
+                                    bool *UsesPC = nullptr) {
   std::string Rewritten;
   raw_string_ostream OS(Rewritten);
+  auto EmitVariable = [&](const VariableValue &Variable) {
+    if (Variable.Kind == VariableKind::Arithmetic)
+      OS << Variable.Arithmetic;
+    else if (Variable.Kind == VariableKind::Logical)
+      OS << (Variable.Logical ? "{TRUE}" : "{FALSE}");
+    else
+      OS << quoteStringVariable(Variable.String, NoEscape);
+  };
   for (size_t I = 0; I != Text.size();) {
     if (Text[I] == '"' || Text[I] == '\'') {
       char Quote = Text[I];
@@ -1097,22 +1155,37 @@ rewriteVariables(StringRef Text, const VariableMap &Variables, bool NoEscape) {
       }
       continue;
     }
+    if (Text[I] == '{') {
+      size_t End = Text.find('}', I + 1);
+      if (End != StringRef::npos) {
+        StringRef Name = Text.slice(I + 1, End);
+        if (Name.equals_insensitive("PC")) {
+          if (PCSymbol.empty())
+            OS << Text.slice(I, End + 1);
+          else {
+            OS << PCSymbol;
+            if (UsesPC)
+              *UsesPC = true;
+          }
+          I = End + 1;
+          continue;
+        }
+        if (std::optional<VariableValue> Variable = getBuiltinVariable(Name)) {
+          EmitVariable(*Variable);
+          I = End + 1;
+          continue;
+        }
+      }
+    }
     if (Text[I] == '|') {
       size_t End = Text.find('|', I + 1);
       if (End != StringRef::npos) {
         StringRef Name = Text.slice(I + 1, End);
         auto It = Variables.find(Name);
-        if (It != Variables.end()) {
-          const VariableValue &Variable = It->second;
-          if (Variable.Kind == VariableKind::Arithmetic)
-            OS << Variable.Arithmetic;
-          else if (Variable.Kind == VariableKind::Logical)
-            OS << (Variable.Logical ? "{TRUE}" : "{FALSE}");
-          else
-            OS << quoteStringVariable(Variable.String, NoEscape);
-        } else {
+        if (It != Variables.end())
+          EmitVariable(It->second);
+        else
           OS << Text.slice(I, End + 1);
-        }
         I = End + 1;
         continue;
       }
@@ -1126,15 +1199,10 @@ rewriteVariables(StringRef Text, const VariableMap &Variables, bool NoEscape) {
       ++End;
     StringRef Name = Text.slice(I, End);
     auto It = Variables.find(Name);
-    if (It == Variables.end()) {
+    if (It == Variables.end())
       OS << Name;
-    } else if (It->second.Kind == VariableKind::Arithmetic) {
-      OS << It->second.Arithmetic;
-    } else if (It->second.Kind == VariableKind::Logical) {
-      OS << (It->second.Logical ? "{TRUE}" : "{FALSE}");
-    } else {
-      OS << quoteStringVariable(It->second.String, NoEscape);
-    }
+    else
+      EmitVariable(It->second);
     I = End;
   }
   return Rewritten;
@@ -1170,7 +1238,8 @@ static Error assignVariable(StringRef Name, StringRef Directive,
                             StringRef Expression, bool ImplicitDeclaration,
                             VariableMap &Variables,
                             const StringMap<uint64_t> &Constants, bool NoEscape,
-                            const VariableMap *ExpressionVariables = nullptr) {
+                            const VariableMap *ExpressionVariables = nullptr,
+                            const StringSet<> *DefinedSymbols = nullptr) {
   VariableKind Kind =
       Directive.equals_insensitive("SETA")   ? VariableKind::Arithmetic
       : Directive.equals_insensitive("SETL") ? VariableKind::Logical
@@ -1193,7 +1262,7 @@ static Error assignVariable(StringRef Name, StringRef Directive,
 
   VariableExpressionParser Parser(
       Expression, ExpressionVariables ? *ExpressionVariables : Variables,
-      Constants, NoEscape);
+      Constants, NoEscape, DefinedSymbols);
   Expected<VariableValue> Value = Parser.parse();
   if (!Value)
     return Value.takeError();
@@ -1249,6 +1318,30 @@ static bool isSetDirective(StringRef Directive) {
   return Directive.equals_insensitive("SETA") ||
          Directive.equals_insensitive("SETL") ||
          Directive.equals_insensitive("SETS");
+}
+
+static bool isDataDirective(StringRef Token) {
+  return Token.equals_insensitive("DCB") || Token == "=" ||
+         Token.equals_insensitive("DCW") || Token.equals_insensitive("DCWU") ||
+         Token.equals_insensitive("DCD") || Token.equals_insensitive("DCDU") ||
+         Token == "&" || Token.equals_insensitive("DCQ") ||
+         Token.equals_insensitive("DCQU");
+}
+
+static void recordDefinedSymbols(StringRef Line, StringRef First,
+                                 StringRef Second, StringRef Tail,
+                                 StringSet<> &DefinedSymbols) {
+  if (First.equals_insensitive("IMPORT") ||
+      First.equals_insensitive("EXTERN")) {
+    StringRef Symbol = takeToken(Tail).split(',').first;
+    if (!Symbol.empty())
+      DefinedSymbols.insert(unquoteIdentifier(Symbol));
+  }
+  if (!Line.empty() && !isSpace(Line.front()) &&
+      (Second.empty() || Second.equals_insensitive("EQU") ||
+       Second.equals_insensitive("PROC") ||
+       Second.equals_insensitive("FUNCTION") || isDataDirective(Second)))
+    DefinedSymbols.insert(unquoteIdentifier(First));
 }
 
 static bool isValidVariableName(StringRef Name) {
@@ -1394,6 +1487,7 @@ class AssemblyControlExpander {
   VariableMap &Variables;
   StringMap<uint64_t> &Constants;
   StringMap<MacroDefinition> Macros;
+  StringSet<> DefinedSymbols;
   VariableMap *LocalVariables = nullptr;
   const StringMap<std::string> *MacroParameters = nullptr;
 
@@ -1427,7 +1521,8 @@ class AssemblyControlExpander {
 
   Expected<bool> evaluateCondition(StringRef Expression) {
     VariableMap Effective = effectiveVariables();
-    VariableExpressionParser Parser(Expression, Effective, Constants, NoEscape);
+    VariableExpressionParser Parser(Expression, Effective, Constants, NoEscape,
+                                    &DefinedSymbols);
     Expected<VariableValue> Value = Parser.parse();
     if (!Value)
       return Value.takeError();
@@ -1569,7 +1664,7 @@ class AssemblyControlExpander {
     VariableMap Effective = effectiveVariables();
     return assignVariable(Name, Directive, Expression,
                           /*ImplicitDeclaration=*/false, Target, Constants,
-                          NoEscape, &Effective);
+                          NoEscape, &Effective, &DefinedSymbols);
   }
 
   Error processFile(std::unique_ptr<MemoryBuffer> Input, bool IsMainFile,
@@ -1810,6 +1905,9 @@ class AssemblyControlExpander {
         continue;
       }
 
+      recordDefinedSymbols(SubstitutedLine, First, Second, Tail,
+                           DefinedSymbols);
+
       std::optional<VariableKind> DeclarationKind;
       bool IsLocalDeclaration = false;
       if (First.equals_insensitive("GBLA"))
@@ -1865,9 +1963,10 @@ class AssemblyControlExpander {
         }
       } else if (Second.equals_insensitive("EQU")) {
         StringRef Name = unquoteIdentifier(First);
+        DefinedSymbols.insert(Name);
         VariableMap Effective = effectiveVariables();
         VariableExpressionParser Parser(AfterFirst, Effective, Constants,
-                                        NoEscape);
+                                        NoEscape, &DefinedSymbols);
         Expected<VariableValue> Value = Parser.parse();
         if (Value && Value->Kind == VariableKind::Arithmetic)
           Constants[Name] = Value->Arithmetic;
@@ -1953,6 +2052,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
   StringMap<uint64_t> AbsoluteConstants;
   VariableMap Variables;
   StringSet<> Exports;
+  StringSet<> DefinedSymbols;
   collectExports(Remaining, Exports);
 
   for (StringRef Predefine : Predefines)
@@ -1964,6 +2064,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
 
   std::string CurrentFilename = Input->getBufferIdentifier().str();
   unsigned CurrentLine = 0;
+  unsigned PCSymbolCount = 0;
 
   while (!Remaining.empty()) {
     auto [Line, Rest] = Remaining.split('\n');
@@ -1978,6 +2079,8 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
     StringRef First = takeToken(Tail);
     StringRef AfterFirst = Tail;
     StringRef Second = takeToken(AfterFirst);
+
+    recordDefinedSymbols(Line, First, Second, Tail, DefinedSymbols);
 
     auto SourceError = [&](const Twine &Message) -> Error {
       return createStringError(inconvertibleErrorCode(),
@@ -2023,31 +2126,34 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
       StringRef Name = unquoteIdentifier(First);
       if (!isValidVariableName(First) || AfterFirst.empty())
         return SourceError("expected variable assignment expression");
-      if (Error Err = assignVariable(Name, Second, AfterFirst,
-                                     /*ImplicitDeclaration=*/false, Variables,
-                                     AbsoluteConstants, NoEscape))
+      if (Error Err =
+              assignVariable(Name, Second, AfterFirst,
+                             /*ImplicitDeclaration=*/false, Variables,
+                             AbsoluteConstants, NoEscape,
+                             /*ExpressionVariables=*/nullptr, &DefinedSymbols))
         return SourceError(toString(std::move(Err)));
       OS << '\n';
       continue;
     }
 
-    std::string RewrittenLine = rewriteVariables(Line, Variables, NoEscape);
+    std::string PCSymbol = (Twine("\"|") + Twine(PCSymbolCount) + "\"").str();
+    bool UsesPC = false;
+    std::string RewrittenLine =
+        rewriteVariables(Line, Variables, NoEscape, PCSymbol, &UsesPC);
+    if (UsesPC)
+      ++PCSymbolCount;
     Line = RewrittenLine;
     Statement = Line.trim();
     Tail = Statement;
     First = takeToken(Tail);
     AfterFirst = Tail;
     Second = takeToken(AfterFirst);
-
-    auto IsDataDirective = [](StringRef Token) {
-      return Token.equals_insensitive("DCB") || Token == "=" ||
-             Token.equals_insensitive("DCW") ||
-             Token.equals_insensitive("DCWU") ||
-             Token.equals_insensitive("DCD") ||
-             Token.equals_insensitive("DCDU") || Token == "&" ||
-             Token.equals_insensitive("DCQ") ||
-             Token.equals_insensitive("DCQU");
+    bool IsDataLine = isDataDirective(First) || isDataDirective(Second);
+    auto EmitPCLabel = [&]() {
+      OS << ".def " << PCSymbol << "; .scl 6; .endef; " << PCSymbol << ":; ";
     };
+    if (UsesPC && !IsDataLine)
+      EmitPCLabel();
 
     if (First.equals_insensitive("EXPORT") ||
         First.equals_insensitive("GLOBAL")) {
@@ -2082,10 +2188,11 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
          << "; .p2align " << Alignment;
     } else if (Second.equals_insensitive("EQU")) {
       StringRef Name = unquoteIdentifier(First);
+      DefinedSymbols.insert(Name);
       std::string TemporaryName = (".Larmasm$" + Name).str();
       Constants[Name] = TemporaryName;
       VariableExpressionParser Parser(AfterFirst, Variables, AbsoluteConstants,
-                                      NoEscape);
+                                      NoEscape, &DefinedSymbols);
       Expected<VariableValue> Value = Parser.parse();
       if (Value && Value->Kind == VariableKind::Arithmetic)
         AbsoluteConstants[Name] = Value->Arithmetic;
@@ -2103,8 +2210,8 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
                First.equals_insensitive("ENDFUNC") ||
                Second.equals_insensitive("ENDP") ||
                Second.equals_insensitive("ENDFUNC")) {
-    } else if (IsDataDirective(First) || IsDataDirective(Second)) {
-      bool HasLabel = !IsDataDirective(First);
+    } else if (IsDataLine) {
+      bool HasLabel = !isDataDirective(First);
       StringRef Directive = HasLabel ? Second : First;
       StringRef Values = HasLabel ? AfterFirst : Tail;
       bool IsByte = Directive.equals_insensitive("DCB") || Directive == "=";
@@ -2125,6 +2232,8 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
           OS << ".def " << Name << "; .scl 3; .endef; ";
         OS << Name << ":; ";
       }
+      if (UsesPC)
+        EmitPCLabel();
 
       if (IsByte) {
         SmallVector<StringRef, 8> Operands;
