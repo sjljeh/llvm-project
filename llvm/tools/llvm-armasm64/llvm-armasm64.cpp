@@ -4282,6 +4282,11 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
           ExpressionOffset, Target.size(), 4, Target,
           /*IsSymbolic=*/true, /*ReplaceWithCurrentLocation=*/true,
           /*IsInstruction=*/true};
+    } else if (First.equals_insensitive("KEEP")) {
+      SmallVector<StringRef, 2> Operands;
+      splitOperands(Tail, Operands);
+      if (Operands.size() != 1 || Operands[0].empty())
+        return SourceError("A2003: improper line syntax");
     } else if (First.equals_insensitive("END")) {
       if (ActiveProcedureArea)
         return SourceError("A2057: missing ENDP directive in section " +
