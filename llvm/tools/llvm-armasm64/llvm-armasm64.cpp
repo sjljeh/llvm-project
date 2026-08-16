@@ -41,6 +41,8 @@
 #include "llvm/Support/VirtualFileSystem.h"
 #include "llvm/Support/WithColor.h"
 
+#include <optional>
+
 using namespace llvm;
 using namespace llvm::opt;
 
@@ -380,7 +382,7 @@ static void splitOperands(StringRef Text,
   Operands.push_back(Text.drop_front(Start).trim());
 }
 
-static std::string translateString(StringRef String, bool NoEscape) {
+static Expected<std::string> translateString(StringRef String, bool NoEscape) {
   std::string Translated;
   raw_string_ostream OS(Translated);
   OS << '"';
@@ -393,6 +395,9 @@ static std::string translateString(StringRef String, bool NoEscape) {
     } else if (I + 1 != String.size() && C == '$' && String[I + 1] == '$') {
       OS << '$';
       ++I;
+    } else if (C == '$') {
+      return createStringError(inconvertibleErrorCode(),
+                               "dollar character in string must be doubled");
     } else if (NoEscape && C == '\\') {
       OS << "\\\\";
     } else {
@@ -401,6 +406,874 @@ static std::string translateString(StringRef String, bool NoEscape) {
   }
   OS << '"';
   return Translated;
+}
+
+enum class VariableKind { Arithmetic, Logical, String };
+
+struct VariableValue {
+  VariableKind Kind = VariableKind::Arithmetic;
+  uint64_t Arithmetic = 0;
+  bool Logical = false;
+  std::string String;
+
+  static VariableValue arithmetic(uint64_t Value) {
+    VariableValue Result;
+    Result.Arithmetic = Value;
+    return Result;
+  }
+
+  static VariableValue logical(bool Value) {
+    VariableValue Result;
+    Result.Kind = VariableKind::Logical;
+    Result.Logical = Value;
+    return Result;
+  }
+
+  static VariableValue string(std::string Value) {
+    VariableValue Result;
+    Result.Kind = VariableKind::String;
+    Result.String = std::move(Value);
+    return Result;
+  }
+};
+
+using VariableMap = StringMap<VariableValue>;
+
+class VariableExpressionParser {
+  enum class BinaryOperator {
+    Multiply,
+    Divide,
+    Modulo,
+    Concatenate,
+    Left,
+    Right,
+    RotateLeft,
+    RotateRight,
+    ShiftLeft,
+    ShiftRight,
+    Add,
+    Subtract,
+    And,
+    Or,
+    ExclusiveOr,
+    Equal,
+    NotEqual,
+    Greater,
+    GreaterEqual,
+    Less,
+    LessEqual,
+    LogicalAnd,
+    LogicalOr,
+    LogicalExclusiveOr,
+  };
+
+  struct ParsedOperator {
+    BinaryOperator Operator;
+    unsigned Precedence;
+  };
+
+  StringRef Text;
+  const VariableMap &Variables;
+  const StringMap<uint64_t> &Constants;
+  bool NoEscape;
+  size_t Position = 0;
+  std::string ErrorMessage;
+
+  void skipSpace() {
+    while (Position != Text.size() && isSpace(Text[Position]))
+      ++Position;
+  }
+
+  bool consume(StringRef Token) {
+    if (!Text.drop_front(Position).starts_with(Token))
+      return false;
+    Position += Token.size();
+    return true;
+  }
+
+  bool consumeInsensitive(StringRef Token) {
+    if (!Text.drop_front(Position).starts_with_insensitive(Token))
+      return false;
+    Position += Token.size();
+    return true;
+  }
+
+  bool fail(const Twine &Message) {
+    if (ErrorMessage.empty())
+      ErrorMessage = Message.str();
+    return false;
+  }
+
+  static bool isIdentifierStart(char C) { return isAlpha(C) || C == '_'; }
+
+  static bool isIdentifierChar(char C) {
+    return isAlnum(C) || C == '_' || C == '.' || C == '$' || C == '?';
+  }
+
+  bool parseIdentifier(StringRef &Name) {
+    skipSpace();
+    size_t Start = Position;
+    if (consume("|")) {
+      size_t End = Text.find('|', Position);
+      if (End == StringRef::npos)
+        return fail("unterminated quoted variable name");
+      Name = Text.slice(Position, End);
+      Position = End + 1;
+      return true;
+    }
+    if (Position == Text.size() || !isIdentifierStart(Text[Position]))
+      return fail("expected variable or constant");
+    while (Position != Text.size() && isIdentifierChar(Text[Position]))
+      ++Position;
+    Name = Text.slice(Start, Position);
+    return true;
+  }
+
+  bool parseEscape(char &Value) {
+    if (Position == Text.size())
+      return fail("incomplete escape sequence");
+    char C = Text[Position++];
+    switch (C) {
+    case 'a':
+      Value = '\a';
+      return true;
+    case 'b':
+      Value = '\b';
+      return true;
+    case 'f':
+      Value = '\f';
+      return true;
+    case 'n':
+      Value = '\n';
+      return true;
+    case 'r':
+      Value = '\r';
+      return true;
+    case 't':
+      Value = '\t';
+      return true;
+    case 'v':
+      Value = '\v';
+      return true;
+    case 'x': {
+      if (Position == Text.size() || !isHexDigit(Text[Position]))
+        return fail("hexadecimal escape requires at least one digit");
+      unsigned Result = 0;
+      while (Position != Text.size() && isHexDigit(Text[Position])) {
+        Result = Result * 16 + hexDigitValue(Text[Position++]);
+        if (Result > 255)
+          return fail("hexadecimal escape is outside the byte range");
+      }
+      Value = static_cast<char>(Result);
+      return true;
+    }
+    case '\\':
+    case '\'':
+    case '"':
+    case '?':
+      Value = C;
+      return true;
+    default:
+      if (C < '0' || C > '7') {
+        Value = C;
+        return true;
+      }
+      unsigned Result = C - '0';
+      for (unsigned I = 1; I != 3 && Position != Text.size() &&
+                           Text[Position] >= '0' && Text[Position] <= '7';
+           ++I)
+        Result = Result * 8 + Text[Position++] - '0';
+      Value = static_cast<char>(Result);
+      return true;
+    }
+  }
+
+  bool parseString(VariableValue &Result) {
+    assert(Text[Position] == '"');
+    ++Position;
+    std::string Value;
+    while (Position != Text.size()) {
+      char C = Text[Position++];
+      if (C == '"') {
+        if (Position != Text.size() && Text[Position] == '"') {
+          Value.push_back('"');
+          ++Position;
+          continue;
+        }
+        Result = VariableValue::string(std::move(Value));
+        return true;
+      }
+      if (C == '$') {
+        if (Position == Text.size() || Text[Position] != '$')
+          return fail("dollar character in string must be doubled");
+        Value.push_back('$');
+        ++Position;
+        continue;
+      }
+      if (C == '\\' && !NoEscape) {
+        if (!parseEscape(C))
+          return false;
+      }
+      Value.push_back(C);
+    }
+    return fail("unterminated string literal");
+  }
+
+  bool parseNumber(VariableValue &Result) {
+    size_t Start = Position;
+    unsigned Radix = 10;
+    if (consume("&")) {
+      Start = Position;
+      Radix = 16;
+      while (Position != Text.size() && isHexDigit(Text[Position]))
+        ++Position;
+    } else if (Text.drop_front(Position).starts_with_insensitive("0x")) {
+      Position += 2;
+      Start = Position;
+      Radix = 16;
+      while (Position != Text.size() && isHexDigit(Text[Position]))
+        ++Position;
+    } else if (Position + 1 < Text.size() && Text[Position] >= '2' &&
+               Text[Position] <= '9' && Text[Position + 1] == '_') {
+      Radix = Text[Position] - '0';
+      Position += 2;
+      Start = Position;
+      while (Position != Text.size() && isAlnum(Text[Position]))
+        ++Position;
+    } else {
+      while (Position != Text.size() && isDigit(Text[Position]))
+        ++Position;
+    }
+
+    StringRef Digits = Text.slice(Start, Position);
+    uint64_t Value;
+    if (Digits.empty() || Digits.getAsInteger(Radix, Value))
+      return fail("invalid 64-bit numeric literal");
+    Result = VariableValue::arithmetic(Value);
+    return true;
+  }
+
+  bool parsePrimary(VariableValue &Result) {
+    skipSpace();
+    if (Position == Text.size())
+      return fail("expected expression");
+    if (consume("(")) {
+      if (!parseExpression(Result, 1))
+        return false;
+      skipSpace();
+      if (!consume(")"))
+        return fail("expected ')' in expression");
+      return true;
+    }
+    if (Text[Position] == '"')
+      return parseString(Result);
+    if (consumeInsensitive("{TRUE}")) {
+      Result = VariableValue::logical(true);
+      return true;
+    }
+    if (consumeInsensitive("{FALSE}")) {
+      Result = VariableValue::logical(false);
+      return true;
+    }
+    if (Text[Position] == '\'') {
+      ++Position;
+      if (Position == Text.size())
+        return fail("unterminated character literal");
+      char Value = Text[Position++];
+      if (Value == '\\' && !NoEscape && !parseEscape(Value))
+        return false;
+      if (Position == Text.size() || Text[Position++] != '\'')
+        return fail("character literal must contain one character");
+      Result = VariableValue::arithmetic(static_cast<unsigned char>(Value));
+      return true;
+    }
+    if (isDigit(Text[Position]) ||
+        (Text[Position] == '&' && Position + 1 != Text.size() &&
+         isHexDigit(Text[Position + 1])))
+      return parseNumber(Result);
+
+    StringRef Name;
+    if (!parseIdentifier(Name))
+      return false;
+    if (auto It = Variables.find(Name); It != Variables.end()) {
+      Result = It->second;
+      return true;
+    }
+    if (auto It = Constants.find(Name); It != Constants.end()) {
+      Result = VariableValue::arithmetic(It->second);
+      return true;
+    }
+    return fail("unknown variable or constant '" + Name + "'");
+  }
+
+  bool parseUnary(VariableValue &Result) {
+    skipSpace();
+    if (consume("+")) {
+      if (!parseUnary(Result))
+        return false;
+      return Result.Kind == VariableKind::Arithmetic ||
+             fail("unary '+' requires a numeric expression");
+    }
+    if (consume("-")) {
+      if (!parseUnary(Result))
+        return false;
+      if (Result.Kind != VariableKind::Arithmetic)
+        return fail("unary '-' requires a numeric expression");
+      Result.Arithmetic = 0U - Result.Arithmetic;
+      return true;
+    }
+    if (consume("~") || consumeInsensitive(":NOT:")) {
+      if (!parseUnary(Result))
+        return false;
+      if (Result.Kind != VariableKind::Arithmetic)
+        return fail(":NOT: requires a numeric expression");
+      Result.Arithmetic = ~Result.Arithmetic;
+      return true;
+    }
+    if (consumeInsensitive(":LNOT:")) {
+      if (!parseUnary(Result))
+        return false;
+      if (Result.Kind != VariableKind::Logical)
+        return fail(":LNOT: requires a logical expression");
+      Result.Logical = !Result.Logical;
+      return true;
+    }
+    if (consumeInsensitive(":STR:")) {
+      if (!parseUnary(Result))
+        return false;
+      if (Result.Kind == VariableKind::Arithmetic)
+        Result = VariableValue::string(utohexstr(Result.Arithmetic, false, 8));
+      else if (Result.Kind == VariableKind::Logical)
+        Result = VariableValue::string(Result.Logical ? "T" : "F");
+      else
+        return fail(":STR: requires a numeric or logical expression");
+      return true;
+    }
+    if (consumeInsensitive(":CHR:")) {
+      if (!parseUnary(Result))
+        return false;
+      if (Result.Kind != VariableKind::Arithmetic || Result.Arithmetic > 255)
+        return fail(":CHR: requires a numeric value from 0 to 255");
+      Result = VariableValue::string(
+          std::string(1, static_cast<char>(Result.Arithmetic)));
+      return true;
+    }
+    if (consumeInsensitive(":LEN:")) {
+      if (!parseUnary(Result))
+        return false;
+      if (Result.Kind != VariableKind::String)
+        return fail(":LEN: requires a string expression");
+      Result = VariableValue::arithmetic(Result.String.size());
+      return true;
+    }
+    bool Lower = consumeInsensitive(":LOWERCASE:");
+    if (Lower || consumeInsensitive(":UPPERCASE:")) {
+      if (!parseUnary(Result))
+        return false;
+      if (Result.Kind != VariableKind::String)
+        return fail("case conversion requires a string expression");
+      for (char &C : Result.String)
+        C = Lower ? toLower(C) : toUpper(C);
+      return true;
+    }
+    if (consumeInsensitive(":DEF:")) {
+      StringRef Name;
+      std::string SavedError = std::move(ErrorMessage);
+      if (!parseIdentifier(Name))
+        return false;
+      ErrorMessage = std::move(SavedError);
+      Result = VariableValue::logical(Variables.contains(Name) ||
+                                      Constants.contains(Name));
+      return true;
+    }
+    return parsePrimary(Result);
+  }
+
+  std::optional<ParsedOperator> parseBinaryOperator() {
+    skipSpace();
+    struct OperatorSpelling {
+      StringLiteral Spelling;
+      BinaryOperator Operator;
+      unsigned Precedence;
+    };
+    static constexpr OperatorSpelling Operators[] = {
+        {":LEOR:", BinaryOperator::LogicalExclusiveOr, 1},
+        {":LAND:", BinaryOperator::LogicalAnd, 1},
+        {":LOR:", BinaryOperator::LogicalOr, 1},
+        {":LEFT:", BinaryOperator::Left, 5},
+        {":RIGHT:", BinaryOperator::Right, 5},
+        {":ROL:", BinaryOperator::RotateLeft, 4},
+        {":ROR:", BinaryOperator::RotateRight, 4},
+        {":SHL:", BinaryOperator::ShiftLeft, 4},
+        {":SHR:", BinaryOperator::ShiftRight, 4},
+        {":MOD:", BinaryOperator::Modulo, 6},
+        {":AND:", BinaryOperator::And, 3},
+        {":EOR:", BinaryOperator::ExclusiveOr, 3},
+        {":OR:", BinaryOperator::Or, 3},
+        {":CC:", BinaryOperator::Concatenate, 5},
+    };
+    for (const OperatorSpelling &Entry : Operators)
+      if (consumeInsensitive(Entry.Spelling))
+        return ParsedOperator{Entry.Operator, Entry.Precedence};
+
+    struct SymbolOperator {
+      StringLiteral Spelling;
+      BinaryOperator Operator;
+      unsigned Precedence;
+    };
+    static constexpr SymbolOperator Symbols[] = {
+        {">=", BinaryOperator::GreaterEqual, 2},
+        {"<=", BinaryOperator::LessEqual, 2},
+        {"==", BinaryOperator::Equal, 2},
+        {"/=", BinaryOperator::NotEqual, 2},
+        {"<>", BinaryOperator::NotEqual, 2},
+        {"!=", BinaryOperator::NotEqual, 2},
+        {"<<", BinaryOperator::ShiftLeft, 4},
+        {">>", BinaryOperator::ShiftRight, 4},
+        {"&&", BinaryOperator::LogicalAnd, 1},
+        {"*", BinaryOperator::Multiply, 6},
+        {"/", BinaryOperator::Divide, 6},
+        {"%", BinaryOperator::Modulo, 6},
+        {"+", BinaryOperator::Add, 3},
+        {"-", BinaryOperator::Subtract, 3},
+        {"&", BinaryOperator::And, 3},
+        {"^", BinaryOperator::ExclusiveOr, 3},
+        {"|", BinaryOperator::Or, 3},
+        {"=", BinaryOperator::Equal, 2},
+        {">", BinaryOperator::Greater, 2},
+        {"<", BinaryOperator::Less, 2},
+    };
+    for (const SymbolOperator &Entry : Symbols)
+      if (consume(Entry.Spelling))
+        return ParsedOperator{Entry.Operator, Entry.Precedence};
+    return std::nullopt;
+  }
+
+  bool requireKinds(const VariableValue &Left, const VariableValue &Right,
+                    VariableKind Kind, StringRef Description) {
+    return (Left.Kind == Kind && Right.Kind == Kind) ||
+           fail(Description + " requires operands of the same type");
+  }
+
+  bool applyBinaryOperator(VariableValue &Left, BinaryOperator Operator,
+                           const VariableValue &Right) {
+    auto Numeric = [&]() {
+      return requireKinds(Left, Right, VariableKind::Arithmetic,
+                          "numeric operator");
+    };
+    auto Logical = [&]() {
+      return requireKinds(Left, Right, VariableKind::Logical,
+                          "Boolean operator");
+    };
+    switch (Operator) {
+    case BinaryOperator::Multiply:
+      if (!Numeric())
+        return false;
+      Left.Arithmetic *= Right.Arithmetic;
+      return true;
+    case BinaryOperator::Divide:
+      if (!Numeric())
+        return false;
+      if (!Right.Arithmetic)
+        return fail("division by zero");
+      Left.Arithmetic /= Right.Arithmetic;
+      return true;
+    case BinaryOperator::Modulo:
+      if (!Numeric())
+        return false;
+      if (!Right.Arithmetic)
+        return fail("division by zero");
+      Left.Arithmetic %= Right.Arithmetic;
+      return true;
+    case BinaryOperator::Concatenate:
+      if (!requireKinds(Left, Right, VariableKind::String,
+                        "string concatenation"))
+        return false;
+      Left.String += Right.String;
+      return true;
+    case BinaryOperator::Left:
+    case BinaryOperator::Right: {
+      if (Left.Kind != VariableKind::String ||
+          Right.Kind != VariableKind::Arithmetic)
+        return fail("string slicing requires a string and a numeric length");
+      size_t Length = std::min<size_t>(Right.Arithmetic, Left.String.size());
+      if (Operator == BinaryOperator::Left)
+        Left.String.resize(Length);
+      else
+        Left.String = Left.String.substr(Left.String.size() - Length);
+      return true;
+    }
+    case BinaryOperator::RotateLeft:
+    case BinaryOperator::RotateRight: {
+      if (!Numeric())
+        return false;
+      unsigned Amount = Right.Arithmetic & 31;
+      uint32_t Value = Left.Arithmetic;
+      if (Operator == BinaryOperator::RotateLeft)
+        Value = (Value << Amount) | (Value >> ((32 - Amount) & 31));
+      else
+        Value = (Value >> Amount) | (Value << ((32 - Amount) & 31));
+      Left.Arithmetic = Value;
+      return true;
+    }
+    case BinaryOperator::ShiftLeft:
+    case BinaryOperator::ShiftRight: {
+      if (!Numeric())
+        return false;
+      if (Right.Arithmetic >= 64)
+        Left.Arithmetic = 0;
+      else if (Operator == BinaryOperator::ShiftLeft)
+        Left.Arithmetic <<= Right.Arithmetic;
+      else
+        Left.Arithmetic >>= Right.Arithmetic;
+      return true;
+    }
+    case BinaryOperator::Add:
+      if (!Numeric())
+        return false;
+      Left.Arithmetic += Right.Arithmetic;
+      return true;
+    case BinaryOperator::Subtract:
+      if (!Numeric())
+        return false;
+      Left.Arithmetic -= Right.Arithmetic;
+      return true;
+    case BinaryOperator::And:
+      if (!Numeric())
+        return false;
+      Left.Arithmetic &= Right.Arithmetic;
+      return true;
+    case BinaryOperator::Or:
+      if (!Numeric())
+        return false;
+      Left.Arithmetic |= Right.Arithmetic;
+      return true;
+    case BinaryOperator::ExclusiveOr:
+      if (!Numeric())
+        return false;
+      Left.Arithmetic ^= Right.Arithmetic;
+      return true;
+    case BinaryOperator::Equal:
+    case BinaryOperator::NotEqual: {
+      if (Left.Kind != Right.Kind)
+        return fail("comparison requires operands of the same type");
+      bool Equal = Left.Kind == VariableKind::Arithmetic
+                       ? Left.Arithmetic == Right.Arithmetic
+                   : Left.Kind == VariableKind::Logical
+                       ? Left.Logical == Right.Logical
+                       : Left.String == Right.String;
+      Left = VariableValue::logical(Operator == BinaryOperator::Equal ? Equal
+                                                                      : !Equal);
+      return true;
+    }
+    case BinaryOperator::Greater:
+    case BinaryOperator::GreaterEqual:
+    case BinaryOperator::Less:
+    case BinaryOperator::LessEqual: {
+      if (Left.Kind != Right.Kind || Left.Kind == VariableKind::Logical)
+        return fail("ordered comparison requires matching numeric or string "
+                    "operands");
+      int Comparison = Left.Kind == VariableKind::Arithmetic
+                           ? (Left.Arithmetic < Right.Arithmetic
+                                  ? -1
+                                  : Left.Arithmetic != Right.Arithmetic)
+                           : Left.String.compare(Right.String);
+      bool Value = Operator == BinaryOperator::Greater        ? Comparison > 0
+                   : Operator == BinaryOperator::GreaterEqual ? Comparison >= 0
+                   : Operator == BinaryOperator::Less         ? Comparison < 0
+                                                              : Comparison <= 0;
+      Left = VariableValue::logical(Value);
+      return true;
+    }
+    case BinaryOperator::LogicalAnd:
+      if (!Logical())
+        return false;
+      Left.Logical &= Right.Logical;
+      return true;
+    case BinaryOperator::LogicalOr:
+      if (!Logical())
+        return false;
+      Left.Logical |= Right.Logical;
+      return true;
+    case BinaryOperator::LogicalExclusiveOr:
+      if (!Logical())
+        return false;
+      Left.Logical ^= Right.Logical;
+      return true;
+    }
+    llvm_unreachable("unknown ARMASM binary operator");
+  }
+
+  bool parseExpression(VariableValue &Result, unsigned MinimumPrecedence) {
+    if (!parseUnary(Result))
+      return false;
+    while (true) {
+      size_t OperatorPosition = Position;
+      std::optional<ParsedOperator> Operator = parseBinaryOperator();
+      if (!Operator || Operator->Precedence < MinimumPrecedence) {
+        Position = OperatorPosition;
+        return true;
+      }
+      VariableValue Right;
+      if (!parseExpression(Right, Operator->Precedence + 1) ||
+          !applyBinaryOperator(Result, Operator->Operator, Right))
+        return false;
+    }
+  }
+
+public:
+  VariableExpressionParser(StringRef Text, const VariableMap &Variables,
+                           const StringMap<uint64_t> &Constants, bool NoEscape)
+      : Text(Text), Variables(Variables), Constants(Constants),
+        NoEscape(NoEscape) {}
+
+  Expected<VariableValue> parse() {
+    VariableValue Result;
+    if (!parseExpression(Result, 1))
+      return createStringError(inconvertibleErrorCode(), ErrorMessage);
+    skipSpace();
+    if (Position != Text.size())
+      return createStringError(inconvertibleErrorCode(),
+                               "unexpected token in expression: " +
+                                   Text.drop_front(Position));
+    return Result;
+  }
+};
+
+static std::string quoteStringVariable(StringRef Value, bool NoEscape) {
+  std::string Quoted;
+  raw_string_ostream OS(Quoted);
+  OS << '"';
+  for (unsigned char C : Value) {
+    switch (C) {
+    case '"':
+      OS << "\"\"";
+      break;
+    case '$':
+      OS << "$$";
+      break;
+    case '\\':
+      OS << (NoEscape ? "\\" : "\\\\");
+      break;
+    case '\n':
+      OS << "\\n";
+      break;
+    case '\r':
+      OS << "\\r";
+      break;
+    case '\t':
+      OS << "\\t";
+      break;
+    default:
+      if (isPrint(C))
+        OS << C;
+      else
+        OS << '\\' << char('0' + ((C >> 6) & 7)) << char('0' + ((C >> 3) & 7))
+           << char('0' + (C & 7));
+      break;
+    }
+  }
+  OS << '"';
+  return Quoted;
+}
+
+static std::string formatSubstitution(const VariableValue &Variable) {
+  switch (Variable.Kind) {
+  case VariableKind::Arithmetic:
+    return utohexstr(Variable.Arithmetic, false, 8);
+  case VariableKind::Logical:
+    return Variable.Logical ? "T" : "F";
+  case VariableKind::String:
+    return Variable.String;
+  }
+  llvm_unreachable("unknown ARMASM variable type");
+}
+
+static std::string substituteVariables(StringRef Line,
+                                       const VariableMap &Variables) {
+  std::string Substituted;
+  raw_string_ostream OS(Substituted);
+  bool InString = false;
+  bool InBars = false;
+  for (size_t I = 0; I != Line.size();) {
+    char C = Line[I];
+    if (C == '"') {
+      OS << C;
+      if (InString && I + 1 != Line.size() && Line[I + 1] == '"') {
+        OS << '"';
+        I += 2;
+        continue;
+      }
+      InString = !InString;
+      ++I;
+      continue;
+    }
+    if (C == '|' && !InString) {
+      InBars = !InBars;
+      OS << C;
+      ++I;
+      continue;
+    }
+    if (C != '$' || InBars || (I + 1 != Line.size() && Line[I + 1] == '$')) {
+      OS << C;
+      if (C == '$' && I + 1 != Line.size() && Line[I + 1] == '$') {
+        OS << '$';
+        I += 2;
+      } else {
+        ++I;
+      }
+      continue;
+    }
+
+    size_t NameStart = I + 1;
+    size_t NameEnd = NameStart;
+    if (NameEnd != Line.size() &&
+        (isAlpha(Line[NameEnd]) || Line[NameEnd] == '_')) {
+      ++NameEnd;
+      while (NameEnd != Line.size() &&
+             (isAlnum(Line[NameEnd]) || Line[NameEnd] == '_'))
+        ++NameEnd;
+    }
+    auto It = Variables.find(Line.slice(NameStart, NameEnd));
+    if (NameEnd == NameStart || It == Variables.end()) {
+      OS << C;
+      ++I;
+      continue;
+    }
+    OS << formatSubstitution(It->second);
+    I = NameEnd;
+    if (I != Line.size() && Line[I] == '.')
+      ++I;
+  }
+  return Substituted;
+}
+
+static std::string
+rewriteVariables(StringRef Text, const VariableMap &Variables, bool NoEscape) {
+  std::string Rewritten;
+  raw_string_ostream OS(Rewritten);
+  for (size_t I = 0; I != Text.size();) {
+    if (Text[I] == '"' || Text[I] == '\'') {
+      char Quote = Text[I];
+      OS << Text[I++];
+      while (I != Text.size()) {
+        char C = Text[I++];
+        OS << C;
+        if (C == '\\' && I != Text.size())
+          OS << Text[I++];
+        else if (C == Quote) {
+          if (Quote == '"' && I != Text.size() && Text[I] == '"')
+            OS << Text[I++];
+          else
+            break;
+        }
+      }
+      continue;
+    }
+    if (Text[I] == '|') {
+      size_t End = Text.find('|', I + 1);
+      if (End != StringRef::npos) {
+        StringRef Name = Text.slice(I + 1, End);
+        auto It = Variables.find(Name);
+        if (It != Variables.end()) {
+          const VariableValue &Variable = It->second;
+          if (Variable.Kind == VariableKind::Arithmetic)
+            OS << Variable.Arithmetic;
+          else if (Variable.Kind == VariableKind::Logical)
+            OS << (Variable.Logical ? "{TRUE}" : "{FALSE}");
+          else
+            OS << quoteStringVariable(Variable.String, NoEscape);
+        } else {
+          OS << Text.slice(I, End + 1);
+        }
+        I = End + 1;
+        continue;
+      }
+    }
+    if (!isAlpha(Text[I]) && Text[I] != '_') {
+      OS << Text[I++];
+      continue;
+    }
+    size_t End = I + 1;
+    while (End != Text.size() && (isAlnum(Text[End]) || Text[End] == '_'))
+      ++End;
+    StringRef Name = Text.slice(I, End);
+    auto It = Variables.find(Name);
+    if (It == Variables.end()) {
+      OS << Name;
+    } else if (It->second.Kind == VariableKind::Arithmetic) {
+      OS << It->second.Arithmetic;
+    } else if (It->second.Kind == VariableKind::Logical) {
+      OS << (It->second.Logical ? "{TRUE}" : "{FALSE}");
+    } else {
+      OS << quoteStringVariable(It->second.String, NoEscape);
+    }
+    I = End;
+  }
+  return Rewritten;
+}
+
+static StringRef variableKindName(VariableKind Kind) {
+  switch (Kind) {
+  case VariableKind::Arithmetic:
+    return "arithmetic";
+  case VariableKind::Logical:
+    return "logical";
+  case VariableKind::String:
+    return "string";
+  }
+  llvm_unreachable("unknown ARMASM variable type");
+}
+
+static Error declareVariable(StringRef Name, VariableKind Kind,
+                             VariableMap &Variables) {
+  VariableValue Initial =
+      Kind == VariableKind::Arithmetic ? VariableValue::arithmetic(0)
+      : Kind == VariableKind::Logical  ? VariableValue::logical(false)
+                                       : VariableValue::string("");
+  auto It = Variables.find(Name);
+  if (It != Variables.end())
+    It->second = std::move(Initial);
+  else
+    Variables[Name] = std::move(Initial);
+  return Error::success();
+}
+
+static Error assignVariable(StringRef Name, StringRef Directive,
+                            StringRef Expression, bool ImplicitDeclaration,
+                            VariableMap &Variables,
+                            const StringMap<uint64_t> &Constants,
+                            bool NoEscape) {
+  VariableKind Kind =
+      Directive.equals_insensitive("SETA")   ? VariableKind::Arithmetic
+      : Directive.equals_insensitive("SETL") ? VariableKind::Logical
+                                             : VariableKind::String;
+  auto It = Variables.find(Name);
+  if (It == Variables.end()) {
+    if (!ImplicitDeclaration)
+      return createStringError(inconvertibleErrorCode(),
+                               "assignment to undeclared variable '" + Name +
+                                   "'");
+    if (Error Err = declareVariable(Name, Kind, Variables))
+      return Err;
+    It = Variables.find(Name);
+  }
+  if (It->second.Kind != Kind)
+    return createStringError(
+        inconvertibleErrorCode(),
+        "cannot assign " + variableKindName(Kind) + " value to " +
+            variableKindName(It->second.Kind) + " variable '" + Name + "'");
+
+  VariableExpressionParser Parser(Expression, Variables, Constants, NoEscape);
+  Expected<VariableValue> Value = Parser.parse();
+  if (!Value)
+    return Value.takeError();
+  if (Value->Kind != Kind)
+    return createStringError(inconvertibleErrorCode(),
+                             Directive + " requires a " +
+                                 variableKindName(Kind) + " expression");
+  It->second = std::move(*Value);
+  return Error::success();
 }
 
 static void collectExports(StringRef Remaining, StringSet<> &Exports) {
@@ -443,26 +1316,136 @@ static std::string rewriteSymbols(StringRef Text,
   return Rewritten;
 }
 
-static std::unique_ptr<MemoryBuffer>
-translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape) {
+static bool isSetDirective(StringRef Directive) {
+  return Directive.equals_insensitive("SETA") ||
+         Directive.equals_insensitive("SETL") ||
+         Directive.equals_insensitive("SETS");
+}
+
+static bool isValidVariableName(StringRef Name) {
+  if (Name.size() >= 2 && Name.starts_with("|") && Name.ends_with("|"))
+    return Name.size() != 2;
+  if (Name.empty() || (!isAlpha(Name.front()) && Name.front() != '_'))
+    return false;
+  return llvm::all_of(Name.drop_front(),
+                      [](char C) { return isAlnum(C) || C == '_'; });
+}
+
+static Error executePredefine(StringRef Predefine, VariableMap &Variables,
+                              const StringMap<uint64_t> &Constants,
+                              bool NoEscape) {
+  std::string Substituted = substituteVariables(Predefine, Variables);
+  StringRef Tail = stripComment(Substituted).trim();
+  StringRef NameToken = takeToken(Tail);
+  StringRef Directive = takeToken(Tail);
+  if (!isValidVariableName(NameToken) || !isSetDirective(Directive) ||
+      Tail.empty())
+    return createStringError(
+        inconvertibleErrorCode(),
+        "expected '<variable> SETA|SETL|SETS <expression>'");
+  StringRef Name = unquoteIdentifier(NameToken);
+  if (Error Err = assignVariable(Name, Directive, Tail,
+                                 /*ImplicitDeclaration=*/true, Variables,
+                                 Constants, NoEscape))
+    return Err;
+  return Error::success();
+}
+
+static Expected<std::unique_ptr<MemoryBuffer>>
+translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
+               ArrayRef<std::string> Predefines) {
   StringRef Remaining = Input->getBuffer();
   std::string Translated;
   raw_string_ostream OS(Translated);
   StringMap<std::string> Constants;
+  StringMap<uint64_t> AbsoluteConstants;
+  VariableMap Variables;
   StringSet<> Exports;
   collectExports(Remaining, Exports);
+
+  for (StringRef Predefine : Predefines)
+    if (Error Err =
+            executePredefine(Predefine, Variables, AbsoluteConstants, NoEscape))
+      return createStringError(inconvertibleErrorCode(),
+                               "invalid predefine '" + Predefine +
+                                   "': " + toString(std::move(Err)));
+
+  std::string CurrentFilename = Input->getBufferIdentifier().str();
+  unsigned CurrentLine = 0;
 
   while (!Remaining.empty()) {
     auto [Line, Rest] = Remaining.split('\n');
     Remaining = Rest;
     Line.consume_back("\r");
+    ++CurrentLine;
 
-    Line = stripComment(Line);
+    std::string SubstitutedLine = substituteVariables(Line, Variables);
+    Line = stripComment(SubstitutedLine);
     StringRef Statement = Line.trim();
     StringRef Tail = Statement;
     StringRef First = takeToken(Tail);
     StringRef AfterFirst = Tail;
     StringRef Second = takeToken(AfterFirst);
+
+    auto SourceError = [&](const Twine &Message) -> Error {
+      return createStringError(inconvertibleErrorCode(),
+                               Twine(CurrentFilename) + ":" +
+                                   Twine(CurrentLine) + ": " + Message);
+    };
+
+    if (First.starts_with("#")) {
+      StringRef Marker = Statement;
+      takeToken(Marker);
+      StringRef SourceLine = takeToken(Marker);
+      unsigned ParsedLine;
+      Marker = Marker.trim();
+      if (!SourceLine.getAsInteger(10, ParsedLine) &&
+          Marker.consume_front("\"") && Marker.consume_back("\"")) {
+        CurrentFilename = Marker.str();
+        CurrentLine = ParsedLine - 1;
+      }
+      OS << Line << '\n';
+      continue;
+    }
+
+    std::optional<VariableKind> DeclarationKind;
+    if (First.equals_insensitive("GBLA"))
+      DeclarationKind = VariableKind::Arithmetic;
+    else if (First.equals_insensitive("GBLL"))
+      DeclarationKind = VariableKind::Logical;
+    else if (First.equals_insensitive("GBLS"))
+      DeclarationKind = VariableKind::String;
+    if (DeclarationKind) {
+      StringRef NameToken = takeToken(Tail);
+      if (!isValidVariableName(NameToken) || !Tail.empty())
+        return SourceError("expected one variable name after " + First);
+      StringRef Name = unquoteIdentifier(NameToken);
+      if (Constants.contains(Name))
+        return SourceError("variable name '" + Name + "' is already defined");
+      if (Error Err = declareVariable(Name, *DeclarationKind, Variables))
+        return SourceError(toString(std::move(Err)));
+      OS << '\n';
+      continue;
+    }
+    if (isSetDirective(Second)) {
+      StringRef Name = unquoteIdentifier(First);
+      if (!isValidVariableName(First) || AfterFirst.empty())
+        return SourceError("expected variable assignment expression");
+      if (Error Err = assignVariable(Name, Second, AfterFirst,
+                                     /*ImplicitDeclaration=*/false, Variables,
+                                     AbsoluteConstants, NoEscape))
+        return SourceError(toString(std::move(Err)));
+      OS << '\n';
+      continue;
+    }
+
+    std::string RewrittenLine = rewriteVariables(Line, Variables, NoEscape);
+    Line = RewrittenLine;
+    Statement = Line.trim();
+    Tail = Statement;
+    First = takeToken(Tail);
+    AfterFirst = Tail;
+    Second = takeToken(AfterFirst);
 
     auto IsDataDirective = [](StringRef Token) {
       return Token.equals_insensitive("DCB") || Token == "=" ||
@@ -474,10 +1457,8 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape) {
              Token.equals_insensitive("DCQU");
     };
 
-    if (First.starts_with("#")) {
-      OS << Line;
-    } else if (First.equals_insensitive("EXPORT") ||
-               First.equals_insensitive("GLOBAL")) {
+    if (First.equals_insensitive("EXPORT") ||
+        First.equals_insensitive("GLOBAL")) {
       StringRef Name = unquoteIdentifier(takeToken(Tail));
       OS << ".globl " << Name;
     } else if (First.equals_insensitive("IMPORT")) {
@@ -511,6 +1492,13 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape) {
       StringRef Name = unquoteIdentifier(First);
       std::string TemporaryName = (".Larmasm$" + Name).str();
       Constants[Name] = TemporaryName;
+      VariableExpressionParser Parser(AfterFirst, Variables, AbsoluteConstants,
+                                      NoEscape);
+      Expected<VariableValue> Value = Parser.parse();
+      if (Value && Value->Kind == VariableKind::Arithmetic)
+        AbsoluteConstants[Name] = Value->Arithmetic;
+      else if (!Value)
+        consumeError(Value.takeError());
       OS << ".equ " << TemporaryName << ", "
          << rewriteSymbols(AfterFirst, Constants);
     } else if (Second.equals_insensitive("PROC") ||
@@ -555,9 +1543,12 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape) {
           if (Operand.empty()) {
             OS << ".byte (";
           } else if (Operand.size() >= 2 && Operand.front() == '"' &&
-                     Operand.back() == '"')
-            OS << ".ascii " << translateString(Operand, NoEscape);
-          else {
+                     Operand.back() == '"') {
+            Expected<std::string> String = translateString(Operand, NoEscape);
+            if (!String)
+              return SourceError(toString(String.takeError()));
+            OS << ".ascii " << *String;
+          } else {
             OS << ".byte " << rewriteSymbols(Operand, Constants);
           }
         }
@@ -632,11 +1623,18 @@ static int assembleInput(StringRef ProgName, StringRef InputFilename,
     return 1;
   }
 
+  std::vector<std::string> Predefines = Args.getAllArgValues(OPT_predefine);
+  Expected<std::unique_ptr<MemoryBuffer>> TranslatedInput = translateInput(
+      std::move(*ExpandedInput), Args.hasArg(OPT_no_escape), Predefines);
+  if (!TranslatedInput) {
+    WithColor::error(DiagOS, ProgName)
+        << toString(TranslatedInput.takeError()) << '\n';
+    return 1;
+  }
+
   SourceMgr SrcMgr;
   SrcMgr.setDiagHandler(handleDiagnostic, &DiagOS);
-  SrcMgr.AddNewSourceBuffer(
-      translateInput(std::move(*ExpandedInput), Args.hasArg(OPT_no_escape)),
-      SMLoc());
+  SrcMgr.AddNewSourceBuffer(std::move(*TranslatedInput), SMLoc());
   SrcMgr.setIncludeDirs(IncludeDirs);
   SrcMgr.setVirtualFileSystem(vfs::getRealFileSystem());
 
