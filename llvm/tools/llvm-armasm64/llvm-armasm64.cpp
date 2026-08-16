@@ -3030,8 +3030,116 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
     if (Error Err =
             executePredefine(Predefine, Variables, AbsoluteConstants, NoEscape))
       return createStringError(inconvertibleErrorCode(),
-                               "invalid predefine '" + Predefine +
-                                   "': " + toString(std::move(Err)));
+                                "invalid predefine '" + Predefine +
+                                    "': " + toString(std::move(Err)));
+
+  VariableMap SizeVariables = Variables;
+  StringMap<uint64_t> SizeConstants = AbsoluteConstants;
+  StringRef SizeRemaining = Remaining;
+  while (!SizeRemaining.empty()) {
+    auto [SourceLine, Rest] = SizeRemaining.split('\n');
+    SizeRemaining = Rest;
+    SourceLine.consume_back("\r");
+    bool HasLabel = !SourceLine.empty() && !isSpace(SourceLine.front());
+    std::string Substituted = substituteVariables(SourceLine, SizeVariables);
+    StringRef SizeTail = stripComment(Substituted).trim();
+    StringRef SizeFirst = takeToken(SizeTail);
+    StringRef SizeAfterFirst = SizeTail;
+    StringRef SizeSecond = takeToken(SizeAfterFirst);
+    if (SizeFirst.empty() || SizeFirst == "#")
+      continue;
+
+    std::optional<VariableKind> DeclarationKind;
+    if (SizeFirst.equals_insensitive("GBLA"))
+      DeclarationKind = VariableKind::Arithmetic;
+    else if (SizeFirst.equals_insensitive("GBLL"))
+      DeclarationKind = VariableKind::Logical;
+    else if (SizeFirst.equals_insensitive("GBLS"))
+      DeclarationKind = VariableKind::String;
+    if (DeclarationKind) {
+      StringRef Name = unquoteIdentifier(takeToken(SizeTail));
+      if (!Name.empty())
+        consumeError(declareVariable(Name, *DeclarationKind, SizeVariables));
+      continue;
+    }
+    if (isSetDirective(SizeSecond)) {
+      StringRef Name = unquoteIdentifier(SizeFirst);
+      consumeError(assignVariable(Name, SizeSecond, SizeAfterFirst,
+                                  /*ImplicitDeclaration=*/false, SizeVariables,
+                                  SizeConstants, NoEscape));
+      continue;
+    }
+    if (SizeSecond.equals_insensitive("EQU")) {
+      VariableExpressionParser Parser(SizeAfterFirst, SizeVariables,
+                                      SizeConstants, NoEscape);
+      Expected<VariableValue> Value = Parser.parse();
+      if (Value && Value->Kind == VariableKind::Arithmetic)
+        SizeConstants[unquoteIdentifier(SizeFirst)] = Value->Arithmetic;
+      else if (!Value)
+        consumeError(Value.takeError());
+    }
+    if (!HasLabel)
+      continue;
+
+    StringRef Name = unquoteIdentifier(SizeFirst);
+    uint64_t Size = 0;
+    if (isDataDirective(SizeSecond)) {
+      SmallVector<StringRef, 8> Operands;
+      splitOperands(SizeAfterFirst, Operands);
+      bool IsByte = SizeSecond.equals_insensitive("DCB") || SizeSecond == "=";
+      unsigned ElementSize =
+          IsByte                                               ? 1
+          : SizeSecond.equals_insensitive("DCW") ||
+                  SizeSecond.equals_insensitive("DCWU")        ? 2
+          : SizeSecond.equals_insensitive("DCD") ||
+                  SizeSecond.equals_insensitive("DCDU") ||
+                  SizeSecond == "&" ||
+                  SizeSecond.equals_insensitive("DCI") ||
+                  SizeSecond.equals_insensitive("DCI.W")       ? 4
+                                                               : 8;
+      for (StringRef Operand : Operands) {
+        if (IsByte) {
+          VariableExpressionParser Parser(Operand, SizeVariables,
+                                          SizeConstants, NoEscape);
+          Expected<VariableValue> Value = Parser.parse();
+          if (Value && Value->Kind == VariableKind::String) {
+            Size += Value->String.size();
+            continue;
+          }
+          if (!Value)
+            consumeError(Value.takeError());
+        }
+        Size += ElementSize;
+      }
+    } else if (isStorageDirective(SizeSecond)) {
+      SmallVector<StringRef, 3> Operands;
+      splitOperands(SizeAfterFirst, Operands);
+      VariableExpressionParser Parser(Operands.front(), SizeVariables,
+                                      SizeConstants, NoEscape);
+      Expected<VariableValue> Value = Parser.parse();
+      if (Value && Value->Kind == VariableKind::Arithmetic)
+        Size = Value->Arithmetic;
+      else if (!Value)
+        consumeError(Value.takeError());
+    } else if (SizeSecond.equals_insensitive("FIELD")) {
+      VariableExpressionParser Parser(SizeAfterFirst, SizeVariables,
+                                      SizeConstants, NoEscape);
+      Expected<VariableValue> Value = Parser.parse();
+      if (Value && Value->Kind == VariableKind::Arithmetic)
+        Size = Value->Arithmetic;
+      else if (!Value)
+        consumeError(Value.takeError());
+    } else if (SizeSecond.equals_insensitive("ADRL")) {
+      Size = 8;
+    } else if (!SizeSecond.empty() &&
+               !SizeSecond.equals_insensitive("EQU") &&
+               !SizeSecond.equals_insensitive("PROC") &&
+               !SizeSecond.equals_insensitive("FUNCTION") &&
+               !SizeSecond.equals_insensitive("ROUT")) {
+      Size = 4;
+    }
+    SymbolSizes[Name] = Size;
+  }
 
   std::string CurrentFilename = Input->getBufferIdentifier().str();
   unsigned CurrentLine = 0;
