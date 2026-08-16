@@ -2979,6 +2979,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
     std::string Expression;
     bool IsSymbolic;
     bool ReplaceWithCurrentLocation = false;
+    bool IsInstruction = false;
   };
   std::optional<PreviousDataDefinition> PreviousData;
   struct RelocatedExpression {
@@ -3414,6 +3415,18 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
       StringRef RelocationName = getARM64RelocationName(*Type);
       if (RelocationName.empty())
         return SourceError("A2204: Unknown relocation type " + Twine(*Type));
+      unsigned RelocationSize =
+          *Type == COFF::IMAGE_REL_ARM64_ADDR64    ? 8
+          : *Type == COFF::IMAGE_REL_ARM64_SECTION ? 2
+          : *Type == COFF::IMAGE_REL_ARM64_ABSOLUTE ? 0
+                                                    : 4;
+      if (!PreviousData->IsInstruction &&
+          PreviousData->Size < RelocationSize && !NoWarn &&
+          !IgnoredWarnings.contains(4205))
+        WithColor::warning(DiagOS, ProgName)
+            << CurrentFilename << ":" << CurrentLine
+            << ": A4205: Previous data definition too small for requested "
+               "relocation; emitting anyway\n";
 
       std::string Expression;
       if (Operands.size() == 2) {
@@ -3769,7 +3782,8 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
           PreviousData =
               PreviousDataDefinition{ExpressionOffset, ExpressionString.size(),
                                      DataSize, ExpressionString, IsSymbolic,
-                                     /*ReplaceWithCurrentLocation=*/false};
+                                     /*ReplaceWithCurrentLocation=*/false,
+                                     /*IsInstruction=*/false};
         };
 
         if (IsSingle || IsDouble) {
@@ -3851,10 +3865,13 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
                 OS << ", ";
               OS << static_cast<unsigned>(static_cast<unsigned char>(Byte));
             }
-            PreviousData = PreviousDataDefinition{0, 0, 1, /*Expression=*/{},
+            PreviousData = PreviousDataDefinition{
+                0, 0, static_cast<unsigned>(Value->String.size()),
+                                                  /*Expression=*/{},
                                                   /*IsSymbolic=*/false,
                                                   /*ReplaceWithCurrentLocation=*/
-                                                      false};
+                                                      false,
+                                                  /*IsInstruction=*/false};
           }
           EmittedSize += Value->String.size();
           continue;
@@ -4024,7 +4041,8 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
       OS << Target;
       PreviousData = PreviousDataDefinition{
           ExpressionOffset, Target.size(), 4, Target,
-          /*IsSymbolic=*/true, /*ReplaceWithCurrentLocation=*/true};
+          /*IsSymbolic=*/true, /*ReplaceWithCurrentLocation=*/true,
+          /*IsInstruction=*/true};
     } else if (First.equals_insensitive("END")) {
       if (ActiveProcedureArea)
         return SourceError("A2057: missing ENDP directive in section " +
@@ -4132,7 +4150,8 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
       if ((HasLabel && !Second.empty()) || (!HasLabel && !First.empty()))
         PreviousData = PreviousDataDefinition{
             0, 0, 4, /*Expression=*/{}, /*IsSymbolic=*/false,
-            /*ReplaceWithCurrentLocation=*/false};
+            /*ReplaceWithCurrentLocation=*/false,
+            /*IsInstruction=*/true};
     }
     OS << '\n';
   }
