@@ -1873,6 +1873,95 @@ static std::string rewriteStorageMapFields(StringRef Text,
   return Rewritten;
 }
 
+struct NumericLocalLabel {
+  unsigned Number;
+  StringRef RoutName;
+};
+
+static std::optional<NumericLocalLabel>
+parseNumericLocalLabel(StringRef Token) {
+  if (Token.empty() || !isDigit(Token.front()))
+    return std::nullopt;
+  size_t End = 0;
+  while (End != Token.size() && isDigit(Token[End]))
+    ++End;
+  unsigned Number;
+  if (Token.take_front(End).getAsInteger(10, Number) || Number > 99)
+    return std::nullopt;
+  StringRef RoutName = Token.drop_front(End);
+  if (!RoutName.empty()) {
+    if (!isAlpha(RoutName.front()) && RoutName.front() != '_')
+      return std::nullopt;
+    if (!llvm::all_of(RoutName.drop_front(),
+                      [](char C) { return isAlnum(C) || C == '_'; }))
+      return std::nullopt;
+  }
+  return NumericLocalLabel{Number, RoutName};
+}
+
+static Expected<std::string>
+rewriteNumericLocalLabelReferences(StringRef Text, unsigned Scope,
+                                   StringRef RoutName,
+                                   const DenseSet<unsigned> &DefinedLabels) {
+  std::string Rewritten;
+  raw_string_ostream OS(Rewritten);
+  char Quote = '\0';
+  for (size_t I = 0; I != Text.size();) {
+    char C = Text[I];
+    if (Quote) {
+      OS << C;
+      ++I;
+      if (C == Quote)
+        Quote = '\0';
+      continue;
+    }
+    if (C == '"' || C == '\'' || C == '|') {
+      Quote = C;
+      OS << C;
+      ++I;
+      continue;
+    }
+    if (C != '%' || (I != 0 && (isAlnum(Text[I - 1]) || Text[I - 1] == ')'))) {
+      OS << C;
+      ++I;
+      continue;
+    }
+
+    size_t End = I + 1;
+    char Direction = '\0';
+    if (End != Text.size() &&
+        (toUpper(Text[End]) == 'F' || toUpper(Text[End]) == 'B'))
+      Direction = toLower(Text[End++]);
+    if (End != Text.size() &&
+        (toUpper(Text[End]) == 'A' || toUpper(Text[End]) == 'T'))
+      ++End;
+    size_t NumberStart = End;
+    while (End != Text.size() && isDigit(Text[End]))
+      ++End;
+    if (NumberStart == End) {
+      OS << C;
+      ++I;
+      continue;
+    }
+    unsigned Number;
+    if (Text.slice(NumberStart, End).getAsInteger(10, Number) || Number > 99)
+      return createStringError(inconvertibleErrorCode(),
+                               "numeric local label must be in range 0-99");
+    size_t NameStart = End;
+    while (End != Text.size() && (isAlnum(Text[End]) || Text[End] == '_'))
+      ++End;
+    StringRef ReferenceRoutName = Text.slice(NameStart, End);
+    if (!ReferenceRoutName.empty() && ReferenceRoutName != RoutName)
+      return createStringError(inconvertibleErrorCode(),
+                               "numeric local label ROUT name mismatch");
+    if (!Direction)
+      Direction = DefinedLabels.contains(Number) ? 'b' : 'f';
+    OS << Scope * 100 + Number << Direction;
+    I = End;
+  }
+  return Rewritten;
+}
+
 static bool isSetDirective(StringRef Directive) {
   return Directive.equals_insensitive("SETA") ||
          Directive.equals_insensitive("SETL") ||
@@ -2879,6 +2968,9 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
   std::string CurrentAreaName;
   std::string CurrentAreaBaseSymbol;
   std::optional<std::string> ActiveProcedureArea;
+  unsigned NumericLabelScope = 0;
+  std::string NumericLabelRoutName;
+  DenseSet<unsigned> DefinedNumericLabels;
 
   while (!Remaining.empty()) {
     auto [Line, Rest] = Remaining.split('\n');
@@ -3072,11 +3164,31 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
     if (UsesPC)
       ++PCSymbolCount;
     Line = RewrittenLine;
+    std::string NumericLabelToken;
+    std::optional<NumericLocalLabel> NumericLabel =
+        parseNumericLocalLabel(First);
+    if (NumericLabel) {
+      if (!NumericLabel->RoutName.empty() &&
+          NumericLabel->RoutName != NumericLabelRoutName)
+        return SourceError("numeric local label ROUT name mismatch");
+      DefinedNumericLabels.insert(NumericLabel->Number);
+    }
+    Expected<std::string> NumericRewritten = rewriteNumericLocalLabelReferences(
+        Line, NumericLabelScope, NumericLabelRoutName, DefinedNumericLabels);
+    if (!NumericRewritten)
+      return SourceError(toString(NumericRewritten.takeError()));
+    Line = *NumericRewritten;
     Statement = Line.trim();
     Tail = Statement;
     First = takeToken(Tail);
     AfterFirst = Tail;
     Second = takeToken(AfterFirst);
+    NumericLabel = parseNumericLocalLabel(First);
+    if (NumericLabel) {
+      NumericLabelToken =
+          std::to_string(NumericLabelScope * 100 + NumericLabel->Number);
+      First = NumericLabelToken;
+    }
     bool IsDataLine = isDataDirective(First) || isDataDirective(Second);
     bool IsStorageLine =
         isStorageDirective(First) || isStorageDirective(Second);
@@ -3310,6 +3422,9 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
       CurrentAreaUsesCodeAlignment =
           UsesCodeAlignment || AreaCodeAlignments.lookup(AreaKey);
       CurrentAreaBaseSymbol = AreaBaseSymbols.lookup(AreaKey);
+      ++NumericLabelScope;
+      NumericLabelRoutName.clear();
+      DefinedNumericLabels.clear();
       if (HasExplicitAlignment || IsNewArea)
         OS << "; .p2align " << Alignment;
       if (IsNewArea)
@@ -3413,13 +3528,16 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
 
       if (HasLabel) {
         StringRef Name = unquoteIdentifier(First);
-        if (ConflictsWithObjectDefinition(Name))
-          return SymbolConflict(Name);
-        DefinedObjectSymbols.insert(Name);
-        if (!Exports.contains(Name))
-          OS << ".def " << Name << "; .scl 3; .endef; ";
+        if (!NumericLabel) {
+          if (ConflictsWithObjectDefinition(Name))
+            return SymbolConflict(Name);
+          DefinedObjectSymbols.insert(Name);
+          if (!Exports.contains(Name))
+            OS << ".def " << Name << "; .scl 3; .endef; ";
+        }
         OS << Name << ":; ";
-        SymbolSizes[Name] = *Count;
+        if (!NumericLabel)
+          SymbolSizes[Name] = *Count;
       }
       if (Value == 0)
         OS << ".space " << *Count;
@@ -3454,13 +3572,16 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
       std::optional<std::string> DataLabel;
       if (HasLabel) {
         StringRef Name = unquoteIdentifier(First);
-        if (ConflictsWithObjectDefinition(Name))
-          return SymbolConflict(Name);
-        DefinedObjectSymbols.insert(Name);
-        if (!Exports.contains(Name))
-          OS << ".def " << Name << "; .scl 3; .endef; ";
+        if (!NumericLabel) {
+          if (ConflictsWithObjectDefinition(Name))
+            return SymbolConflict(Name);
+          DefinedObjectSymbols.insert(Name);
+          if (!Exports.contains(Name))
+            OS << ".def " << Name << "; .scl 3; .endef; ";
+        }
         OS << Name << ":; ";
-        DataLabel = Name.str();
+        if (!NumericLabel)
+          DataLabel = Name.str();
       }
       if (UsesPC)
         EmitPCLabel();
@@ -3605,6 +3726,10 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
       StringRef RoutTail = First.equals_insensitive("ROUT") ? Tail : AfterFirst;
       if (!RoutTail.empty())
         return SourceError("A2003: improper line syntax");
+      ++NumericLabelScope;
+      NumericLabelRoutName =
+          First.equals_insensitive("ROUT") ? std::string() : First.str();
+      DefinedNumericLabels.clear();
     } else if (First.equals_insensitive("ALIGN")) {
       SmallVector<StringRef, 4> Operands;
       splitOperands(Tail, Operands);
@@ -3684,15 +3809,18 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
           !Line.empty() && !isSpace(Line.front()) && !First.starts_with("#");
       if (HasLabel) {
         StringRef Name = unquoteIdentifier(First);
-        if (ConflictsWithObjectDefinition(Name))
-          return SymbolConflict(Name);
-        DefinedObjectSymbols.insert(Name);
-        if (!Exports.contains(Name))
-          OS << ".def " << Name << "; .scl " << (CurrentAreaIsCode ? 6 : 3)
-             << "; .endef; ";
+        if (!NumericLabel) {
+          if (ConflictsWithObjectDefinition(Name))
+            return SymbolConflict(Name);
+          DefinedObjectSymbols.insert(Name);
+          if (!Exports.contains(Name))
+            OS << ".def " << Name << "; .scl " << (CurrentAreaIsCode ? 6 : 3)
+               << "; .endef; ";
+        }
         OS << Name << ':';
         if (!Second.empty()) {
-          SymbolSizes[Name] = 4;
+          if (!NumericLabel)
+            SymbolSizes[Name] = 4;
           OS << "; ";
           std::string Rewritten = rewriteSymbols(Tail, Constants);
           PendingSymbolUses.emplace_back(OS.tell(), Rewritten.size());
