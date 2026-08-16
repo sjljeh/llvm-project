@@ -25,19 +25,25 @@ comdat_func_xdata
 ; CHECK:      Name: .text
 ; CHECK:      IMAGE_SCN_ALIGN_16BYTES
 ; CHECK:      IMAGE_SCN_LNK_COMDAT
-; CHECK:      Selection: NoDuplicates
+; CHECK:      Checksum: 0x0
+; CHECK-NEXT: Number: 0
+; CHECK-NEXT: Selection: NoDuplicates
 ; CHECK:      Name: .pdata
 ; CHECK:      IMAGE_SCN_ALIGN_4BYTES
 ; CHECK:      IMAGE_SCN_LNK_COMDAT
-; CHECK:      Selection: Associative
-; CHECK:      AssocSection: .text
+; CHECK:      Checksum: 0x0
+; CHECK-NEXT: Number: 1
+; CHECK-NEXT: Selection: Associative
+; CHECK-NEXT: AssocSection: .text
 ; CHECK:      Name: comdat_func_pdata
 ; CHECK:      StorageClass: Static
 ; CHECK:      Name: .xdata
 ; CHECK:      IMAGE_SCN_ALIGN_4BYTES
 ; CHECK:      IMAGE_SCN_LNK_COMDAT
-; CHECK:      Selection: Associative
-; CHECK:      AssocSection: .text
+; CHECK:      Checksum: 0x0
+; CHECK-NEXT: Number: 1
+; CHECK-NEXT: Selection: Associative
+; CHECK-NEXT: AssocSection: .text
 ; CHECK:      Name: comdat_func_xdata
 ; CHECK:      StorageClass: Static
 ; CHECK:      0x0 IMAGE_REL_ARM64_ADDR32NB comdat_func
