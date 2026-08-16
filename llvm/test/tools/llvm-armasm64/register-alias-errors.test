@@ -1,0 +1,60 @@
+# RUN: split-file %s %t
+# RUN: not llvm-armasm64 %t/rn.asm %t.obj 2>&1 | FileCheck %s --check-prefix=RN
+# RUN: not llvm-armasm64 %t/cross-kind.asm %t.obj 2>&1 | FileCheck %s --check-prefix=CROSS
+# RUN: not llvm-armasm64 %t/range.asm %t.obj 2>&1 | FileCheck %s --check-prefix=RANGE
+# RUN: not llvm-armasm64 %t/register-kind.asm %t.obj 2>&1 | FileCheck %s --check-prefix=KIND
+# RUN: not llvm-armasm64 %t/type.asm %t.obj 2>&1 | FileCheck %s --check-prefix=TYPE
+# RUN: not llvm-armasm64 %t/predefined.asm %t.obj 2>&1 | FileCheck %s --check-prefix=PREDEFINED
+# RUN: not llvm-armasm64 %t/symbol.asm %t.obj 2>&1 | FileCheck %s --check-prefix=SYMBOL
+# RUN: not llvm-armasm64 %t/case.asm %t.obj 2>&1 | FileCheck %s --check-prefix=CASE
+# RUN: not llvm-armasm64 %t/missing.asm %t.obj 2>&1 | FileCheck %s --check-prefix=MISSING
+
+# RN: rn.asm:1: A2034: unknown opcode: RN
+# CROSS: cross-kind.asm:2: A2026: multiple symbol definition or incompatibility: Alias
+# RANGE: range.asm:1: A2069: immediate value 32 out of range
+# KIND: register-kind.asm:1: A2046: unknown or bad symbol type: q1
+# TYPE: type.asm:1: A2003: improper line syntax
+# PREDEFINED: predefined.asm:1: A2026: multiple symbol definition or incompatibility: x0
+# SYMBOL: symbol.asm:2: A2026: multiple symbol definition or incompatibility: Value
+# CASE: error: expected compatible register or floating-point constant
+# MISSING: missing.asm:1: A2173: syntax error in expression
+
+#--- rn.asm
+Alias RN x1
+        END
+
+#--- cross-kind.asm
+Alias   DN d1
+Alias   QN q1
+        END
+
+#--- range.asm
+Alias   DN 32
+        END
+
+#--- register-kind.asm
+Alias   DN q1
+        END
+
+#--- type.asm
+Alias   QN q1.16b
+        END
+
+#--- predefined.asm
+x0      DN d1
+        END
+
+#--- symbol.asm
+Value   EQU 1
+Value   DN d1
+        END
+
+#--- case.asm
+Mixed   DN d1
+        AREA |.text|, CODE, READONLY
+        fmov d0, mixed
+        END
+
+#--- missing.asm
+Alias   SN
+        END
