@@ -3010,7 +3010,9 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
   auto EmitLiteralPool = [&]() {
     if (LiteralPool.empty())
       return;
-    OS << ".balign 8, 0\n";
+    bool Has64BitEntry = llvm::any_of(
+        LiteralPool, [](const LiteralPoolEntry &Entry) { return Entry.Size == 8; });
+    OS << ".balign " << (Has64BitEntry ? 8 : 4) << ", 0\n";
     // ARMASM64 emits 64-bit entries before 32-bit entries. Its 64-bit list is
     // assembled in reverse encounter order, while the 32-bit list is not.
     for (const LiteralPoolEntry &Entry : llvm::reverse(LiteralPool))
