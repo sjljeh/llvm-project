@@ -49,6 +49,9 @@ unsigned AArch64WinCOFFObjectWriter::getRelocType(
     MCContext &Ctx, const MCValue &Target, const MCFixup &Fixup,
     bool IsCrossSection, const MCAsmBackend &MAB) const {
   unsigned FixupKind = Fixup.getKind();
+  if (mc::isRelocation(Fixup.getKind()))
+    return Fixup.getKind() - FirstLiteralRelocationKind;
+
   bool PCRel = Fixup.isPCRel();
   if (IsCrossSection) {
     // IMAGE_REL_ARM64_REL64 does not exist. We treat FK_Data_8 as FK_PCRel_4 so
