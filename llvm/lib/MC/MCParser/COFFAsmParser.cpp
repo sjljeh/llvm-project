@@ -212,9 +212,9 @@ bool COFFAsmParser::parseSectionFlags(StringRef SectionName,
     case 'r': // read-only
       ReadOnlyRemoved = false;
       SecFlags |= NoWrite;
-      if ((SecFlags & Code) == 0)
+      if ((SecFlags & (Code | Alloc)) == 0)
         SecFlags |= InitData;
-      if ((SecFlags & NoLoad) == 0)
+      if ((SecFlags & (NoLoad | Alloc)) == 0)
         SecFlags |= Load;
       break;
 
