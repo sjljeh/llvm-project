@@ -1,0 +1,73 @@
+# RUN: split-file %s %t
+# RUN: not llvm-armasm64 %t/extra.asm %t.obj 2>&1 | FileCheck %s --check-prefix=EXTRA
+# RUN: not llvm-armasm64 %t/local-outside.asm %t.obj 2>&1 | FileCheck %s --check-prefix=LOCAL-OUTSIDE
+# RUN: not llvm-armasm64 %t/nested-local.asm %t.obj 2>&1 | FileCheck %s --check-prefix=NESTED-LOCAL
+# RUN: not llvm-armasm64 %t/recursion.asm %t.obj 2>&1 | FileCheck %s --check-prefix=RECURSION
+# RUN: not llvm-armasm64 %t/missing-mend.asm %t.obj 2>&1 | FileCheck %s --check-prefix=MISSING-MEND
+# RUN: not llvm-armasm64 %t/duplicate.asm %t.obj 2>&1 | FileCheck %s --check-prefix=DUPLICATE
+# RUN: not llvm-armasm64 %t/mexit.asm %t.obj 2>&1 | FileCheck %s --check-prefix=MEXIT
+# RUN: not llvm-armasm64 %t/mend.asm %t.obj 2>&1 | FileCheck %s --check-prefix=MEND
+
+# EXTRA: extra.asm:4: too many arguments to macro 'ONE'
+# LOCAL-OUTSIDE: local-outside.asm:1: local variables can only be declared within a macro
+# NESTED-LOCAL: nested-local.asm:3: assignment to undeclared variable 'VALUE'
+# RECURSION: recursion.asm:3: assembly control nesting limit exceeded
+# MISSING-MEND: missing-mend.asm:6: unexpected end of file; missing MEND directive
+# DUPLICATE: duplicate.asm:6: macro name 'DUPLICATE' is already defined
+# MEXIT: mexit.asm:1: MEXIT directive outside a macro
+# MEND: mend.asm:1: MEND directive without a matching MACRO
+
+#--- extra.asm
+        MACRO
+        ONE $value
+        MEND
+        ONE 1,2
+        END
+
+#--- local-outside.asm
+        LCLA VALUE
+        END
+
+#--- nested-local.asm
+        MACRO
+        INNER
+VALUE   SETA 2
+        MEND
+        MACRO
+        OUTER
+        LCLA VALUE
+        INNER
+        MEND
+        OUTER
+        END
+
+#--- recursion.asm
+        MACRO
+        RECURSE
+        RECURSE
+        MEND
+        RECURSE
+        END
+
+#--- missing-mend.asm
+        MACRO
+        MISSING
+        DCB 1
+        END
+
+#--- duplicate.asm
+        MACRO
+        DUPLICATE
+        MEND
+        MACRO
+        DUPLICATE
+        MEND
+        END
+
+#--- mexit.asm
+        MEXIT
+        END
+
+#--- mend.asm
+        MEND
+        END
