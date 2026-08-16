@@ -3214,6 +3214,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
       StringRef Name = Spec->Name;
       if (HasInternalSymbol(Name))
         return SymbolConflict(Name);
+      Exports[Name] = Spec->Type;
       ExportLocations[Name] = {CurrentFilename, CurrentLine};
       OS << ".def " << Name << "; .scl 2; .type "
          << (Spec->Type == ExportType::Function ? 32 : 0) << "; .endef; .globl "
@@ -3933,10 +3934,10 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
                                  ": A2057: missing ENDP directive in section " +
                                  *ActiveProcedureArea);
 
-  for (const auto &Export : Exports)
+  for (const auto &Export : ExportLocations)
     if (!DefinedObjectSymbols.contains(Export.first()) &&
         !CommonSymbols.contains(Export.first())) {
-      const auto &Location = ExportLocations.find(Export.first())->second;
+      const auto &Location = Export.second;
       return createStringError(
           inconvertibleErrorCode(),
           Twine(Location.first) + ":" + Twine(Location.second) +
