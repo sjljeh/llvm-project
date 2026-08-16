@@ -45,7 +45,7 @@ local_proc ENDP
 ; CHECK:      Name: .xdata
 ; CHECK:      RawDataSize: 8
 ; CHECK:      Relocations [
-; CHECK:        Section (2) .pdata {
+; CHECK:        Section (3) .pdata {
 ; CHECK-NEXT:     0x0 IMAGE_REL_ARM64_ADDR32NB probe
 ; CHECK-NEXT:     0x4 IMAGE_REL_ARM64_ADDR32NB probe_xdata
 ; CHECK-NEXT:   }
