@@ -1,0 +1,43 @@
+# RUN: split-file %s %t
+# RUN: not llvm-armasm64 %t/assert.asm %t.obj 2>&1 | FileCheck %s --check-prefix=ASSERT
+# RUN: not llvm-armasm64 %t/info-error.asm %t.obj 2>&1 | FileCheck %s --check-prefix=INFO-ERROR
+# RUN: not llvm-armasm64 %t/assert-type.asm %t.obj 2>&1 | FileCheck %s --check-prefix=ASSERT-TYPE
+# RUN: not llvm-armasm64 %t/info-condition-type.asm %t.obj 2>&1 | FileCheck %s --check-prefix=INFO-CONDITION-TYPE
+# RUN: not llvm-armasm64 %t/info-message-type.asm %t.obj 2>&1 | FileCheck %s --check-prefix=INFO-MESSAGE-TYPE
+# RUN: not llvm-armasm64 %t/info-operands.asm %t.obj 2>&1 | FileCheck %s --check-prefix=INFO-OPERANDS
+# RUN: not llvm-armasm64 -ignore invalid %t/empty.asm %t.obj 2>&1 | FileCheck %s --check-prefix=IGNORE
+
+# ASSERT: assert.asm:1: A2170: assertion failed
+# INFO-ERROR: info-error.asm:1: A2170: assertion failed
+# ASSERT-TYPE: assert-type.asm:1: A2067: illegal expression type; expected bool
+# INFO-CONDITION-TYPE: info-condition-type.asm:1: A2061: illegal expression type; expected absolute numeric
+# INFO-MESSAGE-TYPE: info-message-type.asm:1: A2068: illegal expression type; expected string
+# INFO-OPERANDS: info-operands.asm:1: A2003: improper line syntax
+# IGNORE: error: A2182: warning value expected
+
+#--- assert.asm
+        ASSERT {FALSE}
+        END
+
+#--- info-error.asm
+        INFO 1, "explicit error"
+        END
+
+#--- assert-type.asm
+        ASSERT 1
+        END
+
+#--- info-condition-type.asm
+        INFO {FALSE}, "message"
+        END
+
+#--- info-message-type.asm
+        INFO 0, 1
+        END
+
+#--- info-operands.asm
+        INFO 0, "message", 1
+        END
+
+#--- empty.asm
+        END

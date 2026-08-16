@@ -6,11 +6,13 @@
 # RUN: count 0 < %t.output
 # RUN: llvm-armasm64 -nowarn %S/Inputs/include-main-no-end.asm %t.obj > %t.output 2>&1
 # RUN: count 0 < %t.output
+# RUN: llvm-armasm64 -ignore 4045 %S/Inputs/include-main-no-end.asm %t.obj > %t.output 2>&1
+# RUN: count 0 < %t.output
 # RUN: not llvm-armasm64 %S/Inputs/include-invalid.asm %t.obj 2>&1 | FileCheck %s --check-prefix=INVALID
 # RUN: not llvm-armasm64 %S/Inputs/include-duplicate.asm %t.obj 2>&1 | FileCheck %s --check-prefix=DUPLICATE
 
 # MISSING: error: {{.*}}include-missing.asm:2: unable to open include file 'does-not-exist.inc'
 # NO-END: error: {{.*}}include-missing-end.inc: unexpected end of file; missing END directive
-# MAIN-NO-END: warning: {{.*}}include-main-no-end.asm: missing END directive
+# MAIN-NO-END: warning: {{.*}}include-main-no-end.asm: A4045: missing END directive
 # INVALID: include-invalid.inc:1:{{[0-9]+}}: error: unknown token in expression
 # DUPLICATE: include-duplicate.inc:2:{{[0-9]+}}: error: symbol 'duplicate' is already defined
