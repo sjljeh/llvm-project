@@ -179,6 +179,16 @@ static Error expandResponseFiles(int Argc, char **Argv,
 
 static StringRef takeToken(StringRef &Text) {
   Text = Text.ltrim();
+  if (Text.starts_with("|")) {
+    size_t End =
+        Text.starts_with("||") ? Text.find("||", 2) : Text.find('|', 1);
+    if (End != StringRef::npos) {
+      End += Text.starts_with("||") ? 2 : 1;
+      StringRef Token = Text.take_front(End);
+      Text = Text.drop_front(End).ltrim();
+      return Token;
+    }
+  }
   size_t End = Text.find_first_of(" \t");
   StringRef Token = Text.take_front(End);
   Text = End == StringRef::npos ? StringRef() : Text.drop_front(End).ltrim();
@@ -187,9 +197,32 @@ static StringRef takeToken(StringRef &Text) {
 
 static StringRef unquoteIdentifier(StringRef Name) {
   Name = Name.trim();
-  if (Name.consume_front("|") && Name.consume_back("|"))
-    return Name;
+  if (Name.starts_with("||") && Name.ends_with("||"))
+    return Name.drop_front(2).drop_back(2);
+  if (Name.starts_with("|") && Name.ends_with("|"))
+    return Name.drop_front().drop_back();
   return Name;
+}
+
+static std::string getAssemblerSymbolName(StringRef Name) {
+  auto IsIdentifierChar = [](char C) {
+    return isAlnum(C) || C == '_' || C == '.' || C == '$' || C == '?' ||
+           C == '@';
+  };
+  if (!Name.empty() && llvm::all_of(Name, IsIdentifierChar) &&
+      !isDigit(Name.front()))
+    return Name.str();
+
+  std::string Quoted;
+  raw_string_ostream OS(Quoted);
+  OS << '"';
+  for (char C : Name) {
+    if (C == '"' || C == '\\')
+      OS << '\\';
+    OS << C;
+  }
+  OS << '"';
+  return Quoted;
 }
 
 static StringRef stripComment(StringRef Line) {
@@ -1464,9 +1497,27 @@ static std::string rewriteSymbols(StringRef Text,
   std::string Rewritten;
   raw_string_ostream OS(Rewritten);
   while (!Text.empty()) {
+    size_t Bar = Text.find('|');
     size_t Identifier = Text.find_if([](char C) {
       return isAlpha(C) || C == '_' || C == '.' || C == '$' || C == '?';
     });
+    if (Bar != StringRef::npos &&
+        (Identifier == StringRef::npos || Bar < Identifier)) {
+      bool DoubleBars = Text.drop_front(Bar).starts_with("||");
+      size_t NameStart = Bar + (DoubleBars ? 2 : 1);
+      size_t End = DoubleBars ? Text.find("||", NameStart)
+                              : Text.find('|', NameStart);
+      if (NameStart < Text.size() && !isSpace(Text[NameStart]) &&
+          End != StringRef::npos) {
+        OS << Text.take_front(Bar);
+        StringRef Name = Text.slice(NameStart, End);
+        auto It = Symbols.find(Name);
+        OS << (It == Symbols.end() ? getAssemblerSymbolName(Name)
+                                   : It->second);
+        Text = Text.drop_front(End + (DoubleBars ? 2 : 1));
+        continue;
+      }
+    }
     if (Identifier == StringRef::npos) {
       OS << Text;
       break;
@@ -1523,7 +1574,7 @@ normalizeSymbolicExpression(StringRef Text,
     if (Text.front() == '|' && Text.drop_front().contains('|') &&
         CanStartPrimary()) {
       size_t End = Text.find('|', 1);
-      OS << '"' << Text.slice(1, End) << '"';
+      OS << getAssemblerSymbolName(Text.slice(1, End));
       PreviousNonSpace = '"';
       Text = Text.drop_front(End + 1);
       continue;
@@ -3233,9 +3284,10 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
         return SymbolConflict(Name);
       Exports[Name] = Spec->Type;
       ExportLocations[Name] = {CurrentFilename, CurrentLine};
-      OS << ".def " << Name << "; .scl 2; .type "
+      std::string AssemblerName = getAssemblerSymbolName(Name);
+      OS << ".def " << AssemblerName << "; .scl 2; .type "
          << (Spec->Type == ExportType::Function ? 32 : 0) << "; .endef; .globl "
-         << Name;
+         << AssemblerName;
     } else if (First.equals_insensitive("IMPORT") ||
                First.equals_insensitive("EXTERN")) {
       bool Conditional = First.equals_insensitive("EXTERN");
@@ -3250,11 +3302,12 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
           ExternalSymbols.contains(Name))
         return SymbolConflict(Name);
       ExternalSymbols.insert(Name);
+      std::string AssemblerName = getAssemblerSymbolName(Name);
 
       if (Operands.size() == 1) {
         // Unlike IMPORT, an unused EXTERN does not appear in the object.
         if (!Conditional)
-          OS << ".globl " << Name;
+          OS << ".globl " << AssemblerName;
       } else {
         StringRef WeakOperand = Operands[1].trim();
         StringRef Weak = takeToken(WeakOperand);
@@ -3290,7 +3343,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
         }
 
         ExternalSymbols.insert(Fallback);
-        OS << ".globl " << Fallback;
+        OS << ".globl " << getAssemblerSymbolName(Fallback);
         PendingWeakExternals.push_back(
             {Name.str(), Fallback.str(), Search, Conditional});
       }
@@ -3321,10 +3374,11 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
                            " out of range");
       CommonSymbols.insert(Name);
       EnsureDefaultSection();
+      std::string AssemblerName = getAssemblerSymbolName(Name);
       if (Size == 0)
-        OS << ".globl " << Name;
+        OS << ".globl " << AssemblerName;
       else
-        OS << ".armasm64_common " << Name << ", " << Size;
+        OS << ".armasm64_common " << AssemblerName << ", " << Size;
     } else if (First.equals_insensitive("RELOC")) {
       SmallVector<StringRef, 2> Operands;
       splitOperands(Tail, Operands);
@@ -3513,7 +3567,9 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
       DefinedObjectSymbols.insert(Name);
       DefinedSymbols.insert(Name);
       std::string AssemblerName =
-          Exports.contains(Name) ? Name.str() : (".Larmasm$" + Name).str();
+          getAssemblerSymbolName(Exports.contains(Name)
+                                     ? Name
+                                     : (".Larmasm$" + Name).str());
       Constants[Name] = AssemblerName;
       VariableExpressionParser Parser(AfterFirst, Variables, AbsoluteConstants,
                                       NoEscape, &DefinedSymbols);
@@ -3535,9 +3591,10 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
       EnsureDefaultSection();
       DefinedObjectSymbols.insert(Name);
       ActiveProcedureArea = CurrentAreaName;
+      std::string AssemblerName = getAssemblerSymbolName(Name);
       if (!Exports.contains(Name))
-        OS << ".def " << Name << "; .scl 6; .endef; ";
-      OS << Name << ':';
+        OS << ".def " << AssemblerName << "; .scl 6; .endef; ";
+      OS << AssemblerName << ':';
     } else if (First.equals_insensitive("ENDP") ||
                First.equals_insensitive("ENDFUNC") ||
                Second.equals_insensitive("ENDP") ||
@@ -3611,10 +3668,13 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
           if (ConflictsWithObjectDefinition(Name))
             return SymbolConflict(Name);
           DefinedObjectSymbols.insert(Name);
+          std::string AssemblerName = getAssemblerSymbolName(Name);
           if (!Exports.contains(Name))
-            OS << ".def " << Name << "; .scl 3; .endef; ";
+            OS << ".def " << AssemblerName << "; .scl 3; .endef; ";
+          OS << AssemblerName << ":; ";
+        } else {
+          OS << Name << ":; ";
         }
-        OS << Name << ":; ";
         if (!NumericLabel)
           SymbolSizes[Name] = *Count;
       }
@@ -3656,10 +3716,13 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
           if (ConflictsWithObjectDefinition(Name))
             return SymbolConflict(Name);
           DefinedObjectSymbols.insert(Name);
+          std::string AssemblerName = getAssemblerSymbolName(Name);
           if (!Exports.contains(Name))
-            OS << ".def " << Name << "; .scl 3; .endef; ";
+            OS << ".def " << AssemblerName << "; .scl 3; .endef; ";
+          OS << AssemblerName << ":; ";
+        } else {
+          OS << Name << ":; ";
         }
-        OS << Name << ":; ";
         if (!NumericLabel)
           DataLabel = Name.str();
       }
@@ -3897,11 +3960,14 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
           if (ConflictsWithObjectDefinition(Name))
             return SymbolConflict(Name);
           DefinedObjectSymbols.insert(Name);
+          std::string AssemblerName = getAssemblerSymbolName(Name);
           if (!Exports.contains(Name))
-            OS << ".def " << Name << "; .scl " << (CurrentAreaIsCode ? 6 : 3)
-               << "; .endef; ";
+            OS << ".def " << AssemblerName << "; .scl "
+               << (CurrentAreaIsCode ? 6 : 3) << "; .endef; ";
+          OS << AssemblerName << ':';
+        } else {
+          OS << Name << ':';
         }
-        OS << Name << ':';
         if (!Second.empty()) {
           if (!NumericLabel)
             SymbolSizes[Name] = 4;
@@ -4006,8 +4072,10 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
   OS.flush();
   for (const PendingWeakExternal &Weak : PendingWeakExternals)
     if (!Weak.Conditional || containsIdentifier(Translated, Weak.Name))
-      OS << ".armasm64_weak_external " << Weak.Name << ", " << Weak.Fallback
-         << ", " << Weak.Search << '\n';
+      OS << ".armasm64_weak_external "
+         << getAssemblerSymbolName(Weak.Name) << ", "
+         << getAssemblerSymbolName(Weak.Fallback) << ", " << Weak.Search
+         << '\n';
 
   OS.flush();
   for (auto [Offset, Length] : llvm::reverse(RelocatedExpressions)) {
