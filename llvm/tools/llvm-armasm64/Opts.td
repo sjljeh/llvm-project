@@ -21,7 +21,8 @@ def predefine : ARMAsm64JoinedOrSeparate<"predefine">,
 def predefine_short : ARMAsm64JoinedOrSeparate<"pd">, Alias<predefine>;
 def no_warn : ARMAsm64Flag<"nowarn">, HelpText<"Disable all warnings">;
 def no_warn_short : ARMAsm64Flag<"now">, Alias<no_warn>;
-def ignore : ARMAsm64Separate<"ignore">, MetaVarName<"<warning-number>">,
+def ignore : ARMAsm64Separate<"ignore">,
+             MetaVarName<"<warning-number>[,...]">,
              HelpText<"Disable the specified warning">;
 def via : ARMAsm64Separate<"via">, MetaVarName<"<file>">,
           HelpText<"Read command-line arguments from <file>">;
