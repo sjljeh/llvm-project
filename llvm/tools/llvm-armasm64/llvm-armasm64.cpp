@@ -1169,8 +1169,8 @@ static Error declareVariable(StringRef Name, VariableKind Kind,
 static Error assignVariable(StringRef Name, StringRef Directive,
                             StringRef Expression, bool ImplicitDeclaration,
                             VariableMap &Variables,
-                            const StringMap<uint64_t> &Constants,
-                            bool NoEscape) {
+                            const StringMap<uint64_t> &Constants, bool NoEscape,
+                            const VariableMap *ExpressionVariables = nullptr) {
   VariableKind Kind =
       Directive.equals_insensitive("SETA")   ? VariableKind::Arithmetic
       : Directive.equals_insensitive("SETL") ? VariableKind::Logical
@@ -1191,7 +1191,9 @@ static Error assignVariable(StringRef Name, StringRef Directive,
         "cannot assign " + variableKindName(Kind) + " value to " +
             variableKindName(It->second.Kind) + " variable '" + Name + "'");
 
-  VariableExpressionParser Parser(Expression, Variables, Constants, NoEscape);
+  VariableExpressionParser Parser(
+      Expression, ExpressionVariables ? *ExpressionVariables : Variables,
+      Constants, NoEscape);
   Expected<VariableValue> Value = Parser.parse();
   if (!Value)
     return Value.takeError();
@@ -1278,7 +1280,99 @@ static Error executePredefine(StringRef Predefine, VariableMap &Variables,
   return Error::success();
 }
 
+struct AssemblySourceLine {
+  std::string Text;
+  std::string Filename;
+  unsigned Line;
+};
+
+struct MacroDefinition {
+  std::optional<std::string> LabelParameter;
+  SmallVector<std::string, 4> Parameters;
+  SmallVector<AssemblySourceLine, 8> Body;
+};
+
+static std::string
+substituteMacroParameters(StringRef Line,
+                          const StringMap<std::string> &Parameters) {
+  std::string Substituted;
+  raw_string_ostream OS(Substituted);
+  bool InString = false;
+  bool InBars = false;
+  for (size_t I = 0; I != Line.size();) {
+    char C = Line[I];
+    if (C == '"') {
+      OS << C;
+      if (InString && I + 1 != Line.size() && Line[I + 1] == '"') {
+        OS << '"';
+        I += 2;
+        continue;
+      }
+      InString = !InString;
+      ++I;
+      continue;
+    }
+    if (C == '|' && !InString) {
+      InBars = !InBars;
+      OS << C;
+      ++I;
+      continue;
+    }
+    if (C != '$' || InBars || (I + 1 != Line.size() && Line[I + 1] == '$')) {
+      OS << C;
+      if (C == '$' && I + 1 != Line.size() && Line[I + 1] == '$') {
+        OS << '$';
+        I += 2;
+      } else {
+        ++I;
+      }
+      continue;
+    }
+
+    size_t NameStart = I + 1;
+    size_t NameEnd = NameStart;
+    if (NameEnd != Line.size() &&
+        (isAlpha(Line[NameEnd]) || Line[NameEnd] == '_')) {
+      ++NameEnd;
+      while (NameEnd != Line.size() &&
+             (isAlnum(Line[NameEnd]) || Line[NameEnd] == '_'))
+        ++NameEnd;
+    }
+    auto It = Parameters.find(Line.slice(NameStart, NameEnd));
+    if (NameEnd == NameStart || It == Parameters.end()) {
+      OS << C;
+      ++I;
+      continue;
+    }
+    OS << It->second;
+    I = NameEnd;
+    if (I != Line.size() && Line[I] == '.')
+      ++I;
+  }
+  return Substituted;
+}
+
+static std::string normalizeMacroArgument(StringRef Argument) {
+  Argument = Argument.trim();
+  if (Argument.size() < 2 ||
+      ((Argument.front() != '"' || Argument.back() != '"') &&
+       (Argument.front() != '\'' || Argument.back() != '\'')))
+    return Argument.str();
+
+  char Quote = Argument.front();
+  Argument = Argument.drop_front().drop_back();
+  std::string Value;
+  for (size_t I = 0; I != Argument.size(); ++I) {
+    if (Argument[I] == Quote && I + 1 != Argument.size() &&
+        Argument[I + 1] == Quote)
+      ++I;
+    Value.push_back(Argument[I]);
+  }
+  return Value;
+}
+
 class AssemblyControlExpander {
+  enum class InputKind { MainFile, IncludeFile, Macro };
   enum class ControlKind { If, While };
 
   struct ControlFrame {
@@ -1299,6 +1393,9 @@ class AssemblyControlExpander {
   raw_ostream &OS;
   VariableMap &Variables;
   StringMap<uint64_t> &Constants;
+  StringMap<MacroDefinition> Macros;
+  VariableMap *LocalVariables = nullptr;
+  const StringMap<std::string> *MacroParameters = nullptr;
 
   static Error sourceError(StringRef Filename, unsigned Line,
                            const Twine &Message) {
@@ -1307,8 +1404,30 @@ class AssemblyControlExpander {
                                                            Message);
   }
 
+  static Error sourceError(const AssemblySourceLine &Line,
+                           const Twine &Message) {
+    return sourceError(Line.Filename, Line.Line, Message);
+  }
+
+  VariableMap effectiveVariables() const {
+    VariableMap Effective = Variables;
+    if (LocalVariables)
+      for (const auto &Variable : *LocalVariables)
+        Effective[Variable.getKey()] = Variable.getValue();
+    return Effective;
+  }
+
+  std::string prepareLine(const AssemblySourceLine &Line) const {
+    std::string Expanded =
+        MacroParameters ? substituteMacroParameters(Line.Text, *MacroParameters)
+                        : Line.Text;
+    VariableMap Effective = effectiveVariables();
+    return substituteVariables(Expanded, Effective);
+  }
+
   Expected<bool> evaluateCondition(StringRef Expression) {
-    VariableExpressionParser Parser(Expression, Variables, Constants, NoEscape);
+    VariableMap Effective = effectiveVariables();
+    VariableExpressionParser Parser(Expression, Effective, Constants, NoEscape);
     Expected<VariableValue> Value = Parser.parse();
     if (!Value)
       return Value.takeError();
@@ -1321,50 +1440,195 @@ class AssemblyControlExpander {
                              "expression");
   }
 
-  Expected<bool> evaluateConditionLine(StringRef Line) {
-    std::string Substituted = substituteVariables(Line, Variables);
+  Expected<bool> evaluateConditionLine(const AssemblySourceLine &Line) {
+    std::string Substituted = prepareLine(Line);
     StringRef Tail = stripComment(Substituted).trim();
     takeToken(Tail);
     return evaluateCondition(Tail);
   }
 
-  Error processFile(std::unique_ptr<MemoryBuffer> Input, bool IsMainFile,
+  Error defineMacro(ArrayRef<AssemblySourceLine> Lines, size_t &LineIndex,
+                    bool Active, unsigned NestingDepth) {
+    const AssemblySourceLine &MacroLine = Lines[LineIndex];
+    if (LineIndex + 1 == Lines.size())
+      return sourceError(MacroLine,
+                         "missing macro prototype and MEND directive");
+
+    size_t PrototypeIndex = LineIndex + 1;
+    size_t EndIndex = PrototypeIndex + 1;
+    unsigned DefinitionDepth = 1;
+    for (; EndIndex != Lines.size(); ++EndIndex) {
+      std::string Expanded = prepareLine(Lines[EndIndex]);
+      StringRef Tail = stripComment(Expanded).trim();
+      StringRef First = takeToken(Tail);
+      if (First.equals_insensitive("MACRO")) {
+        if (NestingDepth + DefinitionDepth == 256)
+          return sourceError(Lines[EndIndex],
+                             "assembly control nesting limit exceeded");
+        ++DefinitionDepth;
+      } else if (First.equals_insensitive("MEND") && --DefinitionDepth == 0) {
+        break;
+      }
+    }
+    if (EndIndex == Lines.size())
+      return sourceError(Lines.back().Filename, Lines.back().Line + 1,
+                         "unexpected end of file; missing MEND directive");
+
+    LineIndex = EndIndex + 1;
+    if (!Active)
+      return Error::success();
+
+    std::string ExpandedPrototype = prepareLine(Lines[PrototypeIndex]);
+    StringRef Tail = stripComment(ExpandedPrototype).trim();
+    StringRef NameToken = takeToken(Tail);
+    std::optional<std::string> LabelParameter;
+    if (NameToken.consume_front("$")) {
+      if (!isValidVariableName(NameToken))
+        return sourceError(Lines[PrototypeIndex],
+                           "invalid macro label parameter");
+      LabelParameter = NameToken.str();
+      NameToken = takeToken(Tail);
+    }
+    if (!isValidVariableName(NameToken))
+      return sourceError(Lines[PrototypeIndex], "invalid macro name");
+
+    MacroDefinition Definition;
+    Definition.LabelParameter = std::move(LabelParameter);
+    StringSet<> ParameterNames;
+    if (Definition.LabelParameter)
+      ParameterNames.insert(*Definition.LabelParameter);
+    if (!Tail.empty()) {
+      SmallVector<StringRef, 8> Parameters;
+      splitOperands(Tail, Parameters);
+      for (StringRef Parameter : Parameters) {
+        Parameter = Parameter.trim();
+        if (!Parameter.consume_front("$"))
+          return sourceError(Lines[PrototypeIndex],
+                             "macro parameters must begin with '$'");
+        Parameter = Parameter.split('=').first.trim();
+        if (!isValidVariableName(Parameter))
+          return sourceError(Lines[PrototypeIndex],
+                             "invalid macro parameter name");
+        if (!ParameterNames.insert(Parameter).second)
+          return sourceError(Lines[PrototypeIndex],
+                             "duplicate macro parameter '" + Parameter + "'");
+        Definition.Parameters.push_back(Parameter.str());
+      }
+    }
+    Definition.Body.append(Lines.begin() + PrototypeIndex + 1,
+                           Lines.begin() + EndIndex);
+
+    if (!Macros.try_emplace(NameToken, std::move(Definition)).second)
+      return sourceError(Lines[EndIndex],
+                         "macro name '" + NameToken + "' is already defined");
+    return Error::success();
+  }
+
+  Error expandMacro(const MacroDefinition &Definition, StringRef Name,
+                    bool HasLabel, StringRef Label, StringRef ArgumentText,
+                    const AssemblySourceLine &Invocation,
                     unsigned NestingDepth) {
+    SmallVector<StringRef, 8> Arguments;
+    if (!ArgumentText.trim().empty())
+      splitOperands(ArgumentText, Arguments);
+    if (Arguments.size() > Definition.Parameters.size())
+      return sourceError(Invocation,
+                         "too many arguments to macro '" + Name + "'");
+
+    StringMap<std::string> Bindings;
+    for (auto [Index, Parameter] : llvm::enumerate(Definition.Parameters)) {
+      StringRef Argument =
+          Index < Arguments.size() ? Arguments[Index].trim() : StringRef();
+      Bindings[Parameter] =
+          Argument == "|" ? std::string() : normalizeMacroArgument(Argument);
+    }
+    if (Definition.LabelParameter)
+      Bindings[*Definition.LabelParameter] = HasLabel ? Label.str() : "";
+    else if (HasLabel) {
+      emitLineMarker(OS, Invocation.Line, Invocation.Filename);
+      OS << Label << '\n';
+    }
+
+    VariableMap Locals;
+    VariableMap *SavedLocals = LocalVariables;
+    const StringMap<std::string> *SavedParameters = MacroParameters;
+    LocalVariables = &Locals;
+    MacroParameters = &Bindings;
+    bool DidExit = false;
+    Error Err = processLines(Definition.Body, InputKind::Macro, NestingDepth,
+                             DidExit, Invocation.Filename);
+    MacroParameters = SavedParameters;
+    LocalVariables = SavedLocals;
+    return Err;
+  }
+
+  Error assignCurrentVariable(StringRef Name, StringRef Directive,
+                              StringRef Expression) {
+    bool IsLocal = LocalVariables && LocalVariables->contains(Name);
+    VariableMap &Target = IsLocal ? *LocalVariables : Variables;
+    VariableMap Effective = effectiveVariables();
+    return assignVariable(Name, Directive, Expression,
+                          /*ImplicitDeclaration=*/false, Target, Constants,
+                          NoEscape, &Effective);
+  }
+
+  Error processFile(std::unique_ptr<MemoryBuffer> Input, bool IsMainFile,
+                    unsigned NestingDepth, bool *ExitedMacro = nullptr) {
     std::string Filename = Input->getBufferIdentifier().str();
-    SmallVector<StringRef, 0> Lines;
+    SmallVector<AssemblySourceLine, 0> Lines;
     StringRef Remaining = Input->getBuffer();
+    unsigned LineNumber = 0;
     while (!Remaining.empty()) {
       auto [Line, Rest] = Remaining.split('\n');
       Remaining = Rest;
       Line.consume_back("\r");
-      Lines.push_back(Line);
+      Lines.push_back({Line.str(), Filename, ++LineNumber});
     }
 
+    bool MacroExit = false;
+    Error Err = processLines(
+        Lines, IsMainFile ? InputKind::MainFile : InputKind::IncludeFile,
+        NestingDepth, MacroExit, Filename);
+    if (ExitedMacro)
+      *ExitedMacro = MacroExit;
+    return Err;
+  }
+
+  Error processLines(ArrayRef<AssemblySourceLine> Lines, InputKind Kind,
+                     unsigned NestingDepth, bool &MacroExit,
+                     StringRef InputFilename) {
     SmallVector<ControlFrame, 8> Controls;
     bool SawEnd = false;
     size_t LineIndex = 0;
     while (LineIndex != Lines.size()) {
-      StringRef Line = Lines[LineIndex];
-      unsigned LineNumber = LineIndex + 1;
+      const AssemblySourceLine &Line = Lines[LineIndex];
       bool Active = Controls.empty() || Controls.back().Active;
-      std::string SubstitutedLine = substituteVariables(Line, Variables);
+      std::string SubstitutedLine = prepareLine(Line);
       StringRef Statement = stripComment(SubstitutedLine).trim();
       StringRef Tail = Statement;
       StringRef First = takeToken(Tail);
       StringRef AfterFirst = Tail;
       StringRef Second = takeToken(AfterFirst);
 
+      if (First.equals_insensitive("MACRO")) {
+        if (!Tail.empty())
+          return sourceError(Line, "unexpected tokens after MACRO directive");
+        if (Error Err = defineMacro(Lines, LineIndex, Active,
+                                    NestingDepth +
+                                        static_cast<unsigned>(Controls.size())))
+          return Err;
+        continue;
+      }
+
       bool IsIf = First.equals_insensitive("IF") || First == "[";
       if (IsIf) {
         if (NestingDepth + Controls.size() == 256)
-          return sourceError(Filename, LineNumber,
-                             "assembly control nesting limit exceeded");
+          return sourceError(Line, "assembly control nesting limit exceeded");
         bool Condition = false;
         if (Active) {
           Expected<bool> Value = evaluateCondition(Tail);
           if (!Value)
-            return sourceError(Filename, LineNumber,
-                               toString(Value.takeError()));
+            return sourceError(Line, toString(Value.takeError()));
           Condition = *Value;
         }
         Controls.push_back({ControlKind::If, Active, Active && Condition,
@@ -1375,17 +1639,15 @@ class AssemblyControlExpander {
 
       if (First.equals_insensitive("ELIF")) {
         if (Controls.empty() || Controls.back().Kind != ControlKind::If)
-          return sourceError(Filename, LineNumber,
-                             "ELIF directive without a matching IF");
+          return sourceError(Line, "ELIF directive without a matching IF");
         ControlFrame &Frame = Controls.back();
         if (Frame.SawElse)
-          return sourceError(Filename, LineNumber, "ELIF directive after ELSE");
+          return sourceError(Line, "ELIF directive after ELSE");
         bool Condition = false;
         if (Frame.ParentActive) {
           Expected<bool> Value = evaluateCondition(Tail);
           if (!Value)
-            return sourceError(Filename, LineNumber,
-                               toString(Value.takeError()));
+            return sourceError(Line, toString(Value.takeError()));
           Condition = *Value;
         }
         bool WasTaken = Frame.BranchTaken;
@@ -1398,14 +1660,12 @@ class AssemblyControlExpander {
       bool IsElse = First.equals_insensitive("ELSE") || First == "|";
       if (IsElse) {
         if (Controls.empty() || Controls.back().Kind != ControlKind::If)
-          return sourceError(Filename, LineNumber,
-                             "ELSE directive without a matching IF");
+          return sourceError(Line, "ELSE directive without a matching IF");
         if (!Tail.empty())
-          return sourceError(Filename, LineNumber,
-                             "unexpected tokens after ELSE directive");
+          return sourceError(Line, "unexpected tokens after ELSE directive");
         ControlFrame &Frame = Controls.back();
         if (Frame.SawElse)
-          return sourceError(Filename, LineNumber,
+          return sourceError(Line,
                              "multiple ELSE directives in one IF structure");
         Frame.Active = Frame.ParentActive && !Frame.BranchTaken;
         Frame.BranchTaken = Frame.ParentActive;
@@ -1417,11 +1677,9 @@ class AssemblyControlExpander {
       bool IsEndIf = First.equals_insensitive("ENDIF") || First == "]";
       if (IsEndIf) {
         if (Controls.empty() || Controls.back().Kind != ControlKind::If)
-          return sourceError(Filename, LineNumber,
-                             "ENDIF directive without a matching IF");
+          return sourceError(Line, "ENDIF directive without a matching IF");
         if (!Tail.empty())
-          return sourceError(Filename, LineNumber,
-                             "unexpected tokens after ENDIF directive");
+          return sourceError(Line, "unexpected tokens after ENDIF directive");
         Controls.pop_back();
         ++LineIndex;
         continue;
@@ -1429,14 +1687,12 @@ class AssemblyControlExpander {
 
       if (First.equals_insensitive("WHILE")) {
         if (NestingDepth + Controls.size() == 256)
-          return sourceError(Filename, LineNumber,
-                             "assembly control nesting limit exceeded");
+          return sourceError(Line, "assembly control nesting limit exceeded");
         bool Condition = false;
         if (Active) {
           Expected<bool> Value = evaluateCondition(Tail);
           if (!Value)
-            return sourceError(Filename, LineNumber,
-                               toString(Value.takeError()));
+            return sourceError(Line, toString(Value.takeError()));
           Condition = *Value;
         }
         ControlFrame Frame{ControlKind::While, Active, Active && Condition};
@@ -1449,16 +1705,14 @@ class AssemblyControlExpander {
 
       if (First.equals_insensitive("WEND")) {
         if (Controls.empty() || Controls.back().Kind != ControlKind::While)
-          return sourceError(Filename, LineNumber,
-                             "WEND directive without a matching WHILE");
+          return sourceError(Line, "WEND directive without a matching WHILE");
         if (!Tail.empty())
-          return sourceError(Filename, LineNumber,
-                             "unexpected tokens after WEND directive");
+          return sourceError(Line, "unexpected tokens after WEND directive");
         ControlFrame &Frame = Controls.back();
         if (Frame.Active) {
           Expected<bool> Value = evaluateConditionLine(Lines[Frame.WhileLine]);
           if (!Value)
-            return sourceError(Filename, Frame.WhileLine + 1,
+            return sourceError(Lines[Frame.WhileLine],
                                toString(Value.takeError()));
           if (*Value) {
             LineIndex = Frame.BodyLine;
@@ -1475,12 +1729,26 @@ class AssemblyControlExpander {
         continue;
       }
 
+      if (First.equals_insensitive("MEXIT")) {
+        if (!MacroParameters)
+          return sourceError(Line, "MEXIT directive outside a macro");
+        if (!Tail.empty())
+          return sourceError(Line, "unexpected tokens after MEXIT directive");
+        MacroExit = true;
+        return Error::success();
+      }
+
+      if (First.equals_insensitive("MEND"))
+        return sourceError(Line, "MEND directive without a matching MACRO");
+
       if (First.equals_insensitive("END")) {
         if (!Controls.empty())
-          return sourceError(Filename, LineNumber,
+          return sourceError(Line,
                              Controls.back().Kind == ControlKind::If
                                  ? "unexpected END before ENDIF directive"
                                  : "unexpected END before WEND directive");
+        if (Kind == InputKind::Macro)
+          return sourceError(Line, "END directive inside a macro expansion");
         SawEnd = true;
         break;
       }
@@ -1490,22 +1758,52 @@ class AssemblyControlExpander {
         StringRef IncludedFilename = takeToken(Tail);
         if (IncludedFilename.empty() || !Tail.empty() ||
             IncludedFilename.front() == '"' || IncludedFilename.front() == '\'')
-          return sourceError(Filename, LineNumber,
-                             "expected include file name");
+          return sourceError(Line, "expected include file name");
 
         if (NestingDepth + Controls.size() == 256)
-          return sourceError(Filename, LineNumber,
-                             "assembly control nesting limit exceeded");
+          return sourceError(Line, "assembly control nesting limit exceeded");
         SmallString<256> IncludedPath;
         ErrorOr<std::unique_ptr<MemoryBuffer>> IncludedBuffer = openIncludeFile(
-            IncludedFilename, Filename, IncludeDirs, IncludedPath);
+            IncludedFilename, Line.Filename, IncludeDirs, IncludedPath);
         if (!IncludedBuffer)
-          return sourceError(Filename, LineNumber,
-                             "unable to open include file '" +
-                                 IncludedFilename +
-                                 "': " + IncludedBuffer.getError().message());
+          return sourceError(
+              Line, "unable to open include file '" + IncludedFilename +
+                        "': " + IncludedBuffer.getError().message());
+        bool IncludedMacroExit = false;
         if (Error Err = processFile(std::move(*IncludedBuffer),
                                     /*IsMainFile=*/false,
+                                    NestingDepth + Controls.size() + 1,
+                                    &IncludedMacroExit))
+          return Err;
+        if (IncludedMacroExit) {
+          MacroExit = true;
+          return Error::success();
+        }
+        ++LineIndex;
+        continue;
+      }
+
+      auto Macro = Macros.find(First);
+      bool HasInvocationLabel = false;
+      StringRef InvocationLabel;
+      StringRef ArgumentText = Tail;
+      bool MayHaveInvocationLabel =
+          !SubstitutedLine.empty() && !isSpace(SubstitutedLine.front());
+      if (Macro == Macros.end() && MayHaveInvocationLabel && !Second.empty()) {
+        Macro = Macros.find(Second);
+        if (Macro != Macros.end()) {
+          HasInvocationLabel = true;
+          InvocationLabel = First;
+          ArgumentText = AfterFirst;
+        }
+      }
+      if (Macro != Macros.end()) {
+        if (NestingDepth + Controls.size() == 256)
+          return sourceError(Line, "assembly control nesting limit exceeded");
+        std::string MacroName = Macro->getKey().str();
+        MacroDefinition Definition = Macro->second;
+        if (Error Err = expandMacro(Definition, MacroName, HasInvocationLabel,
+                                    InvocationLabel, ArgumentText, Line,
                                     NestingDepth + Controls.size() + 1))
           return Err;
         ++LineIndex;
@@ -1513,35 +1811,62 @@ class AssemblyControlExpander {
       }
 
       std::optional<VariableKind> DeclarationKind;
+      bool IsLocalDeclaration = false;
       if (First.equals_insensitive("GBLA"))
         DeclarationKind = VariableKind::Arithmetic;
       else if (First.equals_insensitive("GBLL"))
         DeclarationKind = VariableKind::Logical;
       else if (First.equals_insensitive("GBLS"))
         DeclarationKind = VariableKind::String;
+      else if (First.equals_insensitive("LCLA")) {
+        DeclarationKind = VariableKind::Arithmetic;
+        IsLocalDeclaration = true;
+      } else if (First.equals_insensitive("LCLL")) {
+        DeclarationKind = VariableKind::Logical;
+        IsLocalDeclaration = true;
+      } else if (First.equals_insensitive("LCLS")) {
+        DeclarationKind = VariableKind::String;
+        IsLocalDeclaration = true;
+      }
       if (DeclarationKind) {
         StringRef NameToken = takeToken(Tail);
         if (!isValidVariableName(NameToken) || !Tail.empty())
-          return sourceError(Filename, LineNumber,
-                             "expected one variable name after " + First);
+          return sourceError(Line, "expected one variable name after " + First);
         StringRef Name = unquoteIdentifier(NameToken);
         if (Constants.contains(Name))
-          return sourceError(Filename, LineNumber,
+          return sourceError(Line,
                              "variable name '" + Name + "' is already defined");
+        if (IsLocalDeclaration) {
+          if (!LocalVariables || !MacroParameters)
+            return sourceError(
+                Line, "local variables can only be declared within a macro");
+          if (MacroParameters->contains(Name))
+            return sourceError(Line, "local variable '" + Name +
+                                         "' conflicts with a macro parameter");
+          if (Error Err =
+                  declareVariable(Name, *DeclarationKind, *LocalVariables))
+            return sourceError(Line, toString(std::move(Err)));
+          ++LineIndex;
+          continue;
+        }
         if (Error Err = declareVariable(Name, *DeclarationKind, Variables))
-          return sourceError(Filename, LineNumber, toString(std::move(Err)));
+          return sourceError(Line, toString(std::move(Err)));
       } else if (isSetDirective(Second)) {
         StringRef Name = unquoteIdentifier(First);
         if (!isValidVariableName(First) || AfterFirst.empty())
-          return sourceError(Filename, LineNumber,
-                             "expected variable assignment expression");
-        if (Error Err = assignVariable(Name, Second, AfterFirst,
-                                       /*ImplicitDeclaration=*/false, Variables,
-                                       Constants, NoEscape))
-          return sourceError(Filename, LineNumber, toString(std::move(Err)));
+          return sourceError(Line, "expected variable assignment expression");
+        bool IsLocalAssignment =
+            LocalVariables && LocalVariables->contains(Name);
+        if (Error Err = assignCurrentVariable(Name, Second, AfterFirst))
+          return sourceError(Line, toString(std::move(Err)));
+        if (IsLocalAssignment) {
+          ++LineIndex;
+          continue;
+        }
       } else if (Second.equals_insensitive("EQU")) {
         StringRef Name = unquoteIdentifier(First);
-        VariableExpressionParser Parser(AfterFirst, Variables, Constants,
+        VariableMap Effective = effectiveVariables();
+        VariableExpressionParser Parser(AfterFirst, Effective, Constants,
                                         NoEscape);
         Expected<VariableValue> Value = Parser.parse();
         if (Value && Value->Kind == VariableKind::Arithmetic)
@@ -1550,23 +1875,33 @@ class AssemblyControlExpander {
           consumeError(Value.takeError());
       }
 
-      emitLineMarker(OS, LineNumber, Filename);
-      OS << Line << '\n';
+      std::string EmittedLine = Line.Text;
+      if (MacroParameters) {
+        EmittedLine = SubstitutedLine;
+        if (LocalVariables)
+          EmittedLine =
+              rewriteVariables(EmittedLine, *LocalVariables, NoEscape);
+      }
+      emitLineMarker(OS, Line.Line, Line.Filename);
+      OS << EmittedLine << '\n';
       ++LineIndex;
     }
 
-    if (!Controls.empty())
+    if (!Controls.empty()) {
+      unsigned EndLine = Lines.empty() ? 1 : Lines.back().Line + 1;
       return sourceError(
-          Filename, Lines.size() + 1,
+          InputFilename, EndLine,
           Controls.back().Kind == ControlKind::If
               ? "unexpected end of file; missing ENDIF directive"
               : "unexpected end of file; missing WEND directive");
-    if (!SawEnd && !IsMainFile)
+    }
+    if (!SawEnd && Kind == InputKind::IncludeFile)
       return createStringError(
-          Twine(Filename) + ": unexpected end of file; missing END directive");
-    if (!SawEnd && !NoWarn)
+          Twine(InputFilename) +
+          ": unexpected end of file; missing END directive");
+    if (!SawEnd && Kind == InputKind::MainFile && !NoWarn)
       WithColor::warning(DiagOS, ProgName)
-          << Filename << ": missing END directive\n";
+          << InputFilename << ": missing END directive\n";
     return Error::success();
   }
 
