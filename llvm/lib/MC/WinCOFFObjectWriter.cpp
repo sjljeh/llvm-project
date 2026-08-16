@@ -27,6 +27,7 @@
 #include "llvm/MC/MCSectionCOFF.h"
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/MC/MCSymbolCOFF.h"
+#include "llvm/MC/MCTargetOptions.h"
 #include "llvm/MC/MCValue.h"
 #include "llvm/MC/MCWinCOFFObjectWriter.h"
 #include "llvm/MC/StringTableBuilder.h"
@@ -639,7 +640,9 @@ void WinCOFFWriter::writeSection(const COFFSection &Sec) {
     COFFSymbol::AuxiliarySymbols &AuxSyms = Sec.Symbol->Aux;
     assert(AuxSyms.size() == 1 && AuxSyms[0].AuxType == ATSectionDefinition);
     AuxSymbol &SecDef = AuxSyms[0];
-    SecDef.Aux.SectionDefinition.CheckSum = CRC;
+    if (!getContext().getTargetOptions().getAssemblyLanguage().equals_insensitive(
+            "armasm64"))
+      SecDef.Aux.SectionDefinition.CheckSum = CRC;
   } else if (isUninitializedData(Sec)) {
     // Error if fixups or non-zero bytes are present.
     writeSectionContents(*Sec.MCSection);
@@ -752,7 +755,9 @@ void WinCOFFWriter::assignSectionNumbers() {
   auto Assign = [&](COFFSection &Section) {
     Section.Number = I;
     Section.Symbol->Data.SectionNumber = I;
-    Section.Symbol->Aux[0].Aux.SectionDefinition.Number = I;
+    if (!getContext().getTargetOptions().getAssemblyLanguage().equals_insensitive(
+            "armasm64"))
+      Section.Symbol->Aux[0].Aux.SectionDefinition.Number = I;
     ++I;
   };
 
