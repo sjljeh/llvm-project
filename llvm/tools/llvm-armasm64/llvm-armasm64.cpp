@@ -12,6 +12,7 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
+#include "llvm/BinaryFormat/COFF.h"
 #include "llvm/MC/MCAsmBackend.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCCodeEmitter.h"
@@ -20,10 +21,12 @@
 #include "llvm/MC/MCObjectFileInfo.h"
 #include "llvm/MC/MCObjectWriter.h"
 #include "llvm/MC/MCParser/MCAsmParser.h"
+#include "llvm/MC/MCParser/MCAsmParserExtension.h"
 #include "llvm/MC/MCParser/MCTargetAsmParser.h"
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSubtargetInfo.h"
+#include "llvm/MC/MCSymbolCOFF.h"
 #include "llvm/MC/MCTargetOptions.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Option/ArgList.h"
@@ -48,6 +51,49 @@ using namespace llvm;
 using namespace llvm::opt;
 
 namespace {
+
+class ARMAsm64AsmParserExtension final : public MCAsmParserExtension {
+  template <bool (ARMAsm64AsmParserExtension::*Handler)(StringRef, SMLoc)>
+  void addDirectiveHandler(StringRef Directive) {
+    MCAsmParser::ExtensionDirectiveHandler HandlerInfo = std::make_pair(
+        this, HandleDirective<ARMAsm64AsmParserExtension, Handler>);
+    getParser().addDirectiveHandler(Directive, HandlerInfo);
+  }
+
+  bool parseWeakExternal(StringRef, SMLoc) {
+    MCSymbol *Symbol;
+    MCSymbol *Fallback;
+    int64_t Search;
+    if (getParser().parseSymbol(Symbol) || getParser().parseComma() ||
+        getParser().parseSymbol(Fallback) || getParser().parseComma() ||
+        getParser().parseAbsoluteExpression(Search) || parseEOL())
+      return true;
+
+    getStreamer().emitWeakReference(Symbol, Fallback);
+    static_cast<MCSymbolCOFF *>(Symbol)->setWeakExternalCharacteristics(
+        static_cast<COFF::WeakExternalCharacteristics>(Search));
+    return false;
+  }
+
+  bool parseCommon(StringRef, SMLoc) {
+    MCSymbol *Symbol;
+    int64_t Size;
+    if (getParser().parseSymbol(Symbol) || getParser().parseComma() ||
+        getParser().parseAbsoluteExpression(Size) || parseEOL())
+      return true;
+    getStreamer().emitCommonSymbol(Symbol, Size, Align(1));
+    return false;
+  }
+
+public:
+  void Initialize(MCAsmParser &Parser) override {
+    MCAsmParserExtension::Initialize(Parser);
+    addDirectiveHandler<&ARMAsm64AsmParserExtension::parseWeakExternal>(
+        ".armasm64_weak_external");
+    addDirectiveHandler<&ARMAsm64AsmParserExtension::parseCommon>(
+        ".armasm64_common");
+  }
+};
 
 enum ID {
   OPT_INVALID = 0,
@@ -1275,7 +1321,53 @@ static Error assignVariable(StringRef Name, StringRef Directive,
   return Error::success();
 }
 
-static void collectExports(StringRef Remaining, StringSet<> &Exports) {
+enum class ExportType { None, Data, Function };
+
+struct ExportSpec {
+  std::string Name;
+  ExportType Type = ExportType::None;
+};
+
+static Expected<ExportSpec> parseExportSpec(StringRef Text) {
+  Text = Text.trim();
+  if (Text.empty())
+    return createStringError(inconvertibleErrorCode(),
+                             "A2003: improper line syntax");
+
+  StringRef Name = Text;
+  ExportType Type = ExportType::None;
+  if (size_t Open = Text.find('['); Open != StringRef::npos) {
+    size_t Close = Text.rfind(']');
+    if (Close == StringRef::npos || !Text.drop_front(Close + 1).trim().empty())
+      return createStringError(inconvertibleErrorCode(),
+                               "A2075: improper line syntax; expected: ']'");
+    Name = Text.take_front(Open).trim();
+    StringRef Attribute = Text.slice(Open + 1, Close).trim();
+    if (Attribute.equals_insensitive("DATA"))
+      Type = ExportType::Data;
+    else if (Attribute.equals_insensitive("FUNC"))
+      Type = ExportType::Function;
+    else
+      return createStringError(inconvertibleErrorCode(),
+                               "A2039: " + Attribute +
+                                   " attribute does not pertain to a "
+                                   "relocatable module; ignored");
+  } else if (Name.find_first_of(" \t") != StringRef::npos &&
+             !(Name.starts_with("|") && Name.ends_with("|"))) {
+    return createStringError(inconvertibleErrorCode(),
+                             "A2003: improper line syntax");
+  }
+
+  Name = unquoteIdentifier(Name);
+  if (Name.empty())
+    return createStringError(inconvertibleErrorCode(),
+                             "A2003: improper line syntax");
+  return ExportSpec{Name.str(), Type};
+}
+
+using ExportMap = StringMap<ExportType>;
+
+static void collectExports(StringRef Remaining, ExportMap &Exports) {
   while (!Remaining.empty()) {
     auto [Line, Rest] = Remaining.split('\n');
     Remaining = Rest;
@@ -1283,8 +1375,13 @@ static void collectExports(StringRef Remaining, StringSet<> &Exports) {
     StringRef Tail = stripComment(Line).trim();
     StringRef First = takeToken(Tail);
     if (First.equals_insensitive("EXPORT") ||
-        First.equals_insensitive("GLOBAL"))
-      Exports.insert(unquoteIdentifier(takeToken(Tail)));
+        First.equals_insensitive("GLOBAL")) {
+      Expected<ExportSpec> Spec = parseExportSpec(Tail);
+      if (Spec)
+        Exports[Spec->Name] = Spec->Type;
+      else
+        consumeError(Spec.takeError());
+    }
   }
 }
 
@@ -1313,6 +1410,22 @@ static std::string rewriteSymbols(StringRef Text,
     Text = Text.drop_front(End);
   }
   return Rewritten;
+}
+
+static bool containsIdentifier(StringRef Text, StringRef Name) {
+  auto IsIdentifierChar = [](char C) {
+    return isAlnum(C) || C == '_' || C == '.' || C == '$' || C == '?';
+  };
+  size_t Offset = 0;
+  while ((Offset = Text.find(Name, Offset)) != StringRef::npos) {
+    bool HasStartBoundary = Offset == 0 || !IsIdentifierChar(Text[Offset - 1]);
+    size_t End = Offset + Name.size();
+    bool HasEndBoundary = End == Text.size() || !IsIdentifierChar(Text[End]);
+    if (HasStartBoundary && HasEndBoundary)
+      return true;
+    ++Offset;
+  }
+  return false;
 }
 
 enum class RegisterAliasKind { Single, Double, Quad };
@@ -1565,6 +1678,11 @@ static void recordDefinedSymbols(StringRef Line, StringRef First,
                                  StringSet<> &DefinedSymbols) {
   if (First.equals_insensitive("IMPORT") ||
       First.equals_insensitive("EXTERN")) {
+    StringRef Symbol = takeToken(Tail).split(',').first;
+    if (!Symbol.empty())
+      DefinedSymbols.insert(unquoteIdentifier(Symbol));
+  }
+  if (First.equals_insensitive("COMMON")) {
     StringRef Symbol = takeToken(Tail).split(',').first;
     if (!Symbol.empty())
       DefinedSymbols.insert(unquoteIdentifier(Symbol));
@@ -2337,7 +2455,9 @@ expandAssemblyControl(std::unique_ptr<MemoryBuffer> Input,
 }
 
 static Expected<std::unique_ptr<MemoryBuffer>>
-translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
+translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
+               bool NoWarn, bool NoEscape,
+               const DenseSet<unsigned> &IgnoredWarnings, raw_ostream &DiagOS,
                ArrayRef<std::string> Predefines) {
   StringRef Remaining = Input->getBuffer();
   std::string Translated;
@@ -2345,11 +2465,21 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
   StringMap<std::string> Constants;
   StringMap<uint64_t> AbsoluteConstants;
   VariableMap Variables;
-  StringSet<> Exports;
+  ExportMap Exports;
   StringSet<> DefinedSymbols;
+  StringSet<> DefinedObjectSymbols;
+  StringSet<> ExternalSymbols;
+  StringSet<> CommonSymbols;
   RegisterAliasMap RegisterAliases;
   StorageMapField CurrentStorageMap;
   StorageMapFieldMap StorageMapFields;
+  struct PendingWeakExternal {
+    std::string Name;
+    std::string Fallback;
+    uint64_t Search = COFF::IMAGE_WEAK_EXTERN_SEARCH_ALIAS;
+    bool Conditional = false;
+  };
+  SmallVector<PendingWeakExternal, 4> PendingWeakExternals;
   SmallVector<std::pair<size_t, size_t>, 16> PendingSymbolUses;
   collectExports(Remaining, Exports);
 
@@ -2393,6 +2523,10 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
     };
     auto HasInternalSymbol = [&](StringRef Name) {
       return RegisterAliases.contains(Name) || StorageMapFields.contains(Name);
+    };
+    auto ConflictsWithObjectDefinition = [&](StringRef Name) {
+      return HasInternalSymbol(Name) || ExternalSymbols.contains(Name) ||
+             CommonSymbols.contains(Name);
     };
     auto EvaluateAbsolute = [&](StringRef Expression) -> Expected<uint64_t> {
       VariableExpressionParser Parser(Expression, Variables, AbsoluteConstants,
@@ -2555,20 +2689,103 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
 
     if (First.equals_insensitive("EXPORT") ||
         First.equals_insensitive("GLOBAL")) {
-      StringRef Name = unquoteIdentifier(takeToken(Tail));
+      Expected<ExportSpec> Spec = parseExportSpec(Tail);
+      if (!Spec)
+        return SourceError(toString(Spec.takeError()));
+      StringRef Name = Spec->Name;
       if (HasInternalSymbol(Name))
         return SymbolConflict(Name);
-      OS << ".globl " << Name;
-    } else if (First.equals_insensitive("IMPORT")) {
-      StringRef Name = unquoteIdentifier(takeToken(Tail));
-      if (HasInternalSymbol(Name))
+      OS << ".def " << Name << "; .scl 2; .type "
+         << (Spec->Type == ExportType::Function ? 32 : 0) << "; .endef; .globl "
+         << Name;
+    } else if (First.equals_insensitive("IMPORT") ||
+               First.equals_insensitive("EXTERN")) {
+      bool Conditional = First.equals_insensitive("EXTERN");
+      SmallVector<StringRef, 4> Operands;
+      splitOperands(Tail, Operands);
+      if (Operands.empty() || Operands.size() > 3 || Operands[0].empty())
+        return SourceError("A2003: improper line syntax");
+
+      StringRef Name = unquoteIdentifier(Operands[0]);
+      if (Name.empty() || HasInternalSymbol(Name) ||
+          DefinedObjectSymbols.contains(Name) || CommonSymbols.contains(Name) ||
+          ExternalSymbols.contains(Name))
         return SymbolConflict(Name);
-      OS << ".globl " << Name;
-    } else if (First.equals_insensitive("EXTERN")) {
-      // Unlike IMPORT, an unused EXTERN does not appear in the object.
-      StringRef Name = unquoteIdentifier(takeToken(Tail));
-      if (HasInternalSymbol(Name))
+      ExternalSymbols.insert(Name);
+
+      if (Operands.size() == 1) {
+        // Unlike IMPORT, an unused EXTERN does not appear in the object.
+        if (!Conditional)
+          OS << ".globl " << Name;
+      } else {
+        StringRef WeakOperand = Operands[1].trim();
+        StringRef Weak = takeToken(WeakOperand);
+        StringRef Fallback = unquoteIdentifier(takeToken(WeakOperand));
+        if (!Weak.equals_insensitive("WEAK"))
+          return SourceError("A2135: attribute does not pertain to a "
+                             "relocatable module; ignored, weak expected");
+        if (Fallback.empty() || !WeakOperand.empty())
+          return SourceError("A2003: improper line syntax");
+        if (Fallback == Name || HasInternalSymbol(Fallback) ||
+            DefinedObjectSymbols.contains(Fallback) ||
+            CommonSymbols.contains(Fallback))
+          return SymbolConflict(Fallback);
+
+        uint64_t Search = COFF::IMAGE_WEAK_EXTERN_SEARCH_ALIAS;
+        if (Operands.size() == 3) {
+          StringRef TypeOperand = Operands[2].trim();
+          StringRef Type = takeToken(TypeOperand);
+          if (!Type.equals_insensitive("TYPE") || TypeOperand.empty())
+            return SourceError("A2003: improper line syntax");
+          Expected<uint64_t> Value = EvaluateAbsolute(TypeOperand);
+          if (!Value)
+            return SourceError(toString(Value.takeError()));
+          Search = *Value;
+          if ((Search < COFF::IMAGE_WEAK_EXTERN_SEARCH_NOLIBRARY ||
+               Search > COFF::IMAGE_WEAK_EXTERN_SEARCH_ALIAS) &&
+              !NoWarn && !IgnoredWarnings.contains(4069))
+            WithColor::warning(DiagOS, ProgName)
+                << CurrentFilename << ":" << CurrentLine
+                << ": A4069: immediate value " << static_cast<int64_t>(Search)
+                << " out of range; expected values: 1,2,3\n";
+          Search &= 7;
+        }
+
+        ExternalSymbols.insert(Fallback);
+        OS << ".globl " << Fallback;
+        PendingWeakExternals.push_back(
+            {Name.str(), Fallback.str(), Search, Conditional});
+      }
+    } else if (First.equals_insensitive("COMMON")) {
+      SmallVector<StringRef, 3> Operands;
+      splitOperands(Tail, Operands);
+      if (Operands.empty() || Operands[0].empty())
+        return SourceError("A2003: improper line syntax: End of line");
+      if (Operands.size() > 2)
+        return SourceError("A2221: The COMMON directive takes two parameters; "
+                           "specifying an alignment is not supported");
+
+      StringRef Name = unquoteIdentifier(Operands[0]);
+      if (Name.empty() || HasInternalSymbol(Name) ||
+          DefinedObjectSymbols.contains(Name) ||
+          ExternalSymbols.contains(Name) || CommonSymbols.contains(Name))
         return SymbolConflict(Name);
+      uint64_t Size = 0;
+      if (Operands.size() == 2) {
+        Expected<uint64_t> Value = EvaluateAbsolute(Operands[1]);
+        if (!Value)
+          return SourceError(toString(Value.takeError()));
+        Size = *Value;
+      }
+      int64_t SignedSize = static_cast<int64_t>(Size);
+      if (SignedSize < 0 || Size > UINT32_MAX)
+        return SourceError("A2209: Immediate value " + Twine(SignedSize) +
+                           " out of range");
+      CommonSymbols.insert(Name);
+      if (Size == 0)
+        OS << ".globl " << Name;
+      else
+        OS << ".armasm64_common " << Name << ", " << Size;
     } else if (First.equals_insensitive("AREA")) {
       SmallVector<StringRef, 8> Attributes;
       Tail.split(Attributes, ',', /*MaxSplit=*/-1, /*KeepEmpty=*/false);
@@ -2595,11 +2812,13 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
          << "; .p2align " << Alignment;
     } else if (Second.equals_insensitive("EQU")) {
       StringRef Name = unquoteIdentifier(First);
-      if (HasInternalSymbol(Name))
+      if (ConflictsWithObjectDefinition(Name))
         return SymbolConflict(Name);
+      DefinedObjectSymbols.insert(Name);
       DefinedSymbols.insert(Name);
-      std::string TemporaryName = (".Larmasm$" + Name).str();
-      Constants[Name] = TemporaryName;
+      std::string AssemblerName =
+          Exports.contains(Name) ? Name.str() : (".Larmasm$" + Name).str();
+      Constants[Name] = AssemblerName;
       VariableExpressionParser Parser(AfterFirst, Variables, AbsoluteConstants,
                                       NoEscape, &DefinedSymbols);
       Expected<VariableValue> Value = Parser.parse();
@@ -2607,13 +2826,14 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
         AbsoluteConstants[Name] = Value->Arithmetic;
       else if (!Value)
         consumeError(Value.takeError());
-      OS << ".equ " << TemporaryName << ", "
+      OS << ".equ " << AssemblerName << ", "
          << rewriteSymbols(AfterFirst, Constants);
     } else if (Second.equals_insensitive("PROC") ||
                Second.equals_insensitive("FUNCTION")) {
       StringRef Name = unquoteIdentifier(First);
-      if (HasInternalSymbol(Name))
+      if (ConflictsWithObjectDefinition(Name))
         return SymbolConflict(Name);
+      DefinedObjectSymbols.insert(Name);
       if (!Exports.contains(Name))
         OS << ".def " << Name << "; .scl 6; .endef; ";
       OS << Name << ':';
@@ -2675,8 +2895,9 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
 
       if (HasLabel) {
         StringRef Name = unquoteIdentifier(First);
-        if (HasInternalSymbol(Name))
+        if (ConflictsWithObjectDefinition(Name))
           return SymbolConflict(Name);
+        DefinedObjectSymbols.insert(Name);
         if (!Exports.contains(Name))
           OS << ".def " << Name << "; .scl 3; .endef; ";
         OS << Name << ":; ";
@@ -2704,8 +2925,9 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
 
       if (HasLabel) {
         StringRef Name = unquoteIdentifier(First);
-        if (HasInternalSymbol(Name))
+        if (ConflictsWithObjectDefinition(Name))
           return SymbolConflict(Name);
+        DefinedObjectSymbols.insert(Name);
         if (!Exports.contains(Name))
           OS << ".def " << Name << "; .scl 3; .endef; ";
         OS << Name << ":; ";
@@ -2744,8 +2966,9 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
       bool IsLabel = !Line.empty() && !isSpace(Line.front()) && Second.empty();
       if (IsLabel) {
         StringRef Name = unquoteIdentifier(First);
-        if (HasInternalSymbol(Name))
+        if (ConflictsWithObjectDefinition(Name))
           return SymbolConflict(Name);
+        DefinedObjectSymbols.insert(Name);
         if (!Exports.contains(Name))
           OS << ".def " << Name << "; .scl 6; .endef; ";
         OS << Name << ':';
@@ -2757,6 +2980,19 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
     }
     OS << '\n';
   }
+
+  for (const auto &Export : Exports)
+    if (!DefinedObjectSymbols.contains(Export.first()) &&
+        !CommonSymbols.contains(Export.first()))
+      return createStringError(
+          inconvertibleErrorCode(),
+          Twine(CurrentFilename) + ":" + Twine(CurrentLine) +
+              ": A2023: undefined symbol: " + Export.first());
+  OS.flush();
+  for (const PendingWeakExternal &Weak : PendingWeakExternals)
+    if (!Weak.Conditional || containsIdentifier(Translated, Weak.Name))
+      OS << ".armasm64_weak_external " << Weak.Name << ", " << Weak.Fallback
+         << ", " << Weak.Search << '\n';
 
   OS.flush();
   for (size_t I = PendingSymbolUses.size(); I != 0; --I) {
@@ -2829,7 +3065,8 @@ static int assembleInput(StringRef ProgName, StringRef InputFilename,
   }
 
   Expected<std::unique_ptr<MemoryBuffer>> TranslatedInput = translateInput(
-      std::move(*ExpandedInput), Args.hasArg(OPT_no_escape), Predefines);
+      std::move(*ExpandedInput), ProgName, Args.hasArg(OPT_no_warn),
+      Args.hasArg(OPT_no_escape), IgnoredWarnings, DiagOS, Predefines);
   if (!TranslatedInput) {
     WithColor::error(DiagOS, ProgName)
         << toString(TranslatedInput.takeError()) << '\n';
@@ -2895,6 +3132,8 @@ static int assembleInput(StringRef ProgName, StringRef InputFilename,
 
   std::unique_ptr<MCAsmParser> Parser(
       createMCAsmParser(SrcMgr, Ctx, *Streamer, *MAI));
+  ARMAsm64AsmParserExtension ARMAsm64ParserExtension;
+  ARMAsm64ParserExtension.Initialize(*Parser);
   std::unique_ptr<MCTargetAsmParser> TargetParser(
       TheTarget->createMCAsmParser(*STI, *Parser, *MCII));
   if (!TargetParser) {

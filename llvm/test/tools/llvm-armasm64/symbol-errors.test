@@ -1,0 +1,47 @@
+# RUN: split-file %s %t
+# RUN: not llvm-armasm64 %t/import-type.asm %t.obj 2>&1 | FileCheck %s --check-prefix=IMPORT-TYPE
+# RUN: not llvm-armasm64 %t/common-align.asm %t.obj 2>&1 | FileCheck %s --check-prefix=COMMON-ALIGN
+# RUN: not llvm-armasm64 %t/common-repeat.asm %t.obj 2>&1 | FileCheck %s --check-prefix=COMMON-REPEAT
+# RUN: not llvm-armasm64 %t/common-negative.asm %t.obj 2>&1 | FileCheck %s --check-prefix=COMMON-NEGATIVE
+# RUN: not llvm-armasm64 %t/export-undefined.asm %t.obj 2>&1 | FileCheck %s --check-prefix=EXPORT-UNDEFINED
+# RUN: not llvm-armasm64 %t/export-attribute.asm %t.obj 2>&1 | FileCheck %s --check-prefix=EXPORT-ATTRIBUTE
+# RUN: llvm-armasm64 %t/type-range.asm %t.obj 2>&1 | FileCheck %s --check-prefix=TYPE-RANGE
+# RUN: llvm-armasm64 -ignore 4069 %t/type-range.asm %t.obj 2>&1 | FileCheck %s --check-prefix=TYPE-RANGE-IGNORED --allow-empty
+
+# IMPORT-TYPE: import-type.asm:1: A2135: attribute does not pertain to a relocatable module; ignored, weak expected
+# COMMON-ALIGN: common-align.asm:1: A2221: The COMMON directive takes two parameters; specifying an alignment is not supported
+# COMMON-REPEAT: common-repeat.asm:2: A2026: multiple symbol definition or incompatibility: value
+# COMMON-NEGATIVE: common-negative.asm:1: A2209: Immediate value -1 out of range
+# EXPORT-UNDEFINED: export-undefined.asm:1: A2023: undefined symbol: missing
+# EXPORT-ATTRIBUTE: export-attribute.asm:1: A2039: UNKNOWN attribute does not pertain to a relocatable module; ignored
+# TYPE-RANGE: warning: {{.*}}type-range.asm:1: A4069: immediate value 0 out of range; expected values: 1,2,3
+# TYPE-RANGE-IGNORED-NOT: A4069
+
+#--- import-type.asm
+        IMPORT symbol, TYPE 1
+        END
+
+#--- common-align.asm
+        COMMON value, 4, 8
+        END
+
+#--- common-repeat.asm
+        COMMON value, 4
+        COMMON value, 8
+        END
+
+#--- common-negative.asm
+        COMMON value, -1
+        END
+
+#--- export-undefined.asm
+        EXPORT missing[FUNC]
+        END
+
+#--- export-attribute.asm
+        EXPORT symbol[UNKNOWN]
+        END
+
+#--- type-range.asm
+        IMPORT symbol, WEAK fallback, TYPE 0
+        END
