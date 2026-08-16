@@ -3372,6 +3372,10 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
         continue;
       }
     }
+    if (First.equals_insensitive("#line")) {
+      OS << Line << '\n';
+      continue;
+    }
 
     bool IsRelocDirective = First.equals_insensitive("RELOC");
     if (!First.empty() && !IsRelocDirective)
