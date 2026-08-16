@@ -222,79 +222,6 @@ static void emitLineMarker(raw_ostream &OS, unsigned Line, StringRef Filename) {
      << "\"\n";
 }
 
-static Error expandIncludes(StringRef Remaining, StringRef Filename,
-                            ArrayRef<std::string> IncludeDirs, raw_ostream &OS,
-                            StringRef ProgName, bool NoWarn,
-                            raw_ostream &DiagOS, unsigned Depth = 0) {
-  if (Depth == 20)
-    return createStringError(Twine(Filename) +
-                             ": include nesting limit exceeded");
-
-  bool SawEnd = false;
-  unsigned LineNumber = 0;
-  while (!Remaining.empty()) {
-    ++LineNumber;
-    auto [Line, Rest] = Remaining.split('\n');
-    Remaining = Rest;
-    Line.consume_back("\r");
-
-    StringRef Tail = stripComment(Line).trim();
-    StringRef First = takeToken(Tail);
-    if (First.equals_insensitive("END")) {
-      SawEnd = true;
-      break;
-    }
-    if (!First.equals_insensitive("INCLUDE") &&
-        !First.equals_insensitive("GET")) {
-      OS << Line << '\n';
-      continue;
-    }
-
-    StringRef IncludedFilename = takeToken(Tail);
-    if (IncludedFilename.empty() || !Tail.empty() ||
-        IncludedFilename.front() == '"' || IncludedFilename.front() == '\'')
-      return createStringError(Twine(Filename) + ":" + Twine(LineNumber) +
-                               ": expected include file name");
-
-    SmallString<256> IncludedPath;
-    ErrorOr<std::unique_ptr<MemoryBuffer>> IncludedBuffer =
-        openIncludeFile(IncludedFilename, Filename, IncludeDirs, IncludedPath);
-    if (!IncludedBuffer)
-      return createStringError(Twine(Filename) + ":" + Twine(LineNumber) +
-                               ": unable to open include file '" +
-                               IncludedFilename +
-                               "': " + IncludedBuffer.getError().message());
-
-    emitLineMarker(OS, 1, IncludedPath);
-    if (Error Err = expandIncludes((*IncludedBuffer)->getBuffer(), IncludedPath,
-                                   IncludeDirs, OS, ProgName, NoWarn, DiagOS,
-                                   Depth + 1))
-      return Err;
-    emitLineMarker(OS, LineNumber + 1, Filename);
-  }
-
-  if (!SawEnd && Depth != 0)
-    return createStringError(Twine(Filename) +
-                             ": unexpected end of file; missing END directive");
-  if (!SawEnd && !NoWarn)
-    WithColor::warning(DiagOS, ProgName)
-        << Filename << ": missing END directive\n";
-  return Error::success();
-}
-
-static Expected<std::unique_ptr<MemoryBuffer>>
-expandInputIncludes(std::unique_ptr<MemoryBuffer> Input,
-                    ArrayRef<std::string> IncludeDirs, StringRef ProgName,
-                    bool NoWarn, raw_ostream &DiagOS) {
-  std::string Expanded;
-  raw_string_ostream OS(Expanded);
-  if (Error Err =
-          expandIncludes(Input->getBuffer(), Input->getBufferIdentifier(),
-                         IncludeDirs, OS, ProgName, NoWarn, DiagOS))
-    return std::move(Err);
-  return MemoryBuffer::getMemBufferCopy(Expanded, Input->getBufferIdentifier());
-}
-
 static void printDiagnostic(const SMDiagnostic &Diagnostic,
                             const SourceMgr &SrcMgr, raw_ostream &OS) {
   if (!Diagnostic.getLoc().isValid()) {
@@ -1351,6 +1278,336 @@ static Error executePredefine(StringRef Predefine, VariableMap &Variables,
   return Error::success();
 }
 
+class AssemblyControlExpander {
+  enum class ControlKind { If, While };
+
+  struct ControlFrame {
+    ControlKind Kind;
+    bool ParentActive;
+    bool Active;
+    bool BranchTaken = false;
+    bool SawElse = false;
+    size_t WhileLine = 0;
+    size_t BodyLine = 0;
+  };
+
+  ArrayRef<std::string> IncludeDirs;
+  StringRef ProgName;
+  bool NoWarn;
+  bool NoEscape;
+  raw_ostream &DiagOS;
+  raw_ostream &OS;
+  VariableMap &Variables;
+  StringMap<uint64_t> &Constants;
+
+  static Error sourceError(StringRef Filename, unsigned Line,
+                           const Twine &Message) {
+    return createStringError(inconvertibleErrorCode(), Twine(Filename) + ":" +
+                                                           Twine(Line) + ": " +
+                                                           Message);
+  }
+
+  Expected<bool> evaluateCondition(StringRef Expression) {
+    VariableExpressionParser Parser(Expression, Variables, Constants, NoEscape);
+    Expected<VariableValue> Value = Parser.parse();
+    if (!Value)
+      return Value.takeError();
+    if (Value->Kind == VariableKind::Logical)
+      return Value->Logical;
+    if (Value->Kind == VariableKind::Arithmetic)
+      return Value->Arithmetic != 0;
+    return createStringError(inconvertibleErrorCode(),
+                             "condition requires a numeric or logical "
+                             "expression");
+  }
+
+  Expected<bool> evaluateConditionLine(StringRef Line) {
+    std::string Substituted = substituteVariables(Line, Variables);
+    StringRef Tail = stripComment(Substituted).trim();
+    takeToken(Tail);
+    return evaluateCondition(Tail);
+  }
+
+  Error processFile(std::unique_ptr<MemoryBuffer> Input, bool IsMainFile,
+                    unsigned NestingDepth) {
+    std::string Filename = Input->getBufferIdentifier().str();
+    SmallVector<StringRef, 0> Lines;
+    StringRef Remaining = Input->getBuffer();
+    while (!Remaining.empty()) {
+      auto [Line, Rest] = Remaining.split('\n');
+      Remaining = Rest;
+      Line.consume_back("\r");
+      Lines.push_back(Line);
+    }
+
+    SmallVector<ControlFrame, 8> Controls;
+    bool SawEnd = false;
+    size_t LineIndex = 0;
+    while (LineIndex != Lines.size()) {
+      StringRef Line = Lines[LineIndex];
+      unsigned LineNumber = LineIndex + 1;
+      bool Active = Controls.empty() || Controls.back().Active;
+      std::string SubstitutedLine = substituteVariables(Line, Variables);
+      StringRef Statement = stripComment(SubstitutedLine).trim();
+      StringRef Tail = Statement;
+      StringRef First = takeToken(Tail);
+      StringRef AfterFirst = Tail;
+      StringRef Second = takeToken(AfterFirst);
+
+      bool IsIf = First.equals_insensitive("IF") || First == "[";
+      if (IsIf) {
+        if (NestingDepth + Controls.size() == 256)
+          return sourceError(Filename, LineNumber,
+                             "assembly control nesting limit exceeded");
+        bool Condition = false;
+        if (Active) {
+          Expected<bool> Value = evaluateCondition(Tail);
+          if (!Value)
+            return sourceError(Filename, LineNumber,
+                               toString(Value.takeError()));
+          Condition = *Value;
+        }
+        Controls.push_back({ControlKind::If, Active, Active && Condition,
+                            Active && Condition});
+        ++LineIndex;
+        continue;
+      }
+
+      if (First.equals_insensitive("ELIF")) {
+        if (Controls.empty() || Controls.back().Kind != ControlKind::If)
+          return sourceError(Filename, LineNumber,
+                             "ELIF directive without a matching IF");
+        ControlFrame &Frame = Controls.back();
+        if (Frame.SawElse)
+          return sourceError(Filename, LineNumber, "ELIF directive after ELSE");
+        bool Condition = false;
+        if (Frame.ParentActive) {
+          Expected<bool> Value = evaluateCondition(Tail);
+          if (!Value)
+            return sourceError(Filename, LineNumber,
+                               toString(Value.takeError()));
+          Condition = *Value;
+        }
+        bool WasTaken = Frame.BranchTaken;
+        Frame.Active = Frame.ParentActive && !WasTaken && Condition;
+        Frame.BranchTaken |= Frame.ParentActive && Condition;
+        ++LineIndex;
+        continue;
+      }
+
+      bool IsElse = First.equals_insensitive("ELSE") || First == "|";
+      if (IsElse) {
+        if (Controls.empty() || Controls.back().Kind != ControlKind::If)
+          return sourceError(Filename, LineNumber,
+                             "ELSE directive without a matching IF");
+        if (!Tail.empty())
+          return sourceError(Filename, LineNumber,
+                             "unexpected tokens after ELSE directive");
+        ControlFrame &Frame = Controls.back();
+        if (Frame.SawElse)
+          return sourceError(Filename, LineNumber,
+                             "multiple ELSE directives in one IF structure");
+        Frame.Active = Frame.ParentActive && !Frame.BranchTaken;
+        Frame.BranchTaken = Frame.ParentActive;
+        Frame.SawElse = true;
+        ++LineIndex;
+        continue;
+      }
+
+      bool IsEndIf = First.equals_insensitive("ENDIF") || First == "]";
+      if (IsEndIf) {
+        if (Controls.empty() || Controls.back().Kind != ControlKind::If)
+          return sourceError(Filename, LineNumber,
+                             "ENDIF directive without a matching IF");
+        if (!Tail.empty())
+          return sourceError(Filename, LineNumber,
+                             "unexpected tokens after ENDIF directive");
+        Controls.pop_back();
+        ++LineIndex;
+        continue;
+      }
+
+      if (First.equals_insensitive("WHILE")) {
+        if (NestingDepth + Controls.size() == 256)
+          return sourceError(Filename, LineNumber,
+                             "assembly control nesting limit exceeded");
+        bool Condition = false;
+        if (Active) {
+          Expected<bool> Value = evaluateCondition(Tail);
+          if (!Value)
+            return sourceError(Filename, LineNumber,
+                               toString(Value.takeError()));
+          Condition = *Value;
+        }
+        ControlFrame Frame{ControlKind::While, Active, Active && Condition};
+        Frame.WhileLine = LineIndex;
+        Frame.BodyLine = LineIndex + 1;
+        Controls.push_back(Frame);
+        ++LineIndex;
+        continue;
+      }
+
+      if (First.equals_insensitive("WEND")) {
+        if (Controls.empty() || Controls.back().Kind != ControlKind::While)
+          return sourceError(Filename, LineNumber,
+                             "WEND directive without a matching WHILE");
+        if (!Tail.empty())
+          return sourceError(Filename, LineNumber,
+                             "unexpected tokens after WEND directive");
+        ControlFrame &Frame = Controls.back();
+        if (Frame.Active) {
+          Expected<bool> Value = evaluateConditionLine(Lines[Frame.WhileLine]);
+          if (!Value)
+            return sourceError(Filename, Frame.WhileLine + 1,
+                               toString(Value.takeError()));
+          if (*Value) {
+            LineIndex = Frame.BodyLine;
+            continue;
+          }
+        }
+        Controls.pop_back();
+        ++LineIndex;
+        continue;
+      }
+
+      if (!Active) {
+        ++LineIndex;
+        continue;
+      }
+
+      if (First.equals_insensitive("END")) {
+        if (!Controls.empty())
+          return sourceError(Filename, LineNumber,
+                             Controls.back().Kind == ControlKind::If
+                                 ? "unexpected END before ENDIF directive"
+                                 : "unexpected END before WEND directive");
+        SawEnd = true;
+        break;
+      }
+
+      if (First.equals_insensitive("INCLUDE") ||
+          First.equals_insensitive("GET")) {
+        StringRef IncludedFilename = takeToken(Tail);
+        if (IncludedFilename.empty() || !Tail.empty() ||
+            IncludedFilename.front() == '"' || IncludedFilename.front() == '\'')
+          return sourceError(Filename, LineNumber,
+                             "expected include file name");
+
+        if (NestingDepth + Controls.size() == 256)
+          return sourceError(Filename, LineNumber,
+                             "assembly control nesting limit exceeded");
+        SmallString<256> IncludedPath;
+        ErrorOr<std::unique_ptr<MemoryBuffer>> IncludedBuffer = openIncludeFile(
+            IncludedFilename, Filename, IncludeDirs, IncludedPath);
+        if (!IncludedBuffer)
+          return sourceError(Filename, LineNumber,
+                             "unable to open include file '" +
+                                 IncludedFilename +
+                                 "': " + IncludedBuffer.getError().message());
+        if (Error Err = processFile(std::move(*IncludedBuffer),
+                                    /*IsMainFile=*/false,
+                                    NestingDepth + Controls.size() + 1))
+          return Err;
+        ++LineIndex;
+        continue;
+      }
+
+      std::optional<VariableKind> DeclarationKind;
+      if (First.equals_insensitive("GBLA"))
+        DeclarationKind = VariableKind::Arithmetic;
+      else if (First.equals_insensitive("GBLL"))
+        DeclarationKind = VariableKind::Logical;
+      else if (First.equals_insensitive("GBLS"))
+        DeclarationKind = VariableKind::String;
+      if (DeclarationKind) {
+        StringRef NameToken = takeToken(Tail);
+        if (!isValidVariableName(NameToken) || !Tail.empty())
+          return sourceError(Filename, LineNumber,
+                             "expected one variable name after " + First);
+        StringRef Name = unquoteIdentifier(NameToken);
+        if (Constants.contains(Name))
+          return sourceError(Filename, LineNumber,
+                             "variable name '" + Name + "' is already defined");
+        if (Error Err = declareVariable(Name, *DeclarationKind, Variables))
+          return sourceError(Filename, LineNumber, toString(std::move(Err)));
+      } else if (isSetDirective(Second)) {
+        StringRef Name = unquoteIdentifier(First);
+        if (!isValidVariableName(First) || AfterFirst.empty())
+          return sourceError(Filename, LineNumber,
+                             "expected variable assignment expression");
+        if (Error Err = assignVariable(Name, Second, AfterFirst,
+                                       /*ImplicitDeclaration=*/false, Variables,
+                                       Constants, NoEscape))
+          return sourceError(Filename, LineNumber, toString(std::move(Err)));
+      } else if (Second.equals_insensitive("EQU")) {
+        StringRef Name = unquoteIdentifier(First);
+        VariableExpressionParser Parser(AfterFirst, Variables, Constants,
+                                        NoEscape);
+        Expected<VariableValue> Value = Parser.parse();
+        if (Value && Value->Kind == VariableKind::Arithmetic)
+          Constants[Name] = Value->Arithmetic;
+        else if (!Value)
+          consumeError(Value.takeError());
+      }
+
+      emitLineMarker(OS, LineNumber, Filename);
+      OS << Line << '\n';
+      ++LineIndex;
+    }
+
+    if (!Controls.empty())
+      return sourceError(
+          Filename, Lines.size() + 1,
+          Controls.back().Kind == ControlKind::If
+              ? "unexpected end of file; missing ENDIF directive"
+              : "unexpected end of file; missing WEND directive");
+    if (!SawEnd && !IsMainFile)
+      return createStringError(
+          Twine(Filename) + ": unexpected end of file; missing END directive");
+    if (!SawEnd && !NoWarn)
+      WithColor::warning(DiagOS, ProgName)
+          << Filename << ": missing END directive\n";
+    return Error::success();
+  }
+
+public:
+  AssemblyControlExpander(ArrayRef<std::string> IncludeDirs, StringRef ProgName,
+                          bool NoWarn, bool NoEscape, raw_ostream &DiagOS,
+                          raw_ostream &OS, VariableMap &Variables,
+                          StringMap<uint64_t> &Constants)
+      : IncludeDirs(IncludeDirs), ProgName(ProgName), NoWarn(NoWarn),
+        NoEscape(NoEscape), DiagOS(DiagOS), OS(OS), Variables(Variables),
+        Constants(Constants) {}
+
+  Error run(std::unique_ptr<MemoryBuffer> Input) {
+    return processFile(std::move(Input), /*IsMainFile=*/true,
+                       /*NestingDepth=*/0);
+  }
+};
+
+static Expected<std::unique_ptr<MemoryBuffer>>
+expandAssemblyControl(std::unique_ptr<MemoryBuffer> Input,
+                      ArrayRef<std::string> IncludeDirs, StringRef ProgName,
+                      bool NoWarn, bool NoEscape, raw_ostream &DiagOS,
+                      ArrayRef<std::string> Predefines) {
+  VariableMap Variables;
+  StringMap<uint64_t> Constants;
+  for (StringRef Predefine : Predefines)
+    if (Error Err = executePredefine(Predefine, Variables, Constants, NoEscape))
+      return createStringError(inconvertibleErrorCode(),
+                               "invalid predefine '" + Predefine +
+                                   "': " + toString(std::move(Err)));
+
+  std::string Expanded;
+  raw_string_ostream OS(Expanded);
+  std::string Filename = Input->getBufferIdentifier().str();
+  AssemblyControlExpander Expander(IncludeDirs, ProgName, NoWarn, NoEscape,
+                                   DiagOS, OS, Variables, Constants);
+  if (Error Err = Expander.run(std::move(Input)))
+    return std::move(Err);
+  return MemoryBuffer::getMemBufferCopy(Expanded, Filename);
+}
+
 static Expected<std::unique_ptr<MemoryBuffer>>
 translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
                ArrayRef<std::string> Predefines) {
@@ -1614,16 +1871,16 @@ static int assembleInput(StringRef ProgName, StringRef InputFilename,
       IncludeDirs.push_back(Path.str());
   }
 
-  Expected<std::unique_ptr<MemoryBuffer>> ExpandedInput =
-      expandInputIncludes(std::move(*InputOrErr), IncludeDirs, ProgName,
-                          Args.hasArg(OPT_no_warn), DiagOS);
+  std::vector<std::string> Predefines = Args.getAllArgValues(OPT_predefine);
+  Expected<std::unique_ptr<MemoryBuffer>> ExpandedInput = expandAssemblyControl(
+      std::move(*InputOrErr), IncludeDirs, ProgName, Args.hasArg(OPT_no_warn),
+      Args.hasArg(OPT_no_escape), DiagOS, Predefines);
   if (!ExpandedInput) {
     WithColor::error(DiagOS, ProgName)
         << toString(ExpandedInput.takeError()) << '\n';
     return 1;
   }
 
-  std::vector<std::string> Predefines = Args.getAllArgValues(OPT_predefine);
   Expected<std::unique_ptr<MemoryBuffer>> TranslatedInput = translateInput(
       std::move(*ExpandedInput), Args.hasArg(OPT_no_escape), Predefines);
   if (!TranslatedInput) {
