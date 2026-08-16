@@ -6,6 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/ADT/APFloat.h"
+#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
@@ -354,32 +356,6 @@ static void splitOperands(StringRef Text,
     }
   }
   Operands.push_back(Text.drop_front(Start).trim());
-}
-
-static Expected<std::string> translateString(StringRef String, bool NoEscape) {
-  std::string Translated;
-  raw_string_ostream OS(Translated);
-  OS << '"';
-  String = String.drop_front().drop_back();
-  for (size_t I = 0; I != String.size(); ++I) {
-    char C = String[I];
-    if (I + 1 != String.size() && C == '"' && String[I + 1] == '"') {
-      OS << "\\\"";
-      ++I;
-    } else if (I + 1 != String.size() && C == '$' && String[I + 1] == '$') {
-      OS << '$';
-      ++I;
-    } else if (C == '$') {
-      return createStringError(inconvertibleErrorCode(),
-                               "dollar character in string must be doubled");
-    } else if (NoEscape && C == '\\') {
-      OS << "\\\\";
-    } else {
-      OS << C;
-    }
-  }
-  OS << '"';
-  return Translated;
 }
 
 enum class VariableKind { Arithmetic, Logical, String };
@@ -1412,6 +1388,122 @@ static std::string rewriteSymbols(StringRef Text,
   return Rewritten;
 }
 
+static std::string
+normalizeSymbolicExpression(StringRef Text,
+                            const StringMap<std::string> &Symbols) {
+  std::string RewrittenSymbols = rewriteSymbols(Text, Symbols);
+  Text = RewrittenSymbols;
+  std::string Rewritten;
+  raw_string_ostream OS(Rewritten);
+  char PreviousNonSpace = '\0';
+  while (!Text.empty()) {
+    struct OperatorSpelling {
+      StringLiteral ARMAsm;
+      StringLiteral GNU;
+    };
+    static constexpr OperatorSpelling Operators[] = {
+        {":SHL:", "<<"}, {":SHR:", ">>"}, {":MOD:", "%"}, {":AND:", "&"},
+        {":EOR:", "^"},  {":OR:", "|"},   {":NOT:", "~"},
+    };
+    bool ReplacedOperator = false;
+    for (const OperatorSpelling &Operator : Operators) {
+      if (Text.starts_with_insensitive(Operator.ARMAsm)) {
+        OS << Operator.GNU;
+        PreviousNonSpace = Operator.GNU.back();
+        Text = Text.drop_front(Operator.ARMAsm.size());
+        ReplacedOperator = true;
+        break;
+      }
+    }
+    if (ReplacedOperator)
+      continue;
+
+    auto CanStartPrimary = [PreviousNonSpace]() {
+      return PreviousNonSpace == '\0' ||
+             StringRef("([,+-*/%&|^~<=>").contains(PreviousNonSpace);
+    };
+    if (Text.front() == '|' && Text.drop_front().contains('|') &&
+        CanStartPrimary()) {
+      size_t End = Text.find('|', 1);
+      OS << '"' << Text.slice(1, End) << '"';
+      PreviousNonSpace = '"';
+      Text = Text.drop_front(End + 1);
+      continue;
+    }
+    if (Text.front() == '&' && Text.size() > 1 && isHexDigit(Text[1]) &&
+        CanStartPrimary()) {
+      OS << "0x";
+      PreviousNonSpace = 'x';
+      Text = Text.drop_front();
+      continue;
+    }
+    if (Text.size() > 2 && Text.front() >= '2' && Text.front() <= '9' &&
+        Text[1] == '_' && CanStartPrimary()) {
+      unsigned Radix = Text.front() - '0';
+      size_t End = 2;
+      while (End != Text.size() && isAlnum(Text[End]))
+        ++End;
+      uint64_t Value;
+      if (!Text.slice(2, End).getAsInteger(Radix, Value)) {
+        OS << Value;
+        PreviousNonSpace = '0';
+        Text = Text.drop_front(End);
+        continue;
+      }
+    }
+    char C = Text.front();
+    OS << C;
+    if (!isSpace(C))
+      PreviousNonSpace = C;
+    Text = Text.drop_front();
+  }
+  return Rewritten;
+}
+
+static bool isLogicalImmediate(uint64_t Value, unsigned Width) {
+  if (Width == 32)
+    Value &= UINT32_MAX;
+  for (unsigned ElementSize = 2; ElementSize <= Width; ElementSize *= 2) {
+    uint64_t Mask = ElementSize == 64 ? UINT64_MAX : (1ULL << ElementSize) - 1;
+    uint64_t Pattern = Value & Mask;
+    uint64_t Replicated = 0;
+    for (unsigned Offset = 0; Offset != Width; Offset += ElementSize)
+      Replicated |= Pattern << Offset;
+    if (Replicated != Value || Pattern == 0 || Pattern == Mask)
+      continue;
+    for (unsigned Rotate = 0; Rotate != ElementSize; ++Rotate) {
+      uint64_t Rotated =
+          Rotate == 0
+              ? Pattern
+              : ((Pattern >> Rotate) | (Pattern << (ElementSize - Rotate))) &
+                    Mask;
+      if ((Rotated & (Rotated + 1)) == 0)
+        return true;
+    }
+  }
+  return false;
+}
+
+static bool isSingleMovImmediate(uint64_t Value, unsigned Width) {
+  if (Width == 32)
+    Value &= UINT32_MAX;
+  unsigned NonZeroChunks = 0;
+  unsigned NonOneChunks = 0;
+  for (unsigned Shift = 0; Shift != Width; Shift += 16) {
+    uint64_t Chunk = (Value >> Shift) & UINT16_MAX;
+    NonZeroChunks += Chunk != 0;
+    NonOneChunks += Chunk != UINT16_MAX;
+  }
+  return NonZeroChunks <= 1 || NonOneChunks <= 1 ||
+         isLogicalImmediate(Value, Width);
+}
+
+static bool isIntegerValueInRange(uint64_t Value, int64_t Minimum,
+                                  uint64_t Maximum) {
+  int64_t SignedValue = static_cast<int64_t>(Value);
+  return SignedValue < 0 ? SignedValue >= Minimum : Value <= Maximum;
+}
+
 static bool containsIdentifier(StringRef Text, StringRef Name) {
   auto IsIdentifierChar = [](char C) {
     return isAlnum(C) || C == '_' || C == '.' || C == '$' || C == '?';
@@ -1665,7 +1757,11 @@ static bool isDataDirective(StringRef Token) {
          Token.equals_insensitive("DCW") || Token.equals_insensitive("DCWU") ||
          Token.equals_insensitive("DCD") || Token.equals_insensitive("DCDU") ||
          Token == "&" || Token.equals_insensitive("DCQ") ||
-         Token.equals_insensitive("DCQU");
+         Token.equals_insensitive("DCQU") || Token.equals_insensitive("DCFS") ||
+         Token.equals_insensitive("DCFSU") ||
+         Token.equals_insensitive("DCFD") ||
+         Token.equals_insensitive("DCFDU") || Token.equals_insensitive("DCI") ||
+         Token.equals_insensitive("DCI.W");
 }
 
 static bool isStorageDirective(StringRef Token) {
@@ -2481,6 +2577,40 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
   };
   SmallVector<PendingWeakExternal, 4> PendingWeakExternals;
   SmallVector<std::pair<size_t, size_t>, 16> PendingSymbolUses;
+  struct LiteralPoolEntry {
+    std::string Label;
+    std::string Expression;
+    unsigned Size;
+  };
+  SmallVector<LiteralPoolEntry, 4> LiteralPool;
+  StringMap<std::string> LiteralPoolLabels;
+  unsigned LiteralPoolLabelCount = 0;
+  auto AddLiteralPoolEntry = [&](StringRef Expression, unsigned Size) {
+    std::string Key = (Twine(Size) + ":" + Expression).str();
+    auto Existing = LiteralPoolLabels.find(Key);
+    if (Existing != LiteralPoolLabels.end())
+      return Existing->second;
+    std::string Label =
+        (Twine(".Larmasm64_literal_") + Twine(LiteralPoolLabelCount++)).str();
+    LiteralPool.push_back({Label, Expression.str(), Size});
+    LiteralPoolLabels[Key] = Label;
+    return Label;
+  };
+  auto EmitLiteralPool = [&]() {
+    if (LiteralPool.empty())
+      return;
+    OS << ".balign 8, 0\n";
+    // ARMASM64 emits 64-bit entries before 32-bit entries. Its 64-bit list is
+    // assembled in reverse encounter order, while the 32-bit list is not.
+    for (const LiteralPoolEntry &Entry : llvm::reverse(LiteralPool))
+      if (Entry.Size == 8)
+        OS << Entry.Label << ":; .quad " << Entry.Expression << '\n';
+    for (const LiteralPoolEntry &Entry : LiteralPool)
+      if (Entry.Size == 4)
+        OS << Entry.Label << ":; .long " << Entry.Expression << '\n';
+    LiteralPool.clear();
+    LiteralPoolLabels.clear();
+  };
   collectExports(Remaining, Exports);
 
   for (StringRef Predefine : Predefines)
@@ -2528,10 +2658,13 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
       return HasInternalSymbol(Name) || ExternalSymbols.contains(Name) ||
              CommonSymbols.contains(Name);
     };
-    auto EvaluateAbsolute = [&](StringRef Expression) -> Expected<uint64_t> {
+    auto Evaluate = [&](StringRef Expression) -> Expected<VariableValue> {
       VariableExpressionParser Parser(Expression, Variables, AbsoluteConstants,
                                       NoEscape, &DefinedSymbols);
-      Expected<VariableValue> Value = Parser.parse();
+      return Parser.parse();
+    };
+    auto EvaluateAbsolute = [&](StringRef Expression) -> Expected<uint64_t> {
+      Expected<VariableValue> Value = Evaluate(Expression);
       if (!Value)
         return Value.takeError();
       if (Value->Kind != VariableKind::Arithmetic)
@@ -2786,7 +2919,12 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
         OS << ".globl " << Name;
       else
         OS << ".armasm64_common " << Name << ", " << Size;
+    } else if (First.equals_insensitive("LTORG")) {
+      if (!Tail.empty())
+        return SourceError("A2003: improper line syntax");
+      EmitLiteralPool();
     } else if (First.equals_insensitive("AREA")) {
+      EmitLiteralPool();
       SmallVector<StringRef, 8> Attributes;
       Tail.split(Attributes, ',', /*MaxSplit=*/-1, /*KeepEmpty=*/false);
       StringRef Name = unquoteIdentifier(Attributes.front());
@@ -2915,10 +3053,18 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
       bool IsWord = Directive.equals_insensitive("DCW") ||
                     Directive.equals_insensitive("DCWU");
       bool IsLong = Directive.equals_insensitive("DCD") ||
-                    Directive.equals_insensitive("DCDU") || Directive == "&";
+                    Directive.equals_insensitive("DCDU") || Directive == "&" ||
+                    Directive.equals_insensitive("DCI") ||
+                    Directive.equals_insensitive("DCI.W");
+      bool IsSingle = Directive.equals_insensitive("DCFS") ||
+                      Directive.equals_insensitive("DCFSU");
+      bool IsDouble = Directive.equals_insensitive("DCFD") ||
+                      Directive.equals_insensitive("DCFDU");
       bool IsUnaligned = Directive.equals_insensitive("DCWU") ||
                          Directive.equals_insensitive("DCDU") ||
-                         Directive.equals_insensitive("DCQU");
+                         Directive.equals_insensitive("DCQU") ||
+                         Directive.equals_insensitive("DCFSU") ||
+                         Directive.equals_insensitive("DCFDU");
       unsigned Alignment = IsByte ? 1 : IsWord ? 2 : 4;
       if (!IsUnaligned && Alignment != 1)
         OS << ".balign " << Alignment << "; ";
@@ -2935,34 +3081,122 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
       if (UsesPC)
         EmitPCLabel();
 
-      if (IsByte) {
-        SmallVector<StringRef, 8> Operands;
-        splitOperands(Values, Operands);
-        for (auto [Index, Operand] : llvm::enumerate(Operands)) {
-          if (Index)
-            OS << "; ";
-          if (Operand.empty()) {
-            OS << ".byte (";
-          } else if (Operand.size() >= 2 && Operand.front() == '"' &&
-                     Operand.back() == '"') {
-            Expected<std::string> String = translateString(Operand, NoEscape);
-            if (!String)
-              return SourceError(toString(String.takeError()));
-            OS << ".ascii " << *String;
+      SmallVector<StringRef, 8> Operands;
+      splitOperands(Values, Operands);
+      if (Operands.empty() || llvm::any_of(Operands, [](StringRef Operand) {
+            return Operand.empty();
+          }))
+        return SourceError("A2173: syntax error in expression");
+
+      for (auto [Index, Operand] : llvm::enumerate(Operands)) {
+        if (Index)
+          OS << "; ";
+
+        if (IsSingle || IsDouble) {
+          APFloat Float(IsSingle ? APFloat::IEEEsingle()
+                                 : APFloat::IEEEdouble());
+          APFloat::opStatus Status;
+          Expected<VariableValue> Value = Evaluate(Operand);
+          if (Value) {
+            if (Value->Kind != VariableKind::Arithmetic)
+              return SourceError(
+                  "A2062: illegal expression type; expected absolute numeric");
+            Status = Float.convertFromAPInt(APInt(64, Value->Arithmetic),
+                                            /*IsSigned=*/true,
+                                            APFloat::rmNearestTiesToEven);
           } else {
-            OS << ".byte " << rewriteSymbols(Operand, Constants);
+            consumeError(Value.takeError());
+            Expected<APFloat::opStatus> Converted =
+                Float.convertFromString(Operand, APFloat::rmNearestTiesToEven);
+            if (!Converted) {
+              consumeError(Converted.takeError());
+              return SourceError("A2173: syntax error in expression");
+            }
+            Status = *Converted;
           }
+          if (Status & APFloat::opOverflow)
+            return SourceError(
+                IsSingle
+                    ? "A2022: Floating point value can not be represented in "
+                      "single precision"
+                    : "A2220: Floating point value out of range");
+          OS << (IsSingle ? ".long " : ".quad ")
+             << Float.bitcastToAPInt().getZExtValue();
+          continue;
         }
-      } else {
-        OS << (IsWord ? ".short " : IsLong ? ".long " : ".quad ");
-        if (Values.empty())
-          OS << '(';
-        else
-          OS << rewriteSymbols(Values, Constants);
+
+        if (UsesPC && Operand.contains(PCSymbol)) {
+          OS << (IsByte   ? ".byte "
+                 : IsWord ? ".short "
+                 : IsLong ? ".long "
+                          : ".quad ")
+             << normalizeSymbolicExpression(Operand, Constants);
+          continue;
+        }
+
+        Expected<VariableValue> Value = Evaluate(Operand);
+        if (!Value) {
+          std::string Message = toString(Value.takeError());
+          if (!StringRef(Message).starts_with(
+                  "unknown variable or constant '") &&
+              !Operand.contains('|'))
+            return SourceError(Message);
+          if (IsByte)
+            return SourceError("A2065: illegal expression type; expected "
+                               "absolute numeric or string");
+          if (IsWord)
+            return SourceError(
+                "A2061: illegal expression type; expected absolute numeric");
+          OS << (IsByte   ? ".byte "
+                 : IsWord ? ".short "
+                 : IsLong ? ".long "
+                          : ".quad ")
+             << normalizeSymbolicExpression(Operand, Constants);
+          continue;
+        }
+        if (Value->Kind == VariableKind::String) {
+          if (!IsByte)
+            return SourceError(
+                "A2062: illegal expression type; expected absolute numeric");
+          if (!Value->String.empty()) {
+            OS << ".byte ";
+            for (auto [ByteIndex, Byte] : llvm::enumerate(Value->String)) {
+              if (ByteIndex)
+                OS << ", ";
+              OS << static_cast<unsigned>(static_cast<unsigned char>(Byte));
+            }
+          }
+          continue;
+        }
+        if (Value->Kind != VariableKind::Arithmetic)
+          return SourceError(
+              "A2062: illegal expression type; expected absolute numeric");
+
+        int64_t Minimum = IsByte   ? -128
+                          : IsWord ? -32768
+                          : IsLong ? INT32_MIN
+                                   : INT64_MIN;
+        uint64_t Maximum = IsByte   ? UINT8_MAX
+                           : IsWord ? UINT16_MAX
+                           : IsLong ? UINT32_MAX
+                                    : UINT64_MAX;
+        if (!isIntegerValueInRange(Value->Arithmetic, Minimum, Maximum))
+          return SourceError("A2209: Immediate value " +
+                             Twine(static_cast<int64_t>(Value->Arithmetic)) +
+                             " out of range");
+        OS << (IsByte   ? ".byte "
+               : IsWord ? ".short "
+               : IsLong ? ".long "
+                        : ".quad ")
+           << (static_cast<int64_t>(Value->Arithmetic) < 0
+                   ? Twine(static_cast<int64_t>(Value->Arithmetic))
+                   : Twine(Value->Arithmetic));
       }
     } else if (First.equals_insensitive("ALIGN")) {
       OS << ".balign " << Tail;
-    } else if (!First.equals_insensitive("END")) {
+    } else if (First.equals_insensitive("END")) {
+      EmitLiteralPool();
+    } else {
       bool IsLabel = !Line.empty() && !isSpace(Line.front()) && Second.empty();
       if (IsLabel) {
         StringRef Name = unquoteIdentifier(First);
@@ -2973,13 +3207,82 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, StringRef ProgName,
           OS << ".def " << Name << "; .scl 6; .endef; ";
         OS << Name << ':';
       } else {
-        std::string Rewritten = rewriteSymbols(Line, Constants);
-        PendingSymbolUses.emplace_back(OS.tell(), Rewritten.size());
-        OS << Rewritten;
+        bool RewroteLiteralLoad = false;
+        if (First.equals_insensitive("LDR")) {
+          SmallVector<StringRef, 2> Operands;
+          splitOperands(Tail, Operands);
+          if (Operands.size() == 2) {
+            StringRef Expression = Operands[1].trim();
+            if (Expression.consume_front("=")) {
+              Expression = Expression.trim();
+              Expected<VariableValue> Value = Evaluate(Expression);
+              if (Value) {
+                if (Value->Kind != VariableKind::Arithmetic)
+                  return SourceError(
+                      "A2062: illegal expression type; expected absolute "
+                      "numeric or program relative");
+                StringRef Register = Operands[0].trim();
+                bool IsWRegister = Register.starts_with_insensitive("w");
+                bool IsXRegister = Register.starts_with_insensitive("x");
+                unsigned Width = IsWRegister ? 32 : 64;
+                int64_t SignedValue = static_cast<int64_t>(Value->Arithmetic);
+                if (Width == 32 && Value->Arithmetic > UINT32_MAX &&
+                    (SignedValue < INT32_MIN || SignedValue >= 0))
+                  return SourceError("A2209: Immediate value " +
+                                     Twine(SignedValue) + " out of range");
+                bool UseMov = (IsWRegister || IsXRegister) &&
+                              isSingleMovImmediate(Value->Arithmetic, Width);
+                std::string LiteralExpression;
+                raw_string_ostream ExpressionOS(LiteralExpression);
+                if (SignedValue < 0)
+                  ExpressionOS << SignedValue;
+                else
+                  ExpressionOS << Value->Arithmetic;
+                ExpressionOS.flush();
+                if (UseMov) {
+                  OS << "mov " << Register << ", #" << LiteralExpression;
+                } else if (IsWRegister || IsXRegister) {
+                  OS << "ldr " << Register << ", "
+                     << AddLiteralPoolEntry(LiteralExpression, Width / 8);
+                } else {
+                  OS << "ldr " << Register << ", =" << LiteralExpression;
+                }
+                RewroteLiteralLoad = true;
+              } else {
+                std::string Message = toString(Value.takeError());
+                if (!StringRef(Message).starts_with(
+                        "unknown variable or constant '") &&
+                    !Expression.contains('|'))
+                  return SourceError(
+                      "A2062: illegal expression type; expected absolute "
+                      "numeric or program relative");
+                StringRef Register = Operands[0].trim();
+                std::string LiteralExpression =
+                    normalizeSymbolicExpression(Expression, Constants);
+                if (Register.starts_with_insensitive("w") ||
+                    Register.starts_with_insensitive("x")) {
+                  unsigned Size = Register.starts_with_insensitive("w") ? 4 : 8;
+                  OS << "ldr " << Register << ", "
+                     << AddLiteralPoolEntry(LiteralExpression, Size);
+                } else {
+                  OS << "ldr " << Register << ", =" << LiteralExpression;
+                }
+                RewroteLiteralLoad = true;
+              }
+            }
+          }
+        }
+        if (!RewroteLiteralLoad) {
+          std::string Rewritten = rewriteSymbols(Line, Constants);
+          PendingSymbolUses.emplace_back(OS.tell(), Rewritten.size());
+          OS << Rewritten;
+        }
       }
     }
     OS << '\n';
   }
+
+  EmitLiteralPool();
 
   for (const auto &Export : Exports)
     if (!DefinedObjectSymbols.contains(Export.first()) &&

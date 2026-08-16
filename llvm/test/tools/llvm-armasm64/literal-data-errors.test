@@ -1,0 +1,74 @@
+# RUN: split-file %s %t
+# RUN: not llvm-armasm64 %t/byte-range.asm %t.obj 2>&1 | FileCheck %s --check-prefix=BYTE-RANGE
+# RUN: not llvm-armasm64 %t/word-range.asm %t.obj 2>&1 | FileCheck %s --check-prefix=WORD-RANGE
+# RUN: not llvm-armasm64 %t/long-range.asm %t.obj 2>&1 | FileCheck %s --check-prefix=LONG-RANGE
+# RUN: not llvm-armasm64 %t/single-range.asm %t.obj 2>&1 | FileCheck %s --check-prefix=SINGLE-RANGE
+# RUN: not llvm-armasm64 %t/double-range.asm %t.obj 2>&1 | FileCheck %s --check-prefix=DOUBLE-RANGE
+# RUN: not llvm-armasm64 %t/literal-range.asm %t.obj 2>&1 | FileCheck %s --check-prefix=LITERAL-RANGE
+# RUN: not llvm-armasm64 %t/ltorg-operands.asm %t.obj 2>&1 | FileCheck %s --check-prefix=LTORG-OPERANDS
+# RUN: not llvm-armasm64 %t/data-type.asm %t.obj 2>&1 | FileCheck %s --check-prefix=DATA-TYPE
+# RUN: not llvm-armasm64 %t/byte-symbol.asm %t.obj 2>&1 | FileCheck %s --check-prefix=BYTE-SYMBOL
+# RUN: not llvm-armasm64 %t/word-symbol.asm %t.obj 2>&1 | FileCheck %s --check-prefix=WORD-SYMBOL
+
+# BYTE-RANGE: byte-range.asm:2: A2209: Immediate value -129 out of range
+# WORD-RANGE: word-range.asm:2: A2209: Immediate value 65536 out of range
+# LONG-RANGE: long-range.asm:2: A2209: Immediate value 4294967296 out of range
+# SINGLE-RANGE: single-range.asm:2: A2022: Floating point value can not be represented in single precision
+# DOUBLE-RANGE: double-range.asm:2: A2220: Floating point value out of range
+# LITERAL-RANGE: literal-range.asm:2: A2209: Immediate value 4294967297 out of range
+# LTORG-OPERANDS: ltorg-operands.asm:2: A2003: improper line syntax
+# DATA-TYPE: data-type.asm:2: A2062: illegal expression type; expected absolute numeric
+# BYTE-SYMBOL: byte-symbol.asm:3: A2065: illegal expression type; expected absolute numeric or string
+# WORD-SYMBOL: word-symbol.asm:3: A2061: illegal expression type; expected absolute numeric
+
+#--- byte-range.asm
+        AREA |.data|, DATA
+        DCB -129
+        END
+
+#--- word-range.asm
+        AREA |.data|, DATA
+        DCW 65536
+        END
+
+#--- long-range.asm
+        AREA |.data|, DATA
+        DCD 0x100000000
+        END
+
+#--- single-range.asm
+        AREA |.data|, DATA
+        DCFS 3.5e+39
+        END
+
+#--- double-range.asm
+        AREA |.data|, DATA
+        DCFD 2e+309
+        END
+
+#--- literal-range.asm
+        AREA |.text|, CODE
+        LDR w0, =0x100000001
+        END
+
+#--- ltorg-operands.asm
+        AREA |.text|, CODE
+        LTORG 1
+        END
+
+#--- data-type.asm
+        AREA |.data|, DATA
+        DCD "text"
+        END
+
+#--- byte-symbol.asm
+        AREA |.data|, DATA
+        IMPORT external
+        DCB external
+        END
+
+#--- word-symbol.asm
+        AREA |.data|, DATA
+        IMPORT external
+        DCW external
+        END

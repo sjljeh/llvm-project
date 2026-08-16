@@ -4,4 +4,4 @@
         DCB 1,,2
         END
 
-; CHECK: error: unknown token in expression
+; CHECK: A2173: syntax error in expression
