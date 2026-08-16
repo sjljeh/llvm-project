@@ -1324,6 +1324,13 @@ struct RegisterAlias {
 
 using RegisterAliasMap = StringMap<RegisterAlias>;
 
+struct StorageMapField {
+  int64_t Offset = 0;
+  std::optional<std::string> BaseRegister;
+};
+
+using StorageMapFieldMap = StringMap<StorageMapField>;
+
 static std::optional<RegisterAliasKind>
 registerAliasKindForDirective(StringRef Directive) {
   if (Directive.equals_insensitive("SN"))
@@ -1486,6 +1493,54 @@ static std::string rewriteRegisterAliases(StringRef Text,
   return Rewritten;
 }
 
+static std::string rewriteStorageMapFields(StringRef Text,
+                                           const StorageMapFieldMap &Fields) {
+  std::string Rewritten;
+  raw_string_ostream OS(Rewritten);
+  auto EmitField = [&](const StorageMapField &Field) {
+    if (Field.BaseRegister)
+      OS << '[' << *Field.BaseRegister << ", #" << Field.Offset << ']';
+    else
+      OS << Field.Offset;
+  };
+  while (!Text.empty()) {
+    size_t Identifier = Text.find_if(
+        [](char C) { return isAlpha(C) || C == '_' || C == '$' || C == '?'; });
+    size_t Bar = Text.find('|');
+    if (Bar != StringRef::npos &&
+        (Identifier == StringRef::npos || Bar < Identifier)) {
+      size_t End = Text.find('|', Bar + 1);
+      if (End != StringRef::npos) {
+        StringRef Name = Text.slice(Bar + 1, End);
+        if (auto It = Fields.find(Name); It != Fields.end()) {
+          OS << Text.take_front(Bar);
+          EmitField(It->second);
+          Text = Text.drop_front(End + 1);
+          continue;
+        }
+      }
+    }
+    if (Identifier == StringRef::npos) {
+      OS << Text;
+      break;
+    }
+    OS << Text.take_front(Identifier);
+    Text = Text.drop_front(Identifier);
+    size_t End = Text.find_if_not(
+        [](char C) { return isAlnum(C) || C == '_' || C == '$' || C == '?'; });
+    if (End == StringRef::npos)
+      End = Text.size();
+    StringRef Name = Text.take_front(End);
+    auto It = Fields.find(Name);
+    if (It == Fields.end())
+      OS << Name;
+    else
+      EmitField(It->second);
+    Text = Text.drop_front(End);
+  }
+  return Rewritten;
+}
+
 static bool isSetDirective(StringRef Directive) {
   return Directive.equals_insensitive("SETA") ||
          Directive.equals_insensitive("SETL") ||
@@ -1500,6 +1555,11 @@ static bool isDataDirective(StringRef Token) {
          Token.equals_insensitive("DCQU");
 }
 
+static bool isStorageDirective(StringRef Token) {
+  return Token.equals_insensitive("SPACE") ||
+         Token.equals_insensitive("FILL") || Token == "%";
+}
+
 static void recordDefinedSymbols(StringRef Line, StringRef First,
                                  StringRef Second, StringRef Tail,
                                  StringSet<> &DefinedSymbols) {
@@ -1512,7 +1572,8 @@ static void recordDefinedSymbols(StringRef Line, StringRef First,
   if (!Line.empty() && !isSpace(Line.front()) &&
       (Second.empty() || Second.equals_insensitive("EQU") ||
        Second.equals_insensitive("PROC") ||
-       Second.equals_insensitive("FUNCTION") || isDataDirective(Second)))
+       Second.equals_insensitive("FUNCTION") || isDataDirective(Second) ||
+       isStorageDirective(Second)))
     DefinedSymbols.insert(unquoteIdentifier(First));
 }
 
@@ -2287,7 +2348,9 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
   StringSet<> Exports;
   StringSet<> DefinedSymbols;
   RegisterAliasMap RegisterAliases;
-  SmallVector<std::pair<size_t, size_t>, 16> PendingRegisterAliasUses;
+  StorageMapField CurrentStorageMap;
+  StorageMapFieldMap StorageMapFields;
+  SmallVector<std::pair<size_t, size_t>, 16> PendingSymbolUses;
   collectExports(Remaining, Exports);
 
   for (StringRef Predefine : Predefines)
@@ -2300,6 +2363,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
   std::string CurrentFilename = Input->getBufferIdentifier().str();
   unsigned CurrentLine = 0;
   unsigned PCSymbolCount = 0;
+  bool CurrentAreaIsNoInit = false;
 
   while (!Remaining.empty()) {
     auto [Line, Rest] = Remaining.split('\n');
@@ -2327,10 +2391,23 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
                          "incompatibility: " +
                          Name);
     };
+    auto HasInternalSymbol = [&](StringRef Name) {
+      return RegisterAliases.contains(Name) || StorageMapFields.contains(Name);
+    };
+    auto EvaluateAbsolute = [&](StringRef Expression) -> Expected<uint64_t> {
+      VariableExpressionParser Parser(Expression, Variables, AbsoluteConstants,
+                                      NoEscape, &DefinedSymbols);
+      Expected<VariableValue> Value = Parser.parse();
+      if (!Value)
+        return Value.takeError();
+      if (Value->Kind != VariableKind::Arithmetic)
+        return createStringError(inconvertibleErrorCode(),
+                                 "expected absolute numeric expression");
+      return Value->Arithmetic;
+    };
 
-    if (First.starts_with("#")) {
-      StringRef Marker = Statement;
-      takeToken(Marker);
+    if (First == "#") {
+      StringRef Marker = Tail;
       StringRef SourceLine = takeToken(Marker);
       unsigned ParsedLine;
       Marker = Marker.trim();
@@ -2338,9 +2415,9 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
           Marker.consume_front("\"") && Marker.consume_back("\"")) {
         CurrentFilename = Marker.str();
         CurrentLine = ParsedLine - 1;
+        OS << Line << '\n';
+        continue;
       }
-      OS << Line << '\n';
-      continue;
     }
 
     std::optional<VariableKind> DeclarationKind;
@@ -2355,7 +2432,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
       if (!isValidVariableName(NameToken) || !Tail.empty())
         return SourceError("expected one variable name after " + First);
       StringRef Name = unquoteIdentifier(NameToken);
-      if (RegisterAliases.contains(Name))
+      if (HasInternalSymbol(Name))
         return SymbolConflict(Name);
       if (Constants.contains(Name))
         return SourceError("variable name '" + Name + "' is already defined");
@@ -2385,7 +2462,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
         return SourceError("A2173: syntax error in expression");
       auto Existing = RegisterAliases.find(Name);
       if (Variables.contains(Name) || Constants.contains(Name) ||
-          DefinedSymbols.contains(Name) ||
+          DefinedSymbols.contains(Name) || StorageMapFields.contains(Name) ||
           (Existing != RegisterAliases.end() &&
            Existing->second.Kind != *AliasKind))
         return SymbolConflict(Name);
@@ -2409,6 +2486,52 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
     if (Second.equals_insensitive("RN"))
       return SourceError("A2034: unknown opcode: RN");
 
+    if (First.equals_insensitive("MAP") || First == "^") {
+      SmallVector<StringRef, 2> Operands;
+      splitOperands(Tail, Operands);
+      if (Operands.empty() || Operands.size() > 2 || Operands[0].empty() ||
+          (Operands.size() == 2 && Operands[1].empty()))
+        return SourceError("A2003: improper line syntax");
+      Expected<uint64_t> Offset = EvaluateAbsolute(Operands[0]);
+      if (!Offset)
+        return SourceError(toString(Offset.takeError()));
+      CurrentStorageMap.Offset = static_cast<int64_t>(*Offset);
+      CurrentStorageMap.BaseRegister =
+          Operands.size() == 2
+              ? std::optional<std::string>(Operands[1].trim().str())
+              : std::nullopt;
+      OS << '\n';
+      continue;
+    }
+
+    bool IsField = First.equals_insensitive("FIELD") || First == "#" ||
+                   Second.equals_insensitive("FIELD") || Second == "#";
+    if (IsField) {
+      bool HasLabel = !First.equals_insensitive("FIELD") && First != "#";
+      StringRef Expression = HasLabel ? AfterFirst : Tail;
+      Expected<uint64_t> Size = EvaluateAbsolute(Expression);
+      if (!Size)
+        return SourceError(toString(Size.takeError()));
+      int64_t SignedSize = static_cast<int64_t>(*Size);
+      if (SignedSize < 0)
+        return SourceError("A2209: Immediate value " + Twine(SignedSize) +
+                           " out of range");
+
+      if (HasLabel) {
+        StringRef Name = unquoteIdentifier(First);
+        if (!isValidVariableName(First) || HasInternalSymbol(Name) ||
+            Variables.contains(Name) || Constants.contains(Name) ||
+            DefinedSymbols.contains(Name) || isPredefinedRegisterName(Name))
+          return SymbolConflict(Name);
+        StorageMapFields[Name] = CurrentStorageMap;
+      }
+      if (CurrentStorageMap.Offset > INT64_MAX - SignedSize)
+        return SourceError("storage map offset overflow");
+      CurrentStorageMap.Offset += SignedSize;
+      OS << '\n';
+      continue;
+    }
+
     std::string PCSymbol = (Twine("\"|") + Twine(PCSymbolCount) + "\"").str();
     bool UsesPC = false;
     std::string RewrittenLine =
@@ -2422,6 +2545,8 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
     AfterFirst = Tail;
     Second = takeToken(AfterFirst);
     bool IsDataLine = isDataDirective(First) || isDataDirective(Second);
+    bool IsStorageLine =
+        isStorageDirective(First) || isStorageDirective(Second);
     auto EmitPCLabel = [&]() {
       OS << ".def " << PCSymbol << "; .scl 6; .endef; " << PCSymbol << ":; ";
     };
@@ -2431,18 +2556,18 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
     if (First.equals_insensitive("EXPORT") ||
         First.equals_insensitive("GLOBAL")) {
       StringRef Name = unquoteIdentifier(takeToken(Tail));
-      if (RegisterAliases.contains(Name))
+      if (HasInternalSymbol(Name))
         return SymbolConflict(Name);
       OS << ".globl " << Name;
     } else if (First.equals_insensitive("IMPORT")) {
       StringRef Name = unquoteIdentifier(takeToken(Tail));
-      if (RegisterAliases.contains(Name))
+      if (HasInternalSymbol(Name))
         return SymbolConflict(Name);
       OS << ".globl " << Name;
     } else if (First.equals_insensitive("EXTERN")) {
       // Unlike IMPORT, an unused EXTERN does not appear in the object.
       StringRef Name = unquoteIdentifier(takeToken(Tail));
-      if (RegisterAliases.contains(Name))
+      if (HasInternalSymbol(Name))
         return SymbolConflict(Name);
     } else if (First.equals_insensitive("AREA")) {
       SmallVector<StringRef, 8> Attributes;
@@ -2465,11 +2590,12 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
                         : IsNoInit   ? "bw"
                         : IsReadOnly ? "dr"
                                      : "dw";
+      CurrentAreaIsNoInit = IsNoInit;
       OS << ".section \"" << Name << "\",\"" << Flags << "\""
          << "; .p2align " << Alignment;
     } else if (Second.equals_insensitive("EQU")) {
       StringRef Name = unquoteIdentifier(First);
-      if (RegisterAliases.contains(Name))
+      if (HasInternalSymbol(Name))
         return SymbolConflict(Name);
       DefinedSymbols.insert(Name);
       std::string TemporaryName = (".Larmasm$" + Name).str();
@@ -2486,7 +2612,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
     } else if (Second.equals_insensitive("PROC") ||
                Second.equals_insensitive("FUNCTION")) {
       StringRef Name = unquoteIdentifier(First);
-      if (RegisterAliases.contains(Name))
+      if (HasInternalSymbol(Name))
         return SymbolConflict(Name);
       if (!Exports.contains(Name))
         OS << ".def " << Name << "; .scl 6; .endef; ";
@@ -2495,6 +2621,71 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
                First.equals_insensitive("ENDFUNC") ||
                Second.equals_insensitive("ENDP") ||
                Second.equals_insensitive("ENDFUNC")) {
+    } else if (IsStorageLine) {
+      bool HasLabel = !isStorageDirective(First);
+      StringRef Directive = HasLabel ? Second : First;
+      StringRef Values = HasLabel ? AfterFirst : Tail;
+      SmallVector<StringRef, 3> Operands;
+      splitOperands(Values, Operands);
+      bool IsFill = Directive.equals_insensitive("FILL");
+      if (Operands.empty() || Operands[0].empty() ||
+          (!IsFill && Operands.size() != 1) ||
+          (IsFill && (Operands.size() > 3 ||
+                      llvm::any_of(Operands, [](StringRef Operand) {
+                        return Operand.empty();
+                      }))))
+        return SourceError("A2173: syntax error in expression");
+
+      Expected<uint64_t> Count = EvaluateAbsolute(Operands[0]);
+      if (!Count)
+        return SourceError(toString(Count.takeError()));
+      int64_t SignedCount = static_cast<int64_t>(*Count);
+      if (SignedCount < 0)
+        return SourceError("A2209: Immediate value " + Twine(SignedCount) +
+                           " out of range");
+
+      uint64_t Value = 0;
+      uint64_t ValueSize = 1;
+      if (Operands.size() >= 2) {
+        Expected<uint64_t> EvaluatedValue = EvaluateAbsolute(Operands[1]);
+        if (!EvaluatedValue)
+          return SourceError(toString(EvaluatedValue.takeError()));
+        Value = *EvaluatedValue;
+      }
+      if (Operands.size() == 3) {
+        Expected<uint64_t> EvaluatedSize = EvaluateAbsolute(Operands[2]);
+        if (!EvaluatedSize)
+          return SourceError(toString(EvaluatedSize.takeError()));
+        ValueSize = *EvaluatedSize;
+      }
+      if (ValueSize != 1 && ValueSize != 2 && ValueSize != 4)
+        return SourceError(
+            "A2197: value size for FILL directive must be 1, 2, or 4");
+      if (*Count % ValueSize)
+        return SourceError("A2219: Fill size must be a multiple of value size");
+      uint64_t MaxValue =
+          ValueSize == 4 ? UINT32_MAX : (1ULL << (ValueSize * 8)) - 1;
+      if (Value > MaxValue)
+        return SourceError("A2209: Immediate value " +
+                           Twine(static_cast<int64_t>(Value)) +
+                           " out of range");
+      if (CurrentAreaIsNoInit && Value != 0)
+        return SourceError("A2048: initialized data in an uninitialized data "
+                           "section");
+
+      if (HasLabel) {
+        StringRef Name = unquoteIdentifier(First);
+        if (HasInternalSymbol(Name))
+          return SymbolConflict(Name);
+        if (!Exports.contains(Name))
+          OS << ".def " << Name << "; .scl 3; .endef; ";
+        OS << Name << ":; ";
+      }
+      if (Value == 0)
+        OS << ".space " << *Count;
+      else
+        OS << ".fill " << *Count / ValueSize << ", " << ValueSize << ", "
+           << Value;
     } else if (IsDataLine) {
       bool HasLabel = !isDataDirective(First);
       StringRef Directive = HasLabel ? Second : First;
@@ -2513,7 +2704,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
 
       if (HasLabel) {
         StringRef Name = unquoteIdentifier(First);
-        if (RegisterAliases.contains(Name))
+        if (HasInternalSymbol(Name))
           return SymbolConflict(Name);
         if (!Exports.contains(Name))
           OS << ".def " << Name << "; .scl 3; .endef; ";
@@ -2549,20 +2740,18 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
       }
     } else if (First.equals_insensitive("ALIGN")) {
       OS << ".balign " << Tail;
-    } else if (First.equals_insensitive("SPACE")) {
-      OS << ".space " << Tail;
     } else if (!First.equals_insensitive("END")) {
       bool IsLabel = !Line.empty() && !isSpace(Line.front()) && Second.empty();
       if (IsLabel) {
         StringRef Name = unquoteIdentifier(First);
-        if (RegisterAliases.contains(Name))
+        if (HasInternalSymbol(Name))
           return SymbolConflict(Name);
         if (!Exports.contains(Name))
           OS << ".def " << Name << "; .scl 6; .endef; ";
         OS << Name << ':';
       } else {
         std::string Rewritten = rewriteSymbols(Line, Constants);
-        PendingRegisterAliasUses.emplace_back(OS.tell(), Rewritten.size());
+        PendingSymbolUses.emplace_back(OS.tell(), Rewritten.size());
         OS << Rewritten;
       }
     }
@@ -2570,10 +2759,11 @@ translateInput(std::unique_ptr<MemoryBuffer> Input, bool NoEscape,
   }
 
   OS.flush();
-  for (size_t I = PendingRegisterAliasUses.size(); I != 0; --I) {
-    auto [Offset, Length] = PendingRegisterAliasUses[I - 1];
+  for (size_t I = PendingSymbolUses.size(); I != 0; --I) {
+    auto [Offset, Length] = PendingSymbolUses[I - 1];
     std::string Rewritten = rewriteRegisterAliases(
         StringRef(Translated).substr(Offset, Length), RegisterAliases);
+    Rewritten = rewriteStorageMapFields(Rewritten, StorageMapFields);
     Translated.replace(Offset, Length, Rewritten);
   }
 

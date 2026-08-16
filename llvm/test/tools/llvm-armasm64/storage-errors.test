@@ -1,0 +1,57 @@
+# RUN: split-file %s %t
+# RUN: not llvm-armasm64 %t/fill-size.asm %t.obj 2>&1 | FileCheck %s --check-prefix=FILL-SIZE
+# RUN: not llvm-armasm64 %t/fill-multiple.asm %t.obj 2>&1 | FileCheck %s --check-prefix=FILL-MULTIPLE
+# RUN: not llvm-armasm64 %t/fill-value.asm %t.obj 2>&1 | FileCheck %s --check-prefix=FILL-VALUE
+# RUN: not llvm-armasm64 %t/space-negative.asm %t.obj 2>&1 | FileCheck %s --check-prefix=SPACE-NEGATIVE
+# RUN: not llvm-armasm64 %t/fill-empty.asm %t.obj 2>&1 | FileCheck %s --check-prefix=FILL-EMPTY
+# RUN: not llvm-armasm64 %t/noinit.asm %t.obj 2>&1 | FileCheck %s --check-prefix=NOINIT
+# RUN: not llvm-armasm64 %t/field-conflict.asm %t.obj 2>&1 | FileCheck %s --check-prefix=FIELD-CONFLICT
+# RUN: not llvm-armasm64 %t/map-operands.asm %t.obj 2>&1 | FileCheck %s --check-prefix=MAP-OPERANDS
+
+# FILL-SIZE: fill-size.asm:2: A2197: value size for FILL directive must be 1, 2, or 4
+# FILL-MULTIPLE: fill-multiple.asm:2: A2219: Fill size must be a multiple of value size
+# FILL-VALUE: fill-value.asm:2: A2209: Immediate value 256 out of range
+# SPACE-NEGATIVE: space-negative.asm:2: A2209: Immediate value -1 out of range
+# FILL-EMPTY: fill-empty.asm:2: A2173: syntax error in expression
+# NOINIT: noinit.asm:2: A2048: initialized data in an uninitialized data section
+# FIELD-CONFLICT: field-conflict.asm:2: A2026: multiple symbol definition or incompatibility: Slot
+# MAP-OPERANDS: map-operands.asm:1: A2003: improper line syntax
+
+#--- fill-size.asm
+        AREA |.data|, DATA, READWRITE
+Value   FILL 4, 1, 3
+        END
+
+#--- fill-multiple.asm
+        AREA |.data|, DATA, READWRITE
+Value   FILL 5, 1, 2
+        END
+
+#--- fill-value.asm
+        AREA |.data|, DATA, READWRITE
+Value   FILL 1, 256, 1
+        END
+
+#--- space-negative.asm
+        AREA |.data|, DATA, READWRITE
+Value   SPACE -1
+        END
+
+#--- fill-empty.asm
+        AREA |.data|, DATA, READWRITE
+Value   FILL 4,,2
+        END
+
+#--- noinit.asm
+        AREA |.bss|, DATA, READWRITE, NOINIT
+Value   FILL 4, 1
+        END
+
+#--- field-conflict.asm
+Slot    FIELD 1
+Slot    FIELD 1
+        END
+
+#--- map-operands.asm
+        MAP 0, x1, x2
+        END
