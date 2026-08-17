@@ -3064,6 +3064,56 @@ struct DebugFile {
   unsigned Number;
 };
 
+class LiteralPool {
+  struct Entry {
+    std::string Label;
+    std::string Expression;
+    unsigned Size;
+  };
+
+  raw_ostream &OS;
+  SmallVector<Entry, 4> Entries;
+  StringMap<std::string> Labels;
+  unsigned NextLabel = 0;
+
+public:
+  explicit LiteralPool(raw_ostream &OS) : OS(OS) {}
+
+  std::string add(StringRef Expression, unsigned Size) {
+    std::string Key = (Twine(Size) + ":" + Expression).str();
+    auto Existing = Labels.find(Key);
+    if (Existing != Labels.end())
+      return Existing->second;
+
+    std::string Label =
+        (Twine(".Larmasm64_literal_") + Twine(NextLabel++)).str();
+    Entries.push_back({Label, Expression.str(), Size});
+    Labels[Key] = Label;
+    return Label;
+  }
+
+  void emit() {
+    if (Entries.empty())
+      return;
+
+    bool Has64BitEntry = llvm::any_of(
+        Entries, [](const Entry &Entry) { return Entry.Size == 8; });
+    OS << ".balign " << (Has64BitEntry ? 8 : 4) << ", 0\n";
+
+    // ARMASM64 emits 64-bit entries before 32-bit entries. Its 64-bit list is
+    // assembled in reverse encounter order, while the 32-bit list is not.
+    for (const Entry &Entry : llvm::reverse(Entries))
+      if (Entry.Size == 8)
+        OS << Entry.Label << ":; .quad " << Entry.Expression << '\n';
+    for (const Entry &Entry : Entries)
+      if (Entry.Size == 4)
+        OS << Entry.Label << ":; .long " << Entry.Expression << '\n';
+
+    Entries.clear();
+    Labels.clear();
+  }
+};
+
 static std::string normalizeDebugPath(StringRef Filename) {
   if (Filename == "<stdin>")
     return Filename.str();
@@ -3234,42 +3284,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
     bool ReplaceWithCurrentLocation;
   };
   SmallVector<RelocatedExpression, 4> RelocatedExpressions;
-  struct LiteralPoolEntry {
-    std::string Label;
-    std::string Expression;
-    unsigned Size;
-  };
-  SmallVector<LiteralPoolEntry, 4> LiteralPool;
-  StringMap<std::string> LiteralPoolLabels;
-  unsigned LiteralPoolLabelCount = 0;
-  auto AddLiteralPoolEntry = [&](StringRef Expression, unsigned Size) {
-    std::string Key = (Twine(Size) + ":" + Expression).str();
-    auto Existing = LiteralPoolLabels.find(Key);
-    if (Existing != LiteralPoolLabels.end())
-      return Existing->second;
-    std::string Label =
-        (Twine(".Larmasm64_literal_") + Twine(LiteralPoolLabelCount++)).str();
-    LiteralPool.push_back({Label, Expression.str(), Size});
-    LiteralPoolLabels[Key] = Label;
-    return Label;
-  };
-  auto EmitLiteralPool = [&]() {
-    if (LiteralPool.empty())
-      return;
-    bool Has64BitEntry = llvm::any_of(
-        LiteralPool, [](const LiteralPoolEntry &Entry) { return Entry.Size == 8; });
-    OS << ".balign " << (Has64BitEntry ? 8 : 4) << ", 0\n";
-    // ARMASM64 emits 64-bit entries before 32-bit entries. Its 64-bit list is
-    // assembled in reverse encounter order, while the 32-bit list is not.
-    for (const LiteralPoolEntry &Entry : llvm::reverse(LiteralPool))
-      if (Entry.Size == 8)
-        OS << Entry.Label << ":; .quad " << Entry.Expression << '\n';
-    for (const LiteralPoolEntry &Entry : LiteralPool)
-      if (Entry.Size == 4)
-        OS << Entry.Label << ":; .long " << Entry.Expression << '\n';
-    LiteralPool.clear();
-    LiteralPoolLabels.clear();
-  };
+  LiteralPool Literals(OS);
   collectExports(Remaining, Exports);
 
   for (StringRef Predefine : Predefines)
@@ -3886,7 +3901,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
     } else if (First.equals_insensitive("LTORG")) {
       if (!Tail.empty())
         return SourceError("A2003: improper line syntax");
-      EmitLiteralPool();
+      Literals.emit();
     } else if (First.equals_insensitive("INCBIN")) {
       StringRef IncludedFilename = takeToken(Tail);
       if (IncludedFilename.empty() || !Tail.empty())
@@ -3900,7 +3915,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
       EnsureDefaultSection();
       OS << ".incbin \"" << sys::path::convert_to_slash(IncludedPath) << '"';
     } else if (First.equals_insensitive("AREA")) {
-      EmitLiteralPool();
+      Literals.emit();
       SmallVector<StringRef, 8> Attributes;
       splitOperands(Tail, Attributes);
       if (Attributes.front().empty())
@@ -4570,7 +4585,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
       if (ActiveProcedureArea)
         return SourceError("A2057: missing ENDP directive in section " +
                            *ActiveProcedureArea);
-      EmitLiteralPool();
+      Literals.emit();
     } else {
       if (!First.empty())
         EnsureDefaultSection();
@@ -4643,7 +4658,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
                   OS << "mov " << Register << ", #" << LiteralExpression;
                 } else if (IsWRegister || IsXRegister) {
                   OS << "ldr " << Register << ", "
-                     << AddLiteralPoolEntry(LiteralExpression, Width / 8);
+                     << Literals.add(LiteralExpression, Width / 8);
                 } else {
                   OS << "ldr " << Register << ", =" << LiteralExpression;
                 }
@@ -4663,7 +4678,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
                     Register.starts_with_insensitive("x")) {
                   unsigned Size = Register.starts_with_insensitive("w") ? 4 : 8;
                   OS << "ldr " << Register << ", "
-                     << AddLiteralPoolEntry(LiteralExpression, Size);
+                     << Literals.add(LiteralExpression, Size);
                 } else {
                   OS << "ldr " << Register << ", =" << LiteralExpression;
                 }
@@ -4689,7 +4704,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
     OS << '\n';
   }
 
-  EmitLiteralPool();
+  Literals.emit();
 
   if (ActiveProcedureArea)
     return createStringError(inconvertibleErrorCode(),
