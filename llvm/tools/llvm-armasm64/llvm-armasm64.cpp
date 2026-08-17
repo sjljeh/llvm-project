@@ -3650,6 +3650,7 @@ class ARMAsm64Translator {
   Error handleCommon(StringRef Tail);
   Error handleIncludeBinary(StringRef Tail);
   Error handleArea(StringRef Tail);
+  Error handleAlign(StringRef Tail);
   Error handleControlDirective(ControlDirective Directive, StringRef Tail);
   Error handleStorageMapDirective(StorageMapDirective Directive,
                                   StringRef First, StringRef AfterFirst,
@@ -4097,6 +4098,76 @@ Error ARMAsm64Translator::handleArea(StringRef Tail) {
       CurrentDebugCodeSection = Existing->second;
     }
   }
+  return Error::success();
+}
+
+Error ARMAsm64Translator::handleAlign(StringRef Tail) {
+  SmallVector<StringRef, 4> Operands;
+  splitOperands(Tail, Operands);
+  if (Operands.size() > 4 ||
+      llvm::any_of(ArrayRef(Operands).drop_front(),
+                   [](StringRef Operand) { return Operand.empty(); }))
+    return sourceError("A2003: improper line syntax");
+
+  uint64_t Alignment = 4;
+  uint64_t Offset = 0;
+  uint64_t Fill = 0;
+  uint64_t FillSize = 1;
+  bool HasFill = Operands.size() >= 3;
+  if (!Operands.front().empty()) {
+    Expected<uint64_t> Value = evaluateAbsolute(Operands[0]);
+    if (!Value)
+      return sourceError(toString(Value.takeError()));
+    Alignment = *Value;
+  }
+  if (!isPowerOf2_64(Alignment) || Alignment > (1ULL << 31))
+    return sourceError("A2209: Immediate value " + Twine(Alignment) +
+                       " out of range");
+  if (Operands.size() >= 2) {
+    Expected<uint64_t> Value = evaluateAbsolute(Operands[1]);
+    if (!Value)
+      return sourceError(toString(Value.takeError()));
+    Offset = *Value;
+  }
+  if (HasFill) {
+    Expected<uint64_t> Value = evaluateAbsolute(Operands[2]);
+    if (!Value)
+      return sourceError(toString(Value.takeError()));
+    Fill = *Value;
+    FillSize = CurrentAreaIsCode ? 4 : 1;
+  } else if (CurrentAreaIsCode && CurrentAreaUsesCodeAlignment) {
+    Fill = 0xd503201f;
+    FillSize = 4;
+  }
+  if (Operands.size() == 4) {
+    Expected<uint64_t> Value = evaluateAbsolute(Operands[3]);
+    if (!Value)
+      return sourceError(toString(Value.takeError()));
+    FillSize = *Value;
+  }
+  if (FillSize != 1 && FillSize != 2 && FillSize != 4)
+    return sourceError("A2197: value size must be 1, 2, or 4");
+  if (CurrentAreaBaseSymbol.empty())
+    return sourceError("A2088: no current AREA");
+  if (Alignment > CurrentAreaAlignment)
+    Warnings.report(
+        CurrentFilename, CurrentLine, 4228,
+        "Alignment value exceeds AREA alignment; alignment not guaranteed");
+
+  std::string Here =
+      (Twine(".Larmasm64_align_") + Twine(AlignSymbolCount++)).str();
+  std::string Padding =
+      (Twine("((") + Twine(Offset) + " - (" + Here + " - " +
+       CurrentAreaBaseSymbol + ")) & (" + Twine(Alignment) + " - 1))")
+          .str();
+  OS << Here << ":\n";
+  if (FillSize != 1)
+    OS << ".if ((" << Padding << " % " << FillSize << ") != 0)\n"
+       << ".error \"A2226: The given alignment pad doesn't evenly divide "
+          "the number of padding bytes\"\n"
+       << ".endif\n";
+  OS << ".fill (" << Padding << " / " << FillSize << "), " << FillSize
+     << ", " << Fill;
   return Error::success();
 }
 
@@ -4886,72 +4957,8 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
           First.equals_insensitive("ROUT") ? std::string() : First.str();
       DefinedNumericLabels.clear();
     } else if (First.equals_insensitive("ALIGN")) {
-      SmallVector<StringRef, 4> Operands;
-      splitOperands(Tail, Operands);
-      if (Operands.size() > 4 ||
-          llvm::any_of(ArrayRef(Operands).drop_front(),
-                       [](StringRef Operand) { return Operand.empty(); }))
-        return SourceError("A2003: improper line syntax");
-
-      uint64_t Alignment = 4;
-      uint64_t Offset = 0;
-      uint64_t Fill = 0;
-      uint64_t FillSize = 1;
-      bool HasFill = Operands.size() >= 3;
-      if (!Operands.front().empty()) {
-        Expected<uint64_t> Value = evaluateAbsolute(Operands[0]);
-        if (!Value)
-          return SourceError(toString(Value.takeError()));
-        Alignment = *Value;
-      }
-      if (!isPowerOf2_64(Alignment) || Alignment > (1ULL << 31))
-        return SourceError("A2209: Immediate value " + Twine(Alignment) +
-                           " out of range");
-      if (Operands.size() >= 2) {
-        Expected<uint64_t> Value = evaluateAbsolute(Operands[1]);
-        if (!Value)
-          return SourceError(toString(Value.takeError()));
-        Offset = *Value;
-      }
-      if (HasFill) {
-        Expected<uint64_t> Value = evaluateAbsolute(Operands[2]);
-        if (!Value)
-          return SourceError(toString(Value.takeError()));
-        Fill = *Value;
-        FillSize = CurrentAreaIsCode ? 4 : 1;
-      } else if (CurrentAreaIsCode && CurrentAreaUsesCodeAlignment) {
-        Fill = 0xd503201f;
-        FillSize = 4;
-      }
-      if (Operands.size() == 4) {
-        Expected<uint64_t> Value = evaluateAbsolute(Operands[3]);
-        if (!Value)
-          return SourceError(toString(Value.takeError()));
-        FillSize = *Value;
-      }
-      if (FillSize != 1 && FillSize != 2 && FillSize != 4)
-        return SourceError("A2197: value size must be 1, 2, or 4");
-      if (CurrentAreaBaseSymbol.empty())
-        return SourceError("A2088: no current AREA");
-      if (Alignment > CurrentAreaAlignment)
-        Warnings.report(
-            CurrentFilename, CurrentLine, 4228,
-            "Alignment value exceeds AREA alignment; alignment not guaranteed");
-
-      std::string Here =
-          (Twine(".Larmasm64_align_") + Twine(AlignSymbolCount++)).str();
-      std::string Padding =
-          (Twine("((") + Twine(Offset) + " - (" + Here + " - " +
-           CurrentAreaBaseSymbol + ")) & (" + Twine(Alignment) + " - 1))")
-              .str();
-      OS << Here << ":\n";
-      if (FillSize != 1)
-        OS << ".if ((" << Padding << " % " << FillSize << ") != 0)\n"
-           << ".error \"A2226: The given alignment pad doesn't evenly divide "
-              "the number of padding bytes\"\n"
-           << ".endif\n";
-      OS << ".fill (" << Padding << " / " << FillSize << "), " << FillSize
-         << ", " << Fill;
+      if (Error Err = handleAlign(Tail))
+        return std::move(Err);
     } else if (First.equals_insensitive("ADRL") ||
                Second.equals_insensitive("ADRL")) {
       ensureDefaultSection();
