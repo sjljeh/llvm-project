@@ -4236,6 +4236,13 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
                       Directive.equals_insensitive("DCFSU");
       bool IsDouble = Directive.equals_insensitive("DCFD") ||
                       Directive.equals_insensitive("DCFDU");
+      if ((Directive.equals_insensitive("DCI") ||
+           Directive.equals_insensitive("DCI.W")) &&
+          !NoWarn && !IgnoredWarnings.contains(2034))
+        WithColor::warning(DiagOS, ProgName)
+            << CurrentFilename << ":" << CurrentLine
+            << ": A2034: unknown opcode: " << Directive
+            << "; accepted as an LLVM extension\n";
       bool IsUnaligned = Directive.equals_insensitive("DCWU") ||
                          Directive.equals_insensitive("DCDU") ||
                          Directive.equals_insensitive("DCQU") ||
