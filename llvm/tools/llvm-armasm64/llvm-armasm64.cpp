@@ -2162,6 +2162,16 @@ static bool isBranchDirective(StringRef Token) {
   return Token.equals_insensitive("B") || Token.equals_insensitive("BL");
 }
 
+enum class ObjectDirective { None, Common, IncludeBinary };
+
+static ObjectDirective classifyObjectDirective(StringRef Token) {
+  if (Token.equals_insensitive("COMMON"))
+    return ObjectDirective::Common;
+  if (Token.equals_insensitive("INCBIN"))
+    return ObjectDirective::IncludeBinary;
+  return ObjectDirective::None;
+}
+
 enum class DataDirectiveKind { Byte, Word, Long, Quad, Single, Double };
 
 struct DataDirective {
@@ -3587,6 +3597,9 @@ class ARMAsm64Translator {
                            StringRef AfterFirst);
   Error handleBranch(StringRef First, StringRef Second, StringRef Tail,
                      StringRef AfterFirst);
+  Error handleObjectDirective(ObjectDirective Directive, StringRef Tail);
+  Error handleCommon(StringRef Tail);
+  Error handleIncludeBinary(StringRef Tail);
 
 public:
   ARMAsm64Translator(ArrayRef<std::string> IncludeDirs, bool NoEscape,
@@ -3782,6 +3795,69 @@ Error ARMAsm64Translator::handleBranch(StringRef First, StringRef Second,
       /*IsInstruction=*/true};
   AtProcedureStart = false;
   return Error::success();
+}
+
+Error ARMAsm64Translator::handleCommon(StringRef Tail) {
+  SmallVector<StringRef, 3> Operands;
+  splitOperands(Tail, Operands);
+  if (Operands.empty() || Operands[0].empty())
+    return sourceError("A2003: improper line syntax: End of line");
+  if (Operands.size() > 2)
+    return sourceError("A2221: The COMMON directive takes two parameters; "
+                       "specifying an alignment is not supported");
+
+  StringRef Name = unquoteIdentifier(Operands[0]);
+  if (Name.empty() || hasInternalSymbol(Name) ||
+      DefinedObjectSymbols.contains(Name) || ExternalSymbols.contains(Name) ||
+      CommonSymbols.contains(Name))
+    return symbolConflict(Name);
+  uint64_t Size = 0;
+  if (Operands.size() == 2) {
+    Expected<uint64_t> Value = evaluateAbsolute(Operands[1]);
+    if (!Value)
+      return sourceError(toString(Value.takeError()));
+    Size = *Value;
+  }
+  int64_t SignedSize = static_cast<int64_t>(Size);
+  if (SignedSize < 0 || Size > UINT32_MAX)
+    return sourceError("A2209: Immediate value " + Twine(SignedSize) +
+                       " out of range");
+  CommonSymbols.insert(Name);
+  ensureDefaultSection();
+  std::string AssemblerName = getAssemblerSymbolName(Name);
+  if (Size == 0)
+    OS << ".globl " << AssemblerName;
+  else
+    OS << ".armasm64_common " << AssemblerName << ", " << Size;
+  return Error::success();
+}
+
+Error ARMAsm64Translator::handleIncludeBinary(StringRef Tail) {
+  StringRef IncludedFilename = takeToken(Tail);
+  if (IncludedFilename.empty() || !Tail.empty())
+    return sourceError("A2003: improper line syntax");
+  SmallString<256> IncludedPath;
+  ErrorOr<std::unique_ptr<MemoryBuffer>> IncludedBuffer = openIncludeFile(
+      IncludedFilename, CurrentFilename, IncludeDirs, IncludedPath);
+  if (!IncludedBuffer)
+    return sourceError("unable to open include file '" + IncludedFilename +
+                       "': " + IncludedBuffer.getError().message());
+  ensureDefaultSection();
+  OS << ".incbin \"" << sys::path::convert_to_slash(IncludedPath) << '"';
+  return Error::success();
+}
+
+Error ARMAsm64Translator::handleObjectDirective(ObjectDirective Directive,
+                                                StringRef Tail) {
+  switch (Directive) {
+  case ObjectDirective::Common:
+    return handleCommon(Tail);
+  case ObjectDirective::IncludeBinary:
+    return handleIncludeBinary(Tail);
+  case ObjectDirective::None:
+    llvm_unreachable("invalid object directive");
+  }
+  llvm_unreachable("unhandled object directive");
 }
 
 Expected<std::unique_ptr<MemoryBuffer>>
@@ -4161,38 +4237,10 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
         PendingWeakExternals.push_back(
             {Name.str(), Fallback.str(), Search, Conditional});
       }
-    } else if (First.equals_insensitive("COMMON")) {
-      SmallVector<StringRef, 3> Operands;
-      splitOperands(Tail, Operands);
-      if (Operands.empty() || Operands[0].empty())
-        return SourceError("A2003: improper line syntax: End of line");
-      if (Operands.size() > 2)
-        return SourceError("A2221: The COMMON directive takes two parameters; "
-                           "specifying an alignment is not supported");
-
-      StringRef Name = unquoteIdentifier(Operands[0]);
-      if (Name.empty() || HasInternalSymbol(Name) ||
-          DefinedObjectSymbols.contains(Name) ||
-          ExternalSymbols.contains(Name) || CommonSymbols.contains(Name))
-        return SymbolConflict(Name);
-      uint64_t Size = 0;
-      if (Operands.size() == 2) {
-        Expected<uint64_t> Value = evaluateAbsolute(Operands[1]);
-        if (!Value)
-          return SourceError(toString(Value.takeError()));
-        Size = *Value;
-      }
-      int64_t SignedSize = static_cast<int64_t>(Size);
-      if (SignedSize < 0 || Size > UINT32_MAX)
-        return SourceError("A2209: Immediate value " + Twine(SignedSize) +
-                           " out of range");
-      CommonSymbols.insert(Name);
-      ensureDefaultSection();
-      std::string AssemblerName = getAssemblerSymbolName(Name);
-      if (Size == 0)
-        OS << ".globl " << AssemblerName;
-      else
-        OS << ".armasm64_common " << AssemblerName << ", " << Size;
+    } else if (ObjectDirective Directive = classifyObjectDirective(First);
+               Directive != ObjectDirective::None) {
+      if (Error Err = handleObjectDirective(Directive, Tail))
+        return std::move(Err);
     } else if (First.equals_insensitive("RELOC")) {
       SmallVector<StringRef, 2> Operands;
       splitOperands(Tail, Operands);
@@ -4242,18 +4290,6 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
       if (!Tail.empty())
         return SourceError("A2003: improper line syntax");
       Literals.emit();
-    } else if (First.equals_insensitive("INCBIN")) {
-      StringRef IncludedFilename = takeToken(Tail);
-      if (IncludedFilename.empty() || !Tail.empty())
-        return SourceError("A2003: improper line syntax");
-      SmallString<256> IncludedPath;
-      ErrorOr<std::unique_ptr<MemoryBuffer>> IncludedBuffer = openIncludeFile(
-          IncludedFilename, CurrentFilename, IncludeDirs, IncludedPath);
-      if (!IncludedBuffer)
-        return SourceError("unable to open include file '" + IncludedFilename +
-                           "': " + IncludedBuffer.getError().message());
-      ensureDefaultSection();
-      OS << ".incbin \"" << sys::path::convert_to_slash(IncludedPath) << '"';
     } else if (First.equals_insensitive("AREA")) {
       Literals.emit();
       SmallVector<StringRef, 8> Attributes;
