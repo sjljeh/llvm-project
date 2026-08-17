@@ -3664,6 +3664,8 @@ class ARMAsm64Translator {
                                   StringRef Tail);
   Error handleVariableAssignment(StringRef NameToken, StringRef Directive,
                                  StringRef Expression);
+  Error handleRegisterAlias(RegisterAliasKind Kind, StringRef NameToken,
+                            StringRef TargetExpression);
 
 public:
   ARMAsm64Translator(ArrayRef<std::string> IncludeDirs, bool NoEscape,
@@ -4241,6 +4243,35 @@ Error ARMAsm64Translator::handleVariableDirective(
   llvm_unreachable("unhandled variable directive");
 }
 
+Error ARMAsm64Translator::handleRegisterAlias(RegisterAliasKind Kind,
+                                              StringRef NameToken,
+                                              StringRef TargetExpression) {
+  StringRef Name = unquoteIdentifier(NameToken);
+  if (!isValidVariableName(NameToken) || TargetExpression.empty())
+    return sourceError("A2173: syntax error in expression");
+  auto Existing = RegisterAliases.find(Name);
+  if (Variables.contains(Name) || Constants.contains(Name) ||
+      DefinedSymbols.contains(Name) || StorageMapFields.contains(Name) ||
+      (Existing != RegisterAliases.end() && Existing->second.Kind != Kind))
+    return symbolConflict(Name);
+  if (std::optional<std::pair<RegisterAliasKind, unsigned>> Register =
+          parseExtensionRegisterName(Name)) {
+    if (Register->first != Kind)
+      return symbolConflict(Name);
+  } else if (isPredefinedRegisterName(Name)) {
+    return symbolConflict(Name);
+  }
+
+  Expected<unsigned> Target = parseRegisterAliasTarget(
+      TargetExpression, Kind, RegisterAliases, NoEscape);
+  if (!Target)
+    return sourceError(toString(Target.takeError()));
+
+  RegisterAliases[Name] = RegisterAlias{Kind, *Target};
+  OS << '\n';
+  return Error::success();
+}
+
 Expected<std::unique_ptr<MemoryBuffer>>
 ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
   if (Debug.Enabled) {
@@ -4368,30 +4399,8 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
 
     if (std::optional<RegisterAliasKind> AliasKind =
             registerAliasKindForDirective(Second)) {
-      StringRef Name = unquoteIdentifier(First);
-      if (!isValidVariableName(First) || AfterFirst.empty())
-        return SourceError("A2173: syntax error in expression");
-      auto Existing = RegisterAliases.find(Name);
-      if (Variables.contains(Name) || Constants.contains(Name) ||
-          DefinedSymbols.contains(Name) || StorageMapFields.contains(Name) ||
-          (Existing != RegisterAliases.end() &&
-           Existing->second.Kind != *AliasKind))
-        return SymbolConflict(Name);
-      if (std::optional<std::pair<RegisterAliasKind, unsigned>> Register =
-              parseExtensionRegisterName(Name)) {
-        if (Register->first != *AliasKind)
-          return SymbolConflict(Name);
-      } else if (isPredefinedRegisterName(Name)) {
-        return SymbolConflict(Name);
-      }
-
-      Expected<unsigned> Target = parseRegisterAliasTarget(
-          AfterFirst, *AliasKind, RegisterAliases, NoEscape);
-      if (!Target)
-        return SourceError(toString(Target.takeError()));
-
-      RegisterAliases[Name] = RegisterAlias{*AliasKind, *Target};
-      OS << '\n';
+      if (Error Err = handleRegisterAlias(*AliasKind, First, AfterFirst))
+        return std::move(Err);
       continue;
     }
     if (Second.equals_insensitive("RN"))
