@@ -161,6 +161,38 @@ static void handleDiagnostic(const SMDiagnostic &Diagnostic, void *Context) {
   Diagnostic.print(nullptr, OS);
 }
 
+class WarningReporter {
+  StringRef ProgName;
+  bool SuppressAll;
+  const DenseSet<unsigned> &IgnoredWarnings;
+  raw_ostream &OS;
+
+  void reportImpl(StringRef Filename, std::optional<unsigned> Line,
+                  unsigned Code, const Twine &Message) const {
+    if (SuppressAll || IgnoredWarnings.contains(Code))
+      return;
+    WithColor::warning(OS, ProgName) << Filename;
+    if (Line)
+      OS << ':' << *Line;
+    OS << ": A" << Code << ": " << Message << '\n';
+  }
+
+public:
+  WarningReporter(StringRef ProgName, bool SuppressAll,
+                  const DenseSet<unsigned> &IgnoredWarnings, raw_ostream &OS)
+      : ProgName(ProgName), SuppressAll(SuppressAll),
+        IgnoredWarnings(IgnoredWarnings), OS(OS) {}
+
+  void report(StringRef Filename, unsigned Line, unsigned Code,
+              const Twine &Message) const {
+    reportImpl(Filename, Line, Code, Message);
+  }
+
+  void report(StringRef Filename, unsigned Code, const Twine &Message) const {
+    reportImpl(Filename, std::nullopt, Code, Message);
+  }
+};
+
 static Error expandResponseFiles(int Argc, char **Argv,
                                  SmallVectorImpl<const char *> &ExpandedArgv,
                                  StringSaver &Saver) {
@@ -2337,11 +2369,8 @@ class AssemblyControlExpander {
   };
 
   ArrayRef<std::string> IncludeDirs;
-  StringRef ProgName;
-  bool NoWarn;
   bool NoEscape;
-  const DenseSet<unsigned> &IgnoredWarnings;
-  raw_ostream &DiagOS;
+  WarningReporter &Warnings;
   raw_ostream &OS;
   VariableMap &Variables;
   StringMap<uint64_t> &Constants;
@@ -2405,11 +2434,7 @@ class AssemblyControlExpander {
 
   void reportWarning(const AssemblySourceLine &Line, unsigned Code,
                      StringRef Message) {
-    if (NoWarn || IgnoredWarnings.contains(Code))
-      return;
-    WithColor::warning(DiagOS, ProgName)
-        << Line.Filename << ":" << Line.Line << ": A" << Code << ": " << Message
-        << '\n';
+    Warnings.report(Line.Filename, Line.Line, Code, Message);
   }
 
   Expected<bool> evaluateConditionLine(const AssemblySourceLine &Line) {
@@ -2994,23 +3019,18 @@ class AssemblyControlExpander {
       return createStringError(
           Twine(InputFilename) +
           ": unexpected end of file; missing END directive");
-    if (!SawEnd && Kind == InputKind::MainFile && !NoWarn &&
-        !IgnoredWarnings.contains(4045))
-      WithColor::warning(DiagOS, ProgName)
-          << InputFilename << ": A4045: missing END directive\n";
+    if (!SawEnd && Kind == InputKind::MainFile)
+      Warnings.report(InputFilename, 4045, "missing END directive");
     return Error::success();
   }
 
 public:
-  AssemblyControlExpander(ArrayRef<std::string> IncludeDirs, StringRef ProgName,
-                          bool NoWarn, bool NoEscape,
-                           const DenseSet<unsigned> &IgnoredWarnings,
-                           raw_ostream &DiagOS, raw_ostream &OS,
+  AssemblyControlExpander(ArrayRef<std::string> IncludeDirs, bool NoEscape,
+                           WarningReporter &Warnings, raw_ostream &OS,
                            VariableMap &Variables,
                            StringMap<uint64_t> &Constants, StringRef CommandLine)
-      : IncludeDirs(IncludeDirs), ProgName(ProgName), NoWarn(NoWarn),
-        NoEscape(NoEscape), IgnoredWarnings(IgnoredWarnings), DiagOS(DiagOS),
-        OS(OS), Variables(Variables), Constants(Constants) {
+      : IncludeDirs(IncludeDirs), NoEscape(NoEscape), Warnings(Warnings), OS(OS),
+        Variables(Variables), Constants(Constants) {
     BuiltinVariables["AREANAME"] = VariableValue::string("");
     BuiltinVariables["COMMANDLINE"] =
         VariableValue::string(CommandLine.str());
@@ -3027,10 +3047,9 @@ public:
 
 static Expected<std::unique_ptr<MemoryBuffer>>
 expandAssemblyControl(std::unique_ptr<MemoryBuffer> Input,
-                      ArrayRef<std::string> IncludeDirs, StringRef ProgName,
-                      bool NoWarn, bool NoEscape,
-                      const DenseSet<unsigned> &IgnoredWarnings,
-                      raw_ostream &DiagOS, ArrayRef<std::string> Predefines,
+                      ArrayRef<std::string> IncludeDirs, bool NoEscape,
+                      WarningReporter &Warnings,
+                      ArrayRef<std::string> Predefines,
                       StringRef CommandLine) {
   VariableMap Variables;
   StringMap<uint64_t> Constants;
@@ -3043,9 +3062,8 @@ expandAssemblyControl(std::unique_ptr<MemoryBuffer> Input,
   std::string Expanded;
   raw_string_ostream OS(Expanded);
   std::string Filename = Input->getBufferIdentifier().str();
-  AssemblyControlExpander Expander(IncludeDirs, ProgName, NoWarn, NoEscape,
-                                    IgnoredWarnings, DiagOS, OS, Variables,
-                                    Constants, CommandLine);
+  AssemblyControlExpander Expander(IncludeDirs, NoEscape, Warnings, OS,
+                                    Variables, Constants, CommandLine);
   if (Error Err = Expander.run(std::move(Input)))
     return std::move(Err);
   return MemoryBuffer::getMemBufferCopy(Expanded, Filename);
@@ -3178,11 +3196,9 @@ collectDebugFiles(StringRef ExpandedInput, StringRef MainFilename,
 
 static Expected<std::unique_ptr<MemoryBuffer>>
 translateInput(std::unique_ptr<MemoryBuffer> Input,
-               ArrayRef<std::string> IncludeDirs, StringRef ProgName,
-               bool NoWarn, bool NoEscape,
-               const DenseSet<unsigned> &IgnoredWarnings, raw_ostream &DiagOS,
-               ArrayRef<std::string> Predefines, StringRef CommandLine,
-               const DebugOptions &Debug) {
+               ArrayRef<std::string> IncludeDirs, bool NoEscape,
+               WarningReporter &Warnings, ArrayRef<std::string> Predefines,
+               StringRef CommandLine, const DebugOptions &Debug) {
   SmallVector<DebugFile, 4> DebugFiles;
   StringMap<unsigned> DebugFileNumbers;
   if (Debug.Enabled) {
@@ -3807,13 +3823,12 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
           if (!Value)
             return SourceError(toString(Value.takeError()));
           Search = *Value;
-          if ((Search < COFF::IMAGE_WEAK_EXTERN_SEARCH_NOLIBRARY ||
-               Search > COFF::IMAGE_WEAK_EXTERN_SEARCH_ALIAS) &&
-              !NoWarn && !IgnoredWarnings.contains(4069))
-            WithColor::warning(DiagOS, ProgName)
-                << CurrentFilename << ":" << CurrentLine
-                << ": A4069: immediate value " << static_cast<int64_t>(Search)
-                << " out of range; expected values: 1,2,3\n";
+          if (Search < COFF::IMAGE_WEAK_EXTERN_SEARCH_NOLIBRARY ||
+              Search > COFF::IMAGE_WEAK_EXTERN_SEARCH_ALIAS)
+            Warnings.report(CurrentFilename, CurrentLine, 4069,
+                            "immediate value " +
+                                Twine(static_cast<int64_t>(Search)) +
+                                " out of range; expected values: 1,2,3");
           Search &= 7;
         }
 
@@ -3876,12 +3891,11 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
           : *Type == COFF::IMAGE_REL_ARM64_ABSOLUTE ? 0
                                                     : 4;
       if (!PreviousData->IsInstruction &&
-          PreviousData->Size < RelocationSize && !NoWarn &&
-          !IgnoredWarnings.contains(4205))
-        WithColor::warning(DiagOS, ProgName)
-            << CurrentFilename << ":" << CurrentLine
-            << ": A4205: Previous data definition too small for requested "
-               "relocation; emitting anyway\n";
+          PreviousData->Size < RelocationSize)
+        Warnings.report(
+            CurrentFilename, CurrentLine, 4205,
+            "Previous data definition too small for requested relocation; "
+            "emitting anyway");
 
       std::string Expression;
       if (Operands.size() == 2) {
@@ -3954,12 +3968,9 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
           UsesCodeAlignment = true;
         } else if (Attribute.equals_insensitive("COMDEF") ||
                    Attribute.equals_insensitive("COMMON")) {
-          if (!NoWarn && !IgnoredWarnings.contains(4039))
-            WithColor::warning(DiagOS, ProgName)
-                << CurrentFilename << ":" << CurrentLine
-                << ": A4039: " << Attribute
-                << " attribute does not pertain to a relocatable module; "
-                   "ignored\n";
+          Warnings.report(CurrentFilename, CurrentLine, 4039,
+                          Attribute + " attribute does not pertain to a "
+                                      "relocatable module; ignored");
         } else if (Attribute.consume_front_insensitive("ALIGN=")) {
           Expected<uint64_t> Value = EvaluateAbsolute(Attribute);
           if (!Value)
@@ -3978,14 +3989,11 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
         }
       }
 
-      if (((IsCode && (IsData || IsNoInit)) ||
-           (IsReadOnly && IsReadWrite)) &&
-          !NoWarn && !IgnoredWarnings.contains(4172))
-        WithColor::warning(DiagOS, ProgName)
-            << CurrentFilename << ":" << CurrentLine
-            << ": A4172: illegal combination of section flags: section flags "
-               "can not be inferred, code and data/uninitialized, "
-               "readonly/readwrite\n";
+      if ((IsCode && (IsData || IsNoInit)) || (IsReadOnly && IsReadWrite))
+        Warnings.report(
+            CurrentFilename, CurrentLine, 4172,
+            "illegal combination of section flags: section flags can not be "
+            "inferred, code and data/uninitialized, readonly/readwrite");
 
       bool IsWritable =
           IsReadWrite || (!IsReadOnly && !IsCode && !IsPData);
@@ -4023,11 +4031,9 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
         AreaBaseSymbols[AreaKey] =
             (Twine(".Larmasm64_area_") + Twine(AreaBaseSymbolCount++)).str();
       } else {
-        if (AreaAttributeSignatures.lookup(AreaKey) != AttributeSignature &&
-            !NoWarn && !IgnoredWarnings.contains(4043))
-          WithColor::warning(DiagOS, ProgName)
-              << CurrentFilename << ":" << CurrentLine
-              << ": A4043: redefinition of section flags ignored\n";
+        if (AreaAttributeSignatures.lookup(AreaKey) != AttributeSignature)
+          Warnings.report(CurrentFilename, CurrentLine, 4043,
+                          "redefinition of section flags ignored");
         IsCode = AreaIsCode.lookup(AreaKey);
         IsNoInit = AreaIsNoInit.lookup(AreaKey);
         Flags = AreaFlags.lookup(AreaKey);
@@ -4237,12 +4243,10 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
       bool IsDouble = Directive.equals_insensitive("DCFD") ||
                       Directive.equals_insensitive("DCFDU");
       if ((Directive.equals_insensitive("DCI") ||
-           Directive.equals_insensitive("DCI.W")) &&
-          !NoWarn && !IgnoredWarnings.contains(2034))
-        WithColor::warning(DiagOS, ProgName)
-            << CurrentFilename << ":" << CurrentLine
-            << ": A2034: unknown opcode: " << Directive
-            << "; accepted as an LLVM extension\n";
+           Directive.equals_insensitive("DCI.W")))
+        Warnings.report(CurrentFilename, CurrentLine, 2034,
+                        "unknown opcode: " + Directive +
+                            "; accepted as an LLVM extension");
       bool IsUnaligned = Directive.equals_insensitive("DCWU") ||
                          Directive.equals_insensitive("DCDU") ||
                          Directive.equals_insensitive("DCQU") ||
@@ -4489,12 +4493,10 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
         return SourceError("A2197: value size must be 1, 2, or 4");
       if (CurrentAreaBaseSymbol.empty())
         return SourceError("A2088: no current AREA");
-      if (Alignment > CurrentAreaAlignment && !NoWarn &&
-          !IgnoredWarnings.contains(4228))
-        WithColor::warning(DiagOS, ProgName)
-            << CurrentFilename << ":" << CurrentLine
-            << ": A4228: Alignment value exceeds AREA alignment; alignment "
-               "not guaranteed\n";
+      if (Alignment > CurrentAreaAlignment)
+        Warnings.report(
+            CurrentFilename, CurrentLine, 4228,
+            "Alignment value exceeds AREA alignment; alignment not guaranteed");
 
       std::string Here =
           (Twine(".Larmasm64_align_") + Twine(AlignSymbolCount++)).str();
@@ -4851,6 +4853,8 @@ static int assembleInput(StringRef ProgName, StringRef InputFilename,
       IgnoredWarnings.insert(Number);
     }
   }
+  WarningReporter Warnings(ProgName, Args.hasArg(OPT_no_warn), IgnoredWarnings,
+                           DiagOS);
 
   ErrorOr<std::unique_ptr<MemoryBuffer>> InputOrErr =
       MemoryBuffer::getFileOrSTDIN(InputFilename, /*IsText=*/true);
@@ -4900,9 +4904,8 @@ static int assembleInput(StringRef ProgName, StringRef InputFilename,
       Debug.SourceLink = (*Buffer)->getBuffer().trim().str();
     }
   Expected<std::unique_ptr<MemoryBuffer>> ExpandedInput = expandAssemblyControl(
-      std::move(*InputOrErr), IncludeDirs, ProgName, Args.hasArg(OPT_no_warn),
-      Args.hasArg(OPT_no_escape), IgnoredWarnings, DiagOS, Predefines,
-      CommandLine);
+      std::move(*InputOrErr), IncludeDirs, Args.hasArg(OPT_no_escape), Warnings,
+      Predefines, CommandLine);
   if (!ExpandedInput) {
     WithColor::error(DiagOS, ProgName)
         << toString(ExpandedInput.takeError()) << '\n';
@@ -4910,9 +4913,9 @@ static int assembleInput(StringRef ProgName, StringRef InputFilename,
   }
 
   Expected<std::unique_ptr<MemoryBuffer>> TranslatedInput =
-      translateInput(std::move(*ExpandedInput), IncludeDirs, ProgName,
-                     Args.hasArg(OPT_no_warn), Args.hasArg(OPT_no_escape),
-                     IgnoredWarnings, DiagOS, Predefines, CommandLine, Debug);
+      translateInput(std::move(*ExpandedInput), IncludeDirs,
+                     Args.hasArg(OPT_no_escape), Warnings, Predefines,
+                     CommandLine, Debug);
   if (!TranslatedInput) {
     WithColor::error(DiagOS, ProgName)
         << toString(TranslatedInput.takeError()) << '\n';
