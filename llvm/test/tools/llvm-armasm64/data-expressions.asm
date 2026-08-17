@@ -1,4 +1,5 @@
-; RUN: llvm-armasm64 %s %t.obj
+; RUN: llvm-armasm64 %s %t.obj 2>&1 | FileCheck %s --check-prefix=WARNING
+; RUN: llvm-armasm64 -ignore 2034 %s %t-ignore.obj 2>&1 | FileCheck %s --allow-empty --check-prefix=NO-WARNING
 ; RUN: llvm-readobj --sections --symbols --relocations --expand-relocs %t.obj | FileCheck %s --check-prefix=OBJ
 ; RUN: llvm-objdump -s -d %t.obj | FileCheck %s --check-prefixes=CONTENTS,DISASM
 
@@ -24,6 +25,10 @@ encoded
         DCI.W 0xd503201f
         DCI 0xd65f03c0
         END
+
+; WARNING: data-expressions.asm:25: A2034: unknown opcode: DCI.W; accepted as an LLVM extension
+; WARNING-NEXT: data-expressions.asm:26: A2034: unknown opcode: DCI; accepted as an LLVM extension
+; NO-WARNING-NOT: A2034
 
 ; OBJ: Name: .data
 ; OBJ: RawDataSize: 117
