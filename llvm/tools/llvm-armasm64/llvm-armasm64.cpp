@@ -2158,6 +2158,10 @@ static ProcedureDirective classifyProcedureDirective(StringRef First,
   return ProcedureDirective::None;
 }
 
+static bool isBranchDirective(StringRef Token) {
+  return Token.equals_insensitive("B") || Token.equals_insensitive("BL");
+}
+
 enum class DataDirectiveKind { Byte, Word, Long, Quad, Single, Double };
 
 struct DataDirective {
@@ -3574,9 +3578,13 @@ class ARMAsm64Translator {
   bool hasInternalSymbol(StringRef Name) const;
   bool conflictsWithObjectDefinition(StringRef Name) const;
   void ensureDefaultSection();
+  void emitDebugLocation();
+  void recordDebugLabel(StringRef Name);
   Error handleProcedureStart(StringRef Name);
   Error handleProcedureEnd(StringRef First, StringRef Tail,
                            StringRef AfterFirst);
+  Error handleBranch(StringRef First, StringRef Second, StringRef Tail,
+                     StringRef AfterFirst);
 
 public:
   ARMAsm64Translator(ArrayRef<std::string> IncludeDirs, bool NoEscape,
@@ -3632,6 +3640,31 @@ void ARMAsm64Translator::ensureDefaultSection() {
                     CurrentAreaBaseSymbol};
   OS << ".section \"__DefaultSection\",\"dw\"; .p2align 3; "
      << CurrentAreaBaseSymbol << ":\n";
+}
+
+void ARMAsm64Translator::emitDebugLocation() {
+  if (!Debug.Enabled || !CurrentAreaIsCode || !CurrentDebugCodeSection)
+    return;
+  auto File = DebugFileNumbers.find(normalizeDebugPath(CurrentFilename));
+  if (File == DebugFileNumbers.end())
+    return;
+  DebugCodeSection &Section = DebugCodeSections[*CurrentDebugCodeSection];
+  OS << "\n.cv_loc " << Section.FunctionId << ' ' << File->second << ' '
+     << CurrentLine << " 0 is_stmt 1\n";
+  Section.HasLines = true;
+}
+
+void ARMAsm64Translator::recordDebugLabel(StringRef Name) {
+  if (!Debug.Enabled || !CurrentAreaIsCode ||
+      !DebugSymbolNames.insert(Name).second)
+    return;
+  std::string RelocationName =
+      (Twine(".Larmasm64_debug_label_") + Twine(DebugLabelSymbolCount++))
+          .str();
+  OS << "; " << RelocationName << ':';
+  DebugSymbols.push_back({Name.str(), std::move(RelocationName), {},
+                          /*IsProcedure=*/false,
+                          /*IsExternal=*/Exports.contains(Name)});
 }
 
 Error ARMAsm64Translator::handleProcedureStart(StringRef Name) {
@@ -3690,6 +3723,46 @@ Error ARMAsm64Translator::handleProcedureEnd(StringRef First, StringRef Tail,
   return Error::success();
 }
 
+Error ARMAsm64Translator::handleBranch(StringRef First, StringRef Second,
+                                       StringRef Tail, StringRef AfterFirst) {
+  ensureDefaultSection();
+  bool HasLabel = isBranchDirective(Second);
+  StringRef Mnemonic = HasLabel ? Second : First;
+  StringRef TargetText = HasLabel ? AfterFirst : Tail;
+  SmallVector<StringRef, 2> Operands;
+  splitOperands(TargetText, Operands);
+  if (Operands.size() != 1 || Operands[0].empty())
+    return sourceError("A2003: improper line syntax");
+
+  if (HasLabel) {
+    StringRef Name = unquoteIdentifier(First);
+    if (conflictsWithObjectDefinition(Name))
+      return symbolConflict(Name);
+    DefinedObjectSymbols.insert(Name);
+    std::string AssemblerName = getAssemblerSymbolName(Name);
+    if (!Exports.contains(Name)) {
+      OS << ".def " << AssemblerName << "; .scl 6; ";
+      if (AtProcedureStart)
+        OS << ".type 32; ";
+      OS << ".endef; ";
+    }
+    OS << AssemblerName << ":; ";
+    recordDebugLabel(Name);
+    SymbolSizes[Name] = 4;
+  }
+
+  std::string Target = normalizeSymbolicExpression(Operands[0], Constants);
+  emitDebugLocation();
+  OS << Mnemonic << ' ';
+  unsigned DeferredExpression = Deferred.emit(OS, Target);
+  PreviousData = PreviousDataDefinition{
+      DeferredExpression, 4, Target,
+      /*IsSymbolic=*/true, /*ReplaceWithCurrentLocation=*/true,
+      /*IsInstruction=*/true};
+  AtProcedureStart = false;
+  return Error::success();
+}
+
 Expected<std::unique_ptr<MemoryBuffer>>
 ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
   if (Debug.Enabled) {
@@ -3735,31 +3808,6 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
       SymbolSizeCollector(Variables, AbsoluteConstants, NoEscape).run(Remaining);
 
   CurrentFilename = Input->getBufferIdentifier().str();
-  auto EmitDebugLocation = [&]() {
-    if (!Debug.Enabled || !CurrentAreaIsCode || !CurrentDebugCodeSection)
-      return;
-    auto File = DebugFileNumbers.find(normalizeDebugPath(CurrentFilename));
-    if (File == DebugFileNumbers.end())
-      return;
-    DebugCodeSection &Section = DebugCodeSections[*CurrentDebugCodeSection];
-    OS << "\n.cv_loc " << Section.FunctionId << ' ' << File->second << ' '
-       << CurrentLine << " 0 is_stmt 1\n";
-    Section.HasLines = true;
-  };
-  auto RecordDebugLabel = [&](StringRef Name) {
-    if (!Debug.Enabled || !CurrentAreaIsCode ||
-        !DebugSymbolNames.insert(Name).second)
-      return;
-    std::string RelocationName =
-        (Twine(".Larmasm64_debug_label_") + Twine(DebugLabelSymbolCount++))
-            .str();
-    OS << "; " << RelocationName << ':';
-    DebugSymbols.push_back({Name.str(),
-                            std::move(RelocationName),
-                            {},
-                            /*IsProcedure=*/false,
-                            /*IsExternal=*/Exports.contains(Name)});
-  };
 
   while (!Remaining.empty()) {
     auto [Line, Rest] = Remaining.split('\n');
@@ -4441,7 +4489,7 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
           if (!Exports.contains(Name))
             OS << ".def " << AssemblerName << "; .scl 3; .endef; ";
           OS << AssemblerName << ":; ";
-          RecordDebugLabel(Name);
+          recordDebugLabel(Name);
         } else {
           EmitNumericLabel();
           OS << "; ";
@@ -4450,7 +4498,7 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
           SymbolSizes[Name] = *Count;
       }
       if (*Count)
-        EmitDebugLocation();
+        emitDebugLocation();
       if (Value == 0)
         OS << ".space " << *Count;
       else
@@ -4482,7 +4530,7 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
           if (!Exports.contains(Name))
             OS << ".def " << AssemblerName << "; .scl 3; .endef; ";
           OS << AssemblerName << ":; ";
-          RecordDebugLabel(Name);
+          recordDebugLabel(Name);
         } else {
           EmitNumericLabel();
           OS << "; ";
@@ -4492,7 +4540,7 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
       }
       if (UsesPC)
         EmitPCLabel();
-      EmitDebugLocation();
+      emitDebugLocation();
 
       SmallVector<StringRef, 8> Operands;
       splitOperands(Values, Operands);
@@ -4736,55 +4784,18 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
           OS << ".endef; ";
         }
         OS << AssemblerName << ":; ";
-        RecordDebugLabel(Name);
+        recordDebugLabel(Name);
         SymbolSizes[Name] = 8;
       }
 
       std::string Target = normalizeSymbolicExpression(Operands[1], Constants);
-      EmitDebugLocation();
+      emitDebugLocation();
       OS << "adrp " << Operands[0] << ", " << Target << "; add " << Operands[0]
          << ", " << Operands[0] << ", :lo12:" << Target;
       AtProcedureStart = false;
-    } else if (First.equals_insensitive("B") ||
-               First.equals_insensitive("BL") ||
-               Second.equals_insensitive("B") ||
-               Second.equals_insensitive("BL")) {
-      ensureDefaultSection();
-      bool HasLabel = Second.equals_insensitive("B") ||
-                      Second.equals_insensitive("BL");
-      StringRef Mnemonic = HasLabel ? Second : First;
-      StringRef TargetText = HasLabel ? AfterFirst : Tail;
-      SmallVector<StringRef, 2> Operands;
-      splitOperands(TargetText, Operands);
-      if (Operands.size() != 1 || Operands[0].empty())
-        return SourceError("A2003: improper line syntax");
-
-      if (HasLabel) {
-        StringRef Name = unquoteIdentifier(First);
-        if (ConflictsWithObjectDefinition(Name))
-          return SymbolConflict(Name);
-        DefinedObjectSymbols.insert(Name);
-        std::string AssemblerName = getAssemblerSymbolName(Name);
-        if (!Exports.contains(Name)) {
-          OS << ".def " << AssemblerName << "; .scl 6; ";
-          if (AtProcedureStart)
-            OS << ".type 32; ";
-          OS << ".endef; ";
-        }
-        OS << AssemblerName << ":; ";
-        RecordDebugLabel(Name);
-        SymbolSizes[Name] = 4;
-      }
-
-      std::string Target = normalizeSymbolicExpression(Operands[0], Constants);
-      EmitDebugLocation();
-      OS << Mnemonic << ' ';
-      unsigned DeferredExpression = Deferred.emit(OS, Target);
-      PreviousData = PreviousDataDefinition{
-          DeferredExpression, 4, Target,
-          /*IsSymbolic=*/true, /*ReplaceWithCurrentLocation=*/true,
-          /*IsInstruction=*/true};
-      AtProcedureStart = false;
+    } else if (isBranchDirective(First) || isBranchDirective(Second)) {
+      if (Error Err = handleBranch(First, Second, Tail, AfterFirst))
+        return std::move(Err);
     } else if (First.equals_insensitive("KEEP")) {
       SmallVector<StringRef, 2> Operands;
       splitOperands(Tail, Operands);
@@ -4815,7 +4826,7 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
             OS << ".endef; ";
           }
           OS << AssemblerName << ':';
-          RecordDebugLabel(Name);
+          recordDebugLabel(Name);
         } else {
           EmitNumericLabel();
         }
@@ -4823,14 +4834,14 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
           if (!NumericLabel)
             SymbolSizes[Name] = 4;
           OS << "; ";
-          EmitDebugLocation();
+          emitDebugLocation();
           std::string Rewritten = rewriteSymbols(Tail, Constants);
           PendingSymbolUses.push_back(Deferred.emit(OS, Rewritten));
         }
       } else {
         bool RewroteLiteralLoad = false;
         if (!First.empty())
-          EmitDebugLocation();
+          emitDebugLocation();
         if (First.equals_insensitive("LDR")) {
           SmallVector<StringRef, 2> Operands;
           splitOperands(Tail, Operands);
