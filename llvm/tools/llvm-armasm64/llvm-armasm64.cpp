@@ -2283,6 +2283,17 @@ struct AreaName {
   StringRef ComdatSymbol;
 };
 
+struct AreaDefinition {
+  uint64_t Alignment = 1;
+  bool UsesCodeAlignment = false;
+  bool IsCode = false;
+  bool IsNoInit = false;
+  std::string Flags;
+  std::string SectionSuffix;
+  std::string AttributeSignature;
+  std::string BaseSymbol;
+};
+
 static Expected<AreaName> parseAreaName(StringRef Text) {
   Text = Text.trim();
   StringRef Name;
@@ -3395,15 +3406,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
   StringSet<> DefinedObjectSymbols;
   StringSet<> ExternalSymbols;
   StringSet<> CommonSymbols;
-  StringSet<> SeenAreas;
-  StringMap<std::string> AreaBaseSymbols;
-  StringMap<uint64_t> AreaAlignments;
-  StringMap<bool> AreaCodeAlignments;
-  StringMap<bool> AreaIsCode;
-  StringMap<bool> AreaIsNoInit;
-  StringMap<std::string> AreaFlags;
-  StringMap<std::string> AreaSectionSuffixes;
-  StringMap<std::string> AreaAttributeSignatures;
+  StringMap<AreaDefinition> Areas;
   unsigned AreaBaseSymbolCount = 0;
   unsigned AlignSymbolCount = 0;
   RegisterAliasMap RegisterAliases;
@@ -3503,17 +3506,16 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
     CurrentAreaUsesCodeAlignment = false;
     CurrentAreaAlignment = 8;
     std::string AreaKey = "__DefaultSection{}";
-    SeenAreas.insert(AreaKey);
-    AreaAlignments[AreaKey] = CurrentAreaAlignment;
-    AreaCodeAlignments[AreaKey] = false;
-    AreaIsCode[AreaKey] = false;
-    AreaIsNoInit[AreaKey] = false;
-    AreaFlags[AreaKey] = "dw";
-    AreaSectionSuffixes[AreaKey] = "";
-    AreaAttributeSignatures[AreaKey] = "data,readwrite,align=3";
     CurrentAreaBaseSymbol =
         (Twine(".Larmasm64_area_") + Twine(AreaBaseSymbolCount++)).str();
-    AreaBaseSymbols[AreaKey] = CurrentAreaBaseSymbol;
+    Areas[AreaKey] = {CurrentAreaAlignment,
+                      /*UsesCodeAlignment=*/false,
+                      /*IsCode=*/false,
+                      /*IsNoInit=*/false,
+                      "dw",
+                      "",
+                      "data,readwrite,align=3",
+                      CurrentAreaBaseSymbol};
     OS << ".section \"__DefaultSection\",\"dw\"; .p2align 3; "
        << CurrentAreaBaseSymbol << ":\n";
   };
@@ -4067,38 +4069,39 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
       SuffixOS.flush();
       std::string AreaKey =
           (Twine(Area->Name) + "{" + Area->ComdatSymbol + "}").str();
-      bool IsNewArea = SeenAreas.insert(AreaKey).second;
       std::string AttributeSignature =
           (Twine(IsCode) + "," + Twine(IsReadOnly) + "," +
            Twine(IsReadWrite) + "," + Twine(IsNoInit) + "," +
            Twine(IsPData) + "," + Twine(UsesCodeAlignment) + "," +
            Twine(Alignment) + "," + SectionSuffix)
               .str();
+      auto [AreaEntry, IsNewArea] = Areas.try_emplace(AreaKey);
+      AreaDefinition &Definition = AreaEntry->second;
       if (IsNewArea) {
-        AreaAlignments[AreaKey] = 1ULL << Alignment;
-        AreaCodeAlignments[AreaKey] = UsesCodeAlignment;
-        AreaIsCode[AreaKey] = IsCode;
-        AreaIsNoInit[AreaKey] = IsNoInit;
-        AreaFlags[AreaKey] = Flags;
-        AreaSectionSuffixes[AreaKey] = SectionSuffix;
-        AreaAttributeSignatures[AreaKey] = AttributeSignature;
-        AreaBaseSymbols[AreaKey] =
-            (Twine(".Larmasm64_area_") + Twine(AreaBaseSymbolCount++)).str();
+        Definition = {
+            1ULL << Alignment,
+            UsesCodeAlignment,
+            IsCode,
+            IsNoInit,
+            Flags,
+            SectionSuffix,
+            AttributeSignature,
+            (Twine(".Larmasm64_area_") + Twine(AreaBaseSymbolCount++)).str()};
       } else {
-        if (AreaAttributeSignatures.lookup(AreaKey) != AttributeSignature)
+        if (Definition.AttributeSignature != AttributeSignature)
           Warnings.report(CurrentFilename, CurrentLine, 4043,
                           "redefinition of section flags ignored");
-        IsCode = AreaIsCode.lookup(AreaKey);
-        IsNoInit = AreaIsNoInit.lookup(AreaKey);
-        Flags = AreaFlags.lookup(AreaKey);
-        SectionSuffix = AreaSectionSuffixes.lookup(AreaKey);
       }
-      CurrentAreaIsCode = IsCode;
-      CurrentAreaIsNoInit = IsNoInit;
+      IsCode = Definition.IsCode;
+      IsNoInit = Definition.IsNoInit;
+      Flags = Definition.Flags;
+      SectionSuffix = Definition.SectionSuffix;
+      CurrentAreaIsCode = Definition.IsCode;
+      CurrentAreaIsNoInit = Definition.IsNoInit;
       CurrentAreaName = Area->Name.str();
-      CurrentAreaAlignment = AreaAlignments.lookup(AreaKey);
-      CurrentAreaUsesCodeAlignment = AreaCodeAlignments.lookup(AreaKey);
-      CurrentAreaBaseSymbol = AreaBaseSymbols.lookup(AreaKey);
+      CurrentAreaAlignment = Definition.Alignment;
+      CurrentAreaUsesCodeAlignment = Definition.UsesCodeAlignment;
+      CurrentAreaBaseSymbol = Definition.BaseSymbol;
       OS << ".section \"" << Area->Name << "\",\"" << Flags << "\""
          << SectionSuffix;
       ++NumericLabelScope;
