@@ -2150,6 +2150,61 @@ struct DataDirective {
   bool Unaligned = false;
   bool MicrosoftCompatible = true;
 
+  StringLiteral emissionDirective() const {
+    switch (Kind) {
+    case DataDirectiveKind::Byte:
+      return ".byte ";
+    case DataDirectiveKind::Word:
+      return ".short ";
+    case DataDirectiveKind::Long:
+    case DataDirectiveKind::Single:
+      return ".long ";
+    case DataDirectiveKind::Quad:
+    case DataDirectiveKind::Double:
+      return ".quad ";
+    }
+    llvm_unreachable("unknown data directive kind");
+  }
+
+  bool isFloatingPoint() const {
+    return Kind == DataDirectiveKind::Single ||
+           Kind == DataDirectiveKind::Double;
+  }
+
+  int64_t minimumValue() const {
+    switch (Kind) {
+    case DataDirectiveKind::Byte:
+      return -128;
+    case DataDirectiveKind::Word:
+      return -32768;
+    case DataDirectiveKind::Long:
+      return INT32_MIN;
+    case DataDirectiveKind::Quad:
+      return INT64_MIN;
+    case DataDirectiveKind::Single:
+    case DataDirectiveKind::Double:
+      llvm_unreachable("floating-point directive has no integer range");
+    }
+    llvm_unreachable("unknown data directive kind");
+  }
+
+  uint64_t maximumValue() const {
+    switch (Kind) {
+    case DataDirectiveKind::Byte:
+      return UINT8_MAX;
+    case DataDirectiveKind::Word:
+      return UINT16_MAX;
+    case DataDirectiveKind::Long:
+      return UINT32_MAX;
+    case DataDirectiveKind::Quad:
+      return UINT64_MAX;
+    case DataDirectiveKind::Single:
+    case DataDirectiveKind::Double:
+      llvm_unreachable("floating-point directive has no integer range");
+    }
+    llvm_unreachable("unknown data directive kind");
+  }
+
   unsigned size() const {
     switch (Kind) {
     case DataDirectiveKind::Byte:
@@ -4327,11 +4382,6 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
       StringRef Values = HasLabel ? AfterFirst : Tail;
       std::optional<DataDirective> Data = getDataDirective(Directive);
       assert(Data && "expected a data directive");
-      bool IsByte = Data->Kind == DataDirectiveKind::Byte;
-      bool IsWord = Data->Kind == DataDirectiveKind::Word;
-      bool IsLong = Data->Kind == DataDirectiveKind::Long;
-      bool IsSingle = Data->Kind == DataDirectiveKind::Single;
-      bool IsDouble = Data->Kind == DataDirectiveKind::Double;
       if (!Data->MicrosoftCompatible)
         Warnings.report(CurrentFilename, CurrentLine, 2034,
                         "unknown opcode: " + Directive +
@@ -4390,7 +4440,8 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
                                      /*IsInstruction=*/false};
         };
 
-        if (IsSingle || IsDouble) {
+        if (Data->isFloatingPoint()) {
+          bool IsSingle = Data->Kind == DataDirectiveKind::Single;
           APFloat Float(IsSingle ? APFloat::IEEEsingle()
                                  : APFloat::IEEEdouble());
           APFloat::opStatus Status;
@@ -4418,7 +4469,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
                     ? "A2022: Floating point value can not be represented in "
                       "single precision"
                     : "A2220: Floating point value out of range");
-          EmitValue(IsSingle ? ".long " : ".quad ",
+          EmitValue(Data->emissionDirective(),
                     Twine(Float.bitcastToAPInt().getZExtValue()),
                     /*IsSymbolic=*/false);
           EmittedSize += DataSize;
@@ -4426,10 +4477,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
         }
 
         if (UsesPC && Operand.contains(PCSymbol)) {
-          EmitValue(IsByte   ? ".byte "
-                    : IsWord ? ".short "
-                    : IsLong ? ".long "
-                             : ".quad ",
+          EmitValue(Data->emissionDirective(),
                     normalizeSymbolicExpression(Operand, Constants),
                     /*IsSymbolic=*/true);
           EmittedSize += DataSize;
@@ -4443,23 +4491,20 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
                   "unknown variable or constant '") &&
               !Operand.contains('|'))
             return SourceError(Message);
-          if (IsByte)
+          if (Data->Kind == DataDirectiveKind::Byte)
             return SourceError("A2065: illegal expression type; expected "
                                "absolute numeric or string");
-          if (IsWord)
+          if (Data->Kind == DataDirectiveKind::Word)
             return SourceError(
                 "A2061: illegal expression type; expected absolute numeric");
-          EmitValue(IsByte   ? ".byte "
-                    : IsWord ? ".short "
-                    : IsLong ? ".long "
-                             : ".quad ",
+          EmitValue(Data->emissionDirective(),
                     normalizeSymbolicExpression(Operand, Constants),
                     /*IsSymbolic=*/true);
           EmittedSize += DataSize;
           continue;
         }
         if (Value->Kind == VariableKind::String) {
-          if (!IsByte)
+          if (Data->Kind != DataDirectiveKind::Byte)
             return SourceError(
                 "A2062: illegal expression type; expected absolute numeric");
           if (!Value->String.empty()) {
@@ -4483,22 +4528,12 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
           return SourceError(
               "A2062: illegal expression type; expected absolute numeric");
 
-        int64_t Minimum = IsByte   ? -128
-                          : IsWord ? -32768
-                          : IsLong ? INT32_MIN
-                                   : INT64_MIN;
-        uint64_t Maximum = IsByte   ? UINT8_MAX
-                           : IsWord ? UINT16_MAX
-                           : IsLong ? UINT32_MAX
-                                    : UINT64_MAX;
-        if (!isIntegerValueInRange(Value->Arithmetic, Minimum, Maximum))
+        if (!isIntegerValueInRange(Value->Arithmetic, Data->minimumValue(),
+                                   Data->maximumValue()))
           return SourceError("A2209: Immediate value " +
                              Twine(static_cast<int64_t>(Value->Arithmetic)) +
                              " out of range");
-        EmitValue(IsByte   ? ".byte "
-                  : IsWord ? ".short "
-                  : IsLong ? ".long "
-                           : ".quad ",
+        EmitValue(Data->emissionDirective(),
                   static_cast<int64_t>(Value->Arithmetic) < 0
                       ? Twine(static_cast<int64_t>(Value->Arithmetic))
                       : Twine(Value->Arithmetic),
