@@ -2166,6 +2166,118 @@ static bool isStorageDirective(StringRef Token) {
          Token.equals_insensitive("FILL") || Token == "%";
 }
 
+class SymbolSizeCollector {
+  VariableMap Variables;
+  StringMap<uint64_t> Constants;
+  bool NoEscape;
+  StringMap<uint64_t> Sizes;
+
+  std::optional<VariableValue> evaluate(StringRef Expression) {
+    VariableExpressionParser Parser(Expression, Variables, Constants, NoEscape);
+    Expected<VariableValue> Value = Parser.parse();
+    if (!Value) {
+      // The translation pass diagnoses malformed source. This scan only
+      // gathers sizes needed to evaluate forward ?symbol expressions.
+      consumeError(Value.takeError());
+      return std::nullopt;
+    }
+    return std::move(*Value);
+  }
+
+  void processLine(StringRef SourceLine) {
+    SourceLine.consume_back("\r");
+    bool HasLabel = !SourceLine.empty() && !isSpace(SourceLine.front());
+    std::string Substituted = substituteVariables(SourceLine, Variables);
+    StringRef Tail = stripComment(Substituted).trim();
+    StringRef First = takeToken(Tail);
+    StringRef AfterFirst = Tail;
+    StringRef Second = takeToken(AfterFirst);
+    if (First.empty() || First == "#")
+      return;
+
+    std::optional<VariableKind> DeclarationKind;
+    if (First.equals_insensitive("GBLA"))
+      DeclarationKind = VariableKind::Arithmetic;
+    else if (First.equals_insensitive("GBLL"))
+      DeclarationKind = VariableKind::Logical;
+    else if (First.equals_insensitive("GBLS"))
+      DeclarationKind = VariableKind::String;
+    if (DeclarationKind) {
+      StringRef Name = unquoteIdentifier(takeToken(Tail));
+      if (!Name.empty())
+        consumeError(declareVariable(Name, *DeclarationKind, Variables));
+      return;
+    }
+    if (isSetDirective(Second)) {
+      StringRef Name = unquoteIdentifier(First);
+      consumeError(assignVariable(Name, Second, AfterFirst,
+                                  /*ImplicitDeclaration=*/false, Variables,
+                                  Constants, NoEscape));
+      return;
+    }
+    if (isEquDirective(Second)) {
+      if (std::optional<VariableValue> Value = evaluate(AfterFirst)) {
+        if (Value->Kind == VariableKind::Arithmetic)
+          Constants[unquoteIdentifier(First)] = Value->Arithmetic;
+      }
+    }
+    if (!HasLabel)
+      return;
+
+    StringRef Name = unquoteIdentifier(First);
+    uint64_t Size = 0;
+    if (std::optional<DataDirective> Directive = getDataDirective(Second)) {
+      SmallVector<StringRef, 8> Operands;
+      splitOperands(AfterFirst, Operands);
+      for (StringRef Operand : Operands) {
+        if (Directive->Kind == DataDirectiveKind::Byte) {
+          if (std::optional<VariableValue> Value = evaluate(Operand)) {
+            if (Value->Kind == VariableKind::String) {
+              Size += Value->String.size();
+              continue;
+            }
+          }
+        }
+        Size += Directive->size();
+      }
+    } else if (isStorageDirective(Second)) {
+      SmallVector<StringRef, 3> Operands;
+      splitOperands(AfterFirst, Operands);
+      if (std::optional<VariableValue> Value = evaluate(Operands.front())) {
+        if (Value->Kind == VariableKind::Arithmetic)
+          Size = Value->Arithmetic;
+      }
+    } else if (Second.equals_insensitive("FIELD")) {
+      if (std::optional<VariableValue> Value = evaluate(AfterFirst)) {
+        if (Value->Kind == VariableKind::Arithmetic)
+          Size = Value->Arithmetic;
+      }
+    } else if (Second.equals_insensitive("ADRL")) {
+      Size = 8;
+    } else if (!Second.empty() && !isEquDirective(Second) &&
+               !Second.equals_insensitive("PROC") &&
+               !Second.equals_insensitive("FUNCTION") &&
+               !Second.equals_insensitive("ROUT")) {
+      Size = 4;
+    }
+    Sizes[Name] = Size;
+  }
+
+public:
+  SymbolSizeCollector(const VariableMap &Variables,
+                      const StringMap<uint64_t> &Constants, bool NoEscape)
+      : Variables(Variables), Constants(Constants), NoEscape(NoEscape) {}
+
+  StringMap<uint64_t> run(StringRef Input) {
+    while (!Input.empty()) {
+      auto [Line, Rest] = Input.split('\n');
+      Input = Rest;
+      processLine(Line);
+    }
+    return std::move(Sizes);
+  }
+};
+
 struct AreaName {
   StringRef Name;
   StringRef ComdatSymbol;
@@ -3364,104 +3476,8 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
   BuiltinVariables["LINENUM"] = VariableValue::arithmetic(0);
   BuiltinVariables["VAR"] = VariableValue::arithmetic(0);
 
-  VariableMap SizeVariables = Variables;
-  StringMap<uint64_t> SizeConstants = AbsoluteConstants;
-  StringRef SizeRemaining = Remaining;
-  while (!SizeRemaining.empty()) {
-    auto [SourceLine, Rest] = SizeRemaining.split('\n');
-    SizeRemaining = Rest;
-    SourceLine.consume_back("\r");
-    bool HasLabel = !SourceLine.empty() && !isSpace(SourceLine.front());
-    std::string Substituted = substituteVariables(SourceLine, SizeVariables);
-    StringRef SizeTail = stripComment(Substituted).trim();
-    StringRef SizeFirst = takeToken(SizeTail);
-    StringRef SizeAfterFirst = SizeTail;
-    StringRef SizeSecond = takeToken(SizeAfterFirst);
-    if (SizeFirst.empty() || SizeFirst == "#")
-      continue;
-
-    std::optional<VariableKind> DeclarationKind;
-    if (SizeFirst.equals_insensitive("GBLA"))
-      DeclarationKind = VariableKind::Arithmetic;
-    else if (SizeFirst.equals_insensitive("GBLL"))
-      DeclarationKind = VariableKind::Logical;
-    else if (SizeFirst.equals_insensitive("GBLS"))
-      DeclarationKind = VariableKind::String;
-    if (DeclarationKind) {
-      StringRef Name = unquoteIdentifier(takeToken(SizeTail));
-      if (!Name.empty())
-        consumeError(declareVariable(Name, *DeclarationKind, SizeVariables));
-      continue;
-    }
-    if (isSetDirective(SizeSecond)) {
-      StringRef Name = unquoteIdentifier(SizeFirst);
-      consumeError(assignVariable(Name, SizeSecond, SizeAfterFirst,
-                                  /*ImplicitDeclaration=*/false, SizeVariables,
-                                  SizeConstants, NoEscape));
-      continue;
-    }
-    if (isEquDirective(SizeSecond)) {
-      VariableExpressionParser Parser(SizeAfterFirst, SizeVariables,
-                                      SizeConstants, NoEscape);
-      Expected<VariableValue> Value = Parser.parse();
-      if (Value && Value->Kind == VariableKind::Arithmetic)
-        SizeConstants[unquoteIdentifier(SizeFirst)] = Value->Arithmetic;
-      else if (!Value)
-        consumeError(Value.takeError());
-    }
-    if (!HasLabel)
-      continue;
-
-    StringRef Name = unquoteIdentifier(SizeFirst);
-    uint64_t Size = 0;
-    if (std::optional<DataDirective> Directive =
-            getDataDirective(SizeSecond)) {
-      SmallVector<StringRef, 8> Operands;
-      splitOperands(SizeAfterFirst, Operands);
-      bool IsByte = Directive->Kind == DataDirectiveKind::Byte;
-      for (StringRef Operand : Operands) {
-        if (IsByte) {
-          VariableExpressionParser Parser(Operand, SizeVariables,
-                                          SizeConstants, NoEscape);
-          Expected<VariableValue> Value = Parser.parse();
-          if (Value && Value->Kind == VariableKind::String) {
-            Size += Value->String.size();
-            continue;
-          }
-          if (!Value)
-            consumeError(Value.takeError());
-        }
-        Size += Directive->size();
-      }
-    } else if (isStorageDirective(SizeSecond)) {
-      SmallVector<StringRef, 3> Operands;
-      splitOperands(SizeAfterFirst, Operands);
-      VariableExpressionParser Parser(Operands.front(), SizeVariables,
-                                      SizeConstants, NoEscape);
-      Expected<VariableValue> Value = Parser.parse();
-      if (Value && Value->Kind == VariableKind::Arithmetic)
-        Size = Value->Arithmetic;
-      else if (!Value)
-        consumeError(Value.takeError());
-    } else if (SizeSecond.equals_insensitive("FIELD")) {
-      VariableExpressionParser Parser(SizeAfterFirst, SizeVariables,
-                                      SizeConstants, NoEscape);
-      Expected<VariableValue> Value = Parser.parse();
-      if (Value && Value->Kind == VariableKind::Arithmetic)
-        Size = Value->Arithmetic;
-      else if (!Value)
-        consumeError(Value.takeError());
-    } else if (SizeSecond.equals_insensitive("ADRL")) {
-      Size = 8;
-    } else if (!SizeSecond.empty() &&
-               !isEquDirective(SizeSecond) &&
-               !SizeSecond.equals_insensitive("PROC") &&
-               !SizeSecond.equals_insensitive("FUNCTION") &&
-               !SizeSecond.equals_insensitive("ROUT")) {
-      Size = 4;
-    }
-    SymbolSizes[Name] = Size;
-  }
+  SymbolSizes =
+      SymbolSizeCollector(Variables, AbsoluteConstants, NoEscape).run(Remaining);
 
   std::string CurrentFilename = Input->getBufferIdentifier().str();
   unsigned CurrentLine = 0;
