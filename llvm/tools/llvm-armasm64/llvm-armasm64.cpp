@@ -2184,6 +2184,18 @@ static ControlDirective classifyControlDirective(StringRef Token) {
   return ControlDirective::None;
 }
 
+enum class StorageMapDirective { None, Map, Field };
+
+static StorageMapDirective classifyStorageMapDirective(StringRef First,
+                                                        StringRef Second) {
+  if (First.equals_insensitive("MAP") || First == "^")
+    return StorageMapDirective::Map;
+  if (First.equals_insensitive("FIELD") || First == "#" ||
+      Second.equals_insensitive("FIELD") || Second == "#")
+    return StorageMapDirective::Field;
+  return StorageMapDirective::None;
+}
+
 enum class DataDirectiveKind { Byte, Word, Long, Quad, Single, Double };
 
 struct DataDirective {
@@ -3618,6 +3630,12 @@ class ARMAsm64Translator {
   Error handleIncludeBinary(StringRef Tail);
   Error handleArea(StringRef Tail);
   Error handleControlDirective(ControlDirective Directive, StringRef Tail);
+  Error handleStorageMapDirective(StorageMapDirective Directive,
+                                  StringRef First, StringRef AfterFirst,
+                                  StringRef Tail, bool FirstWasDefined);
+  Error handleMap(StringRef Tail);
+  Error handleField(StringRef First, StringRef AfterFirst, StringRef Tail,
+                    bool FirstWasDefined);
 
 public:
   ARMAsm64Translator(ArrayRef<std::string> IncludeDirs, bool NoEscape,
@@ -4079,6 +4097,71 @@ Error ARMAsm64Translator::handleControlDirective(ControlDirective Directive,
   llvm_unreachable("unhandled control directive");
 }
 
+Error ARMAsm64Translator::handleMap(StringRef Tail) {
+  SmallVector<StringRef, 2> Operands;
+  splitOperands(Tail, Operands);
+  if (Operands.empty() || Operands.size() > 2 || Operands[0].empty() ||
+      (Operands.size() == 2 && Operands[1].empty()))
+    return sourceError("A2003: improper line syntax");
+  Expected<uint64_t> Offset = evaluateAbsolute(Operands[0]);
+  if (!Offset)
+    return sourceError(toString(Offset.takeError()));
+  CurrentStorageMap.Offset = static_cast<int64_t>(*Offset);
+  CurrentStorageMap.BaseRegister =
+      Operands.size() == 2
+          ? std::optional<std::string>(Operands[1].trim().str())
+          : std::nullopt;
+  OS << '\n';
+  return Error::success();
+}
+
+Error ARMAsm64Translator::handleField(StringRef First, StringRef AfterFirst,
+                                      StringRef Tail, bool FirstWasDefined) {
+  bool HasLabel = !First.equals_insensitive("FIELD") && First != "#";
+  StringRef Expression = HasLabel ? AfterFirst : Tail;
+  Expected<uint64_t> Size = evaluateAbsolute(Expression);
+  if (!Size)
+    return sourceError(toString(Size.takeError()));
+  int64_t SignedSize = static_cast<int64_t>(*Size);
+  if (SignedSize < 0)
+    return sourceError("A2209: Immediate value " + Twine(SignedSize) +
+                       " out of range");
+
+  if (HasLabel) {
+    StringRef Name = unquoteIdentifier(First);
+    if (!isValidVariableName(First) || hasInternalSymbol(Name) ||
+        Variables.contains(Name) || Constants.contains(Name) ||
+        FirstWasDefined || isPredefinedRegisterName(Name))
+      return symbolConflict(Name);
+    StorageMapFields[Name] = CurrentStorageMap;
+    SymbolSizes[Name] = *Size;
+    if (CurrentStorageMap.BaseRegister)
+      if (std::optional<unsigned> Base =
+              getStorageMapBaseEncoding(*CurrentStorageMap.BaseRegister))
+        RegisterRelativeValues[Name] =
+            VariableValue::registerRelative(*Base, 0);
+  }
+  if (CurrentStorageMap.Offset > INT64_MAX - SignedSize)
+    return sourceError("storage map offset overflow");
+  CurrentStorageMap.Offset += SignedSize;
+  OS << '\n';
+  return Error::success();
+}
+
+Error ARMAsm64Translator::handleStorageMapDirective(
+    StorageMapDirective Directive, StringRef First, StringRef AfterFirst,
+    StringRef Tail, bool FirstWasDefined) {
+  switch (Directive) {
+  case StorageMapDirective::Map:
+    return handleMap(Tail);
+  case StorageMapDirective::Field:
+    return handleField(First, AfterFirst, Tail, FirstWasDefined);
+  case StorageMapDirective::None:
+    llvm_unreachable("invalid storage map directive");
+  }
+  llvm_unreachable("unhandled storage map directive");
+}
+
 Expected<std::unique_ptr<MemoryBuffer>>
 ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
   if (Debug.Enabled) {
@@ -4262,55 +4345,12 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
     if (Second.equals_insensitive("RN"))
       return SourceError("A2034: unknown opcode: RN");
 
-    if (First.equals_insensitive("MAP") || First == "^") {
-      SmallVector<StringRef, 2> Operands;
-      splitOperands(Tail, Operands);
-      if (Operands.empty() || Operands.size() > 2 || Operands[0].empty() ||
-          (Operands.size() == 2 && Operands[1].empty()))
-        return SourceError("A2003: improper line syntax");
-      Expected<uint64_t> Offset = evaluateAbsolute(Operands[0]);
-      if (!Offset)
-        return SourceError(toString(Offset.takeError()));
-      CurrentStorageMap.Offset = static_cast<int64_t>(*Offset);
-      CurrentStorageMap.BaseRegister =
-          Operands.size() == 2
-              ? std::optional<std::string>(Operands[1].trim().str())
-              : std::nullopt;
-      OS << '\n';
-      continue;
-    }
-
-    bool IsField = First.equals_insensitive("FIELD") || First == "#" ||
-                   Second.equals_insensitive("FIELD") || Second == "#";
-    if (IsField) {
-      bool HasLabel = !First.equals_insensitive("FIELD") && First != "#";
-      StringRef Expression = HasLabel ? AfterFirst : Tail;
-      Expected<uint64_t> Size = evaluateAbsolute(Expression);
-      if (!Size)
-        return SourceError(toString(Size.takeError()));
-      int64_t SignedSize = static_cast<int64_t>(*Size);
-      if (SignedSize < 0)
-        return SourceError("A2209: Immediate value " + Twine(SignedSize) +
-                           " out of range");
-
-      if (HasLabel) {
-        StringRef Name = unquoteIdentifier(First);
-        if (!isValidVariableName(First) || HasInternalSymbol(Name) ||
-            Variables.contains(Name) || Constants.contains(Name) ||
-            FirstWasDefined || isPredefinedRegisterName(Name))
-          return SymbolConflict(Name);
-        StorageMapFields[Name] = CurrentStorageMap;
-        SymbolSizes[Name] = *Size;
-        if (CurrentStorageMap.BaseRegister)
-          if (std::optional<unsigned> Base =
-                  getStorageMapBaseEncoding(*CurrentStorageMap.BaseRegister))
-            RegisterRelativeValues[Name] =
-                VariableValue::registerRelative(*Base, 0);
-      }
-      if (CurrentStorageMap.Offset > INT64_MAX - SignedSize)
-        return SourceError("storage map offset overflow");
-      CurrentStorageMap.Offset += SignedSize;
-      OS << '\n';
+    if (StorageMapDirective Directive =
+            classifyStorageMapDirective(First, Second);
+        Directive != StorageMapDirective::None) {
+      if (Error Err = handleStorageMapDirective(
+              Directive, First, AfterFirst, Tail, FirstWasDefined))
+        return std::move(Err);
       continue;
     }
 
