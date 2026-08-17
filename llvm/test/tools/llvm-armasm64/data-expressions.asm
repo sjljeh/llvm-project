@@ -1,4 +1,5 @@
-; RUN: llvm-armasm64 %s %t.obj
+; RUN: llvm-armasm64 %s %t.obj 2>&1 | FileCheck %s --check-prefix=WARNING
+; RUN: llvm-armasm64 -ignore 2034 %s %t-ignore.obj 2>&1 | FileCheck %s --allow-empty --check-prefix=NO-WARNING
 ; RUN: llvm-readobj --sections --symbols --relocations --expand-relocs %t.obj | FileCheck %s --check-prefix=OBJ
 ; RUN: llvm-objdump -s -d %t.obj | FileCheck %s --check-prefixes=CONTENTS,DISASM
 
@@ -25,11 +26,15 @@ encoded
         DCI 0xd65f03c0
         END
 
+; WARNING: data-expressions.asm:25: A2034: unknown opcode: DCI.W; accepted as an LLVM extension
+; WARNING-NEXT: data-expressions.asm:26: A2034: unknown opcode: DCI; accepted as an LLVM extension
+; NO-WARNING-NOT: A2034
+
 ; OBJ: Name: .data
-; OBJ: RawDataSize: 117
+; OBJ: RawDataSize: 0x75
 ; OBJ: RelocationCount: 2
 ; OBJ: Name: .text
-; OBJ: RawDataSize: 8
+; OBJ: RawDataSize: 0x8
 ; OBJ: Offset: 0x18
 ; OBJ-NEXT: Type: IMAGE_REL_ARM64_ADDR64
 ; OBJ-NEXT: Symbol: external
