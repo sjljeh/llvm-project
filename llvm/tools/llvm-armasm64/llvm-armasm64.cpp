@@ -1761,6 +1761,47 @@ static bool containsIdentifier(StringRef Text, StringRef Name) {
   return false;
 }
 
+class DeferredText {
+  SmallVector<std::string, 16> Values;
+
+  static std::string marker(unsigned Index) {
+    // NUL delimiters keep markers distinct from normal assembly source; they
+    // are resolved before the translated buffer reaches the MC parser.
+    std::string Marker(1, '\0');
+    Marker += "armasm64.deferred." + utostr(Index);
+    Marker.push_back('\0');
+    return Marker;
+  }
+
+public:
+  unsigned emit(raw_ostream &OS, StringRef Value) {
+    unsigned Index = Values.size();
+    Values.push_back(Value.str());
+    OS << marker(Index);
+    return Index;
+  }
+
+  StringRef get(unsigned Index) const { return Values[Index]; }
+
+  void replace(unsigned Index, StringRef Value) { Values[Index] = Value; }
+
+  bool references(StringRef Name) const {
+    return llvm::any_of(Values, [Name](StringRef Value) {
+      return containsIdentifier(Value, Name);
+    });
+  }
+
+  void resolve(std::string &Output) const {
+    for (auto [Index, Value] : llvm::enumerate(Values)) {
+      std::string Marker = marker(Index);
+      size_t Offset = Output.find(Marker);
+      if (Offset == std::string::npos)
+        llvm_unreachable("missing deferred text marker");
+      Output.replace(Offset, Marker.size(), Value);
+    }
+  }
+};
+
 enum class RegisterAliasKind { Single, Double, Quad };
 
 struct RegisterAlias {
@@ -3445,10 +3486,9 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
     bool Conditional = false;
   };
   SmallVector<PendingWeakExternal, 4> PendingWeakExternals;
-  SmallVector<std::pair<size_t, size_t>, 16> PendingSymbolUses;
+  SmallVector<unsigned, 16> PendingSymbolUses;
   struct PreviousDataDefinition {
-    size_t ExpressionOffset;
-    size_t ExpressionLength;
+    std::optional<unsigned> DeferredExpression;
     unsigned Size;
     std::string Expression;
     bool IsSymbolic;
@@ -3456,12 +3496,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
     bool IsInstruction = false;
   };
   std::optional<PreviousDataDefinition> PreviousData;
-  struct RelocatedExpression {
-    size_t Offset;
-    size_t Length;
-    bool ReplaceWithCurrentLocation;
-  };
-  SmallVector<RelocatedExpression, 4> RelocatedExpressions;
+  DeferredText Deferred;
   LiteralPool Literals(OS);
   collectExports(Remaining, Exports);
 
@@ -3961,10 +3996,12 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
       } else {
         return SourceError("A2206: Must specify a relocation target");
       }
-      if (PreviousData->IsSymbolic)
-        RelocatedExpressions.push_back(
-            {PreviousData->ExpressionOffset, PreviousData->ExpressionLength,
-             PreviousData->ReplaceWithCurrentLocation});
+      if (PreviousData->IsSymbolic) {
+        assert(PreviousData->DeferredExpression &&
+               "symbolic data must have a deferred expression");
+        Deferred.replace(*PreviousData->DeferredExpression,
+                         PreviousData->ReplaceWithCurrentLocation ? "." : "0");
+      }
       OS << ".reloc . - " << PreviousData->Size << ", " << RelocationName
          << ", " << Expression;
       PreviousData.reset();
@@ -4341,11 +4378,14 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
                              bool IsSymbolic) {
           std::string ExpressionString = Expression.str();
           OS << Prefix;
-          size_t ExpressionOffset = OS.tell();
-          OS << ExpressionString;
+          std::optional<unsigned> DeferredExpression;
+          if (IsSymbolic)
+            DeferredExpression = Deferred.emit(OS, ExpressionString);
+          else
+            OS << ExpressionString;
           PreviousData =
-              PreviousDataDefinition{ExpressionOffset, ExpressionString.size(),
-                                     DataSize, ExpressionString, IsSymbolic,
+              PreviousDataDefinition{DeferredExpression, DataSize,
+                                     ExpressionString, IsSymbolic,
                                      /*ReplaceWithCurrentLocation=*/false,
                                      /*IsInstruction=*/false};
         };
@@ -4430,12 +4470,11 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
               OS << static_cast<unsigned>(static_cast<unsigned char>(Byte));
             }
             PreviousData = PreviousDataDefinition{
-                0, 0, static_cast<unsigned>(Value->String.size()),
-                                                  /*Expression=*/{},
-                                                  /*IsSymbolic=*/false,
-                                                  /*ReplaceWithCurrentLocation=*/
-                                                      false,
-                                                  /*IsInstruction=*/false};
+                /*DeferredExpression=*/std::nullopt,
+                static_cast<unsigned>(Value->String.size()),
+                /*Expression=*/{}, /*IsSymbolic=*/false,
+                /*ReplaceWithCurrentLocation=*/false,
+                /*IsInstruction=*/false};
           }
           EmittedSize += Value->String.size();
           continue;
@@ -4624,10 +4663,9 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
       std::string Target = normalizeSymbolicExpression(Operands[0], Constants);
       EmitDebugLocation();
       OS << Mnemonic << ' ';
-      size_t ExpressionOffset = OS.tell();
-      OS << Target;
+      unsigned DeferredExpression = Deferred.emit(OS, Target);
       PreviousData = PreviousDataDefinition{
-          ExpressionOffset, Target.size(), 4, Target,
+          DeferredExpression, 4, Target,
           /*IsSymbolic=*/true, /*ReplaceWithCurrentLocation=*/true,
           /*IsInstruction=*/true};
       AtProcedureStart = false;
@@ -4671,8 +4709,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
           OS << "; ";
           EmitDebugLocation();
           std::string Rewritten = rewriteSymbols(Tail, Constants);
-          PendingSymbolUses.emplace_back(OS.tell(), Rewritten.size());
-          OS << Rewritten;
+          PendingSymbolUses.push_back(Deferred.emit(OS, Rewritten));
         }
       } else {
         bool RewroteLiteralLoad = false;
@@ -4744,13 +4781,13 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
         }
         if (!RewroteLiteralLoad) {
           std::string Rewritten = rewriteSymbols(Line, Constants);
-          PendingSymbolUses.emplace_back(OS.tell(), Rewritten.size());
-          OS << Rewritten;
+          PendingSymbolUses.push_back(Deferred.emit(OS, Rewritten));
         }
       }
       if ((HasLabel && !Second.empty()) || (!HasLabel && !First.empty())) {
         PreviousData = PreviousDataDefinition{
-            0, 0, 4, /*Expression=*/{}, /*IsSymbolic=*/false,
+            /*DeferredExpression=*/std::nullopt, 4,
+            /*Expression=*/{}, /*IsSymbolic=*/false,
             /*ReplaceWithCurrentLocation=*/false,
             /*IsInstruction=*/true};
         AtProcedureStart = false;
@@ -4857,26 +4894,21 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
   }
   OS.flush();
   for (const PendingWeakExternal &Weak : PendingWeakExternals)
-    if (!Weak.Conditional || containsIdentifier(Translated, Weak.Name))
+    if (!Weak.Conditional || containsIdentifier(Translated, Weak.Name) ||
+        Deferred.references(Weak.Name))
       OS << ".armasm64_weak_external "
          << getAssemblerSymbolName(Weak.Name) << ", "
          << getAssemblerSymbolName(Weak.Fallback) << ", " << Weak.Search
          << '\n';
 
   OS.flush();
-  for (const RelocatedExpression &Expression :
-       llvm::reverse(RelocatedExpressions)) {
-    std::string Replacement(Expression.Length, ' ');
-    Replacement.front() = Expression.ReplaceWithCurrentLocation ? '.' : '0';
-    Translated.replace(Expression.Offset, Expression.Length, Replacement);
-  }
-  for (size_t I = PendingSymbolUses.size(); I != 0; --I) {
-    auto [Offset, Length] = PendingSymbolUses[I - 1];
-    std::string Rewritten = rewriteRegisterAliases(
-        StringRef(Translated).substr(Offset, Length), RegisterAliases);
+  for (unsigned Index : PendingSymbolUses) {
+    std::string Rewritten =
+        rewriteRegisterAliases(Deferred.get(Index), RegisterAliases);
     Rewritten = rewriteStorageMapFields(Rewritten, StorageMapFields);
-    Translated.replace(Offset, Length, Rewritten);
+    Deferred.replace(Index, Rewritten);
   }
+  Deferred.resolve(Translated);
 
   return MemoryBuffer::getMemBufferCopy(Translated,
                                         Input->getBufferIdentifier());
