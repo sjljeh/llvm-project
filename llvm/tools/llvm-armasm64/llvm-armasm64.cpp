@@ -3604,6 +3604,10 @@ class ARMAsm64Translator {
   void ensureDefaultSection();
   void emitDebugLocation();
   void recordDebugLabel(StringRef Name);
+  void emitNumericLabel(const NumericLocalLabel &Label, StringRef Token);
+  void emitPCLabel(StringRef Symbol);
+  void emitDataValue(StringRef Prefix, const Twine &Expression,
+                     bool IsSymbolic, unsigned Size);
   Error handleProcedureStart(StringRef Name);
   Error handleProcedureEnd(StringRef First, StringRef Tail,
                            StringRef AfterFirst);
@@ -3713,6 +3717,36 @@ void ARMAsm64Translator::recordDebugLabel(StringRef Name) {
   DebugSymbols.push_back({Name.str(), std::move(RelocationName), {},
                           /*IsProcedure=*/false,
                           /*IsExternal=*/Exports.contains(Name)});
+}
+
+void ARMAsm64Translator::emitNumericLabel(const NumericLocalLabel &Label,
+                                          StringRef Token) {
+  std::string SymbolName;
+  raw_string_ostream SymbolOS(SymbolName);
+  SymbolOS << "_lc" << format("%03u", Label.Number) << '_'
+           << format("%06u", CurrentListingLine) << '_';
+  OS << ".def " << SymbolName << "; .scl 6; .endef; " << SymbolName << ":; "
+     << Token << ':';
+}
+
+void ARMAsm64Translator::emitPCLabel(StringRef Symbol) {
+  OS << ".def " << Symbol << "; .scl 6; .endef; " << Symbol << ":; ";
+}
+
+void ARMAsm64Translator::emitDataValue(StringRef Prefix,
+                                       const Twine &Expression,
+                                       bool IsSymbolic, unsigned Size) {
+  std::string ExpressionString = Expression.str();
+  OS << Prefix;
+  std::optional<unsigned> DeferredExpression;
+  if (IsSymbolic)
+    DeferredExpression = Deferred.emit(OS, ExpressionString);
+  else
+    OS << ExpressionString;
+  PreviousData = PreviousDataDefinition{
+      DeferredExpression, Size, ExpressionString, IsSymbolic,
+      /*ReplaceWithCurrentLocation=*/false,
+      /*IsInstruction=*/false};
 }
 
 Error ARMAsm64Translator::handleProcedureStart(StringRef Name) {
@@ -4313,23 +4347,11 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
           std::to_string(NumericLabelScope * 100 + NumericLabel->Number);
       First = NumericLabelToken;
     }
-    auto EmitNumericLabel = [&]() {
-      assert(NumericLabel && "expected numeric local label");
-      std::string SymbolName;
-      raw_string_ostream SymbolOS(SymbolName);
-      SymbolOS << "_lc" << format("%03u", NumericLabel->Number) << '_'
-               << format("%06u", CurrentListingLine) << '_';
-      OS << ".def " << SymbolName << "; .scl 6; .endef; " << SymbolName
-         << ":; " << First << ':';
-    };
     bool IsDataLine = isDataDirective(First) || isDataDirective(Second);
     bool IsStorageLine =
         isStorageDirective(First) || isStorageDirective(Second);
-    auto EmitPCLabel = [&]() {
-      OS << ".def " << PCSymbol << "; .scl 6; .endef; " << PCSymbol << ":; ";
-    };
     if (UsesPC && !IsDataLine)
-      EmitPCLabel();
+      emitPCLabel(PCSymbol);
 
     if (First.equals_insensitive("EXPORT") ||
         First.equals_insensitive("GLOBAL")) {
@@ -4574,7 +4596,7 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
           OS << AssemblerName << ":; ";
           recordDebugLabel(Name);
         } else {
-          EmitNumericLabel();
+          emitNumericLabel(*NumericLabel, First);
           OS << "; ";
         }
         if (!NumericLabel)
@@ -4615,14 +4637,14 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
           OS << AssemblerName << ":; ";
           recordDebugLabel(Name);
         } else {
-          EmitNumericLabel();
+          emitNumericLabel(*NumericLabel, First);
           OS << "; ";
         }
         if (!NumericLabel)
           DataLabel = Name.str();
       }
       if (UsesPC)
-        EmitPCLabel();
+        emitPCLabel(PCSymbol);
       emitDebugLocation();
 
       SmallVector<StringRef, 8> Operands;
@@ -4636,21 +4658,6 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
       for (auto [Index, Operand] : llvm::enumerate(Operands)) {
         if (Index)
           OS << "; ";
-        auto EmitValue = [&](StringRef Prefix, const Twine &Expression,
-                             bool IsSymbolic) {
-          std::string ExpressionString = Expression.str();
-          OS << Prefix;
-          std::optional<unsigned> DeferredExpression;
-          if (IsSymbolic)
-            DeferredExpression = Deferred.emit(OS, ExpressionString);
-          else
-            OS << ExpressionString;
-          PreviousData =
-              PreviousDataDefinition{DeferredExpression, DataSize,
-                                     ExpressionString, IsSymbolic,
-                                     /*ReplaceWithCurrentLocation=*/false,
-                                     /*IsInstruction=*/false};
-        };
 
         if (Data->isFloatingPoint()) {
           bool IsSingle = Data->Kind == DataDirectiveKind::Single;
@@ -4681,17 +4688,17 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
                     ? "A2022: Floating point value can not be represented in "
                       "single precision"
                     : "A2220: Floating point value out of range");
-          EmitValue(Data->emissionDirective(),
-                    Twine(Float.bitcastToAPInt().getZExtValue()),
-                    /*IsSymbolic=*/false);
+          emitDataValue(Data->emissionDirective(),
+                        Twine(Float.bitcastToAPInt().getZExtValue()),
+                        /*IsSymbolic=*/false, DataSize);
           EmittedSize += DataSize;
           continue;
         }
 
         if (UsesPC && Operand.contains(PCSymbol)) {
-          EmitValue(Data->emissionDirective(),
-                    normalizeSymbolicExpression(Operand, Constants),
-                    /*IsSymbolic=*/true);
+          emitDataValue(Data->emissionDirective(),
+                        normalizeSymbolicExpression(Operand, Constants),
+                        /*IsSymbolic=*/true, DataSize);
           EmittedSize += DataSize;
           continue;
         }
@@ -4709,9 +4716,9 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
           if (Data->Kind == DataDirectiveKind::Word)
             return SourceError(
                 "A2061: illegal expression type; expected absolute numeric");
-          EmitValue(Data->emissionDirective(),
-                    normalizeSymbolicExpression(Operand, Constants),
-                    /*IsSymbolic=*/true);
+          emitDataValue(Data->emissionDirective(),
+                        normalizeSymbolicExpression(Operand, Constants),
+                        /*IsSymbolic=*/true, DataSize);
           EmittedSize += DataSize;
           continue;
         }
@@ -4745,11 +4752,11 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
           return SourceError("A2209: Immediate value " +
                              Twine(static_cast<int64_t>(Value->Arithmetic)) +
                              " out of range");
-        EmitValue(Data->emissionDirective(),
-                  static_cast<int64_t>(Value->Arithmetic) < 0
-                      ? Twine(static_cast<int64_t>(Value->Arithmetic))
-                      : Twine(Value->Arithmetic),
-                  /*IsSymbolic=*/false);
+        emitDataValue(Data->emissionDirective(),
+                      static_cast<int64_t>(Value->Arithmetic) < 0
+                          ? Twine(static_cast<int64_t>(Value->Arithmetic))
+                          : Twine(Value->Arithmetic),
+                      /*IsSymbolic=*/false, DataSize);
         EmittedSize += DataSize;
       }
       if (DataLabel)
@@ -4901,7 +4908,7 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
           OS << AssemblerName << ':';
           recordDebugLabel(Name);
         } else {
-          EmitNumericLabel();
+          emitNumericLabel(*NumericLabel, First);
         }
         if (!Second.empty()) {
           if (!NumericLabel)
