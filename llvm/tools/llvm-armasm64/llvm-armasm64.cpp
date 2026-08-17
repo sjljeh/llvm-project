@@ -3641,11 +3641,14 @@ class ARMAsm64Translator {
   void emitPCLabel(StringRef Symbol);
   void emitDataValue(StringRef Prefix, const Twine &Expression,
                      bool IsSymbolic, unsigned Size);
+  Error defineCodeLabel(StringRef NameToken, unsigned Size);
   Error handleProcedureStart(StringRef Name);
   Error handleProcedureEnd(StringRef First, StringRef Tail,
                            StringRef AfterFirst);
   Error handleBranch(StringRef First, StringRef Second, StringRef Tail,
                      StringRef AfterFirst);
+  Error handleAdrl(StringRef First, StringRef Second, StringRef Tail,
+                   StringRef AfterFirst);
   Error handleObjectDirective(ObjectDirective Directive, StringRef Tail);
   Error handleCommon(StringRef Tail);
   Error handleIncludeBinary(StringRef Tail);
@@ -3854,6 +3857,24 @@ Error ARMAsm64Translator::handleProcedureEnd(StringRef First, StringRef Tail,
   return Error::success();
 }
 
+Error ARMAsm64Translator::defineCodeLabel(StringRef NameToken, unsigned Size) {
+  StringRef Name = unquoteIdentifier(NameToken);
+  if (conflictsWithObjectDefinition(Name))
+    return symbolConflict(Name);
+  DefinedObjectSymbols.insert(Name);
+  std::string AssemblerName = getAssemblerSymbolName(Name);
+  if (!Exports.contains(Name)) {
+    OS << ".def " << AssemblerName << "; .scl 6; ";
+    if (AtProcedureStart)
+      OS << ".type 32; ";
+    OS << ".endef; ";
+  }
+  OS << AssemblerName << ":; ";
+  recordDebugLabel(Name);
+  SymbolSizes[Name] = Size;
+  return Error::success();
+}
+
 Error ARMAsm64Translator::handleBranch(StringRef First, StringRef Second,
                                        StringRef Tail, StringRef AfterFirst) {
   ensureDefaultSection();
@@ -3866,20 +3887,8 @@ Error ARMAsm64Translator::handleBranch(StringRef First, StringRef Second,
     return sourceError("A2003: improper line syntax");
 
   if (HasLabel) {
-    StringRef Name = unquoteIdentifier(First);
-    if (conflictsWithObjectDefinition(Name))
-      return symbolConflict(Name);
-    DefinedObjectSymbols.insert(Name);
-    std::string AssemblerName = getAssemblerSymbolName(Name);
-    if (!Exports.contains(Name)) {
-      OS << ".def " << AssemblerName << "; .scl 6; ";
-      if (AtProcedureStart)
-        OS << ".type 32; ";
-      OS << ".endef; ";
-    }
-    OS << AssemblerName << ":; ";
-    recordDebugLabel(Name);
-    SymbolSizes[Name] = 4;
+    if (Error Err = defineCodeLabel(First, 4))
+      return Err;
   }
 
   std::string Target = normalizeSymbolicExpression(Operands[0], Constants);
@@ -3890,6 +3899,29 @@ Error ARMAsm64Translator::handleBranch(StringRef First, StringRef Second,
       DeferredExpression, 4, Target,
       /*IsSymbolic=*/true, /*ReplaceWithCurrentLocation=*/true,
       /*IsInstruction=*/true};
+  AtProcedureStart = false;
+  return Error::success();
+}
+
+Error ARMAsm64Translator::handleAdrl(StringRef First, StringRef Second,
+                                     StringRef Tail, StringRef AfterFirst) {
+  ensureDefaultSection();
+  bool HasLabel = Second.equals_insensitive("ADRL");
+  StringRef OperandsText = HasLabel ? AfterFirst : Tail;
+  SmallVector<StringRef, 2> Operands;
+  splitOperands(OperandsText, Operands);
+  if (Operands.size() != 2 || Operands[0].empty() || Operands[1].empty())
+    return sourceError("A2003: improper line syntax");
+
+  if (HasLabel) {
+    if (Error Err = defineCodeLabel(First, 8))
+      return Err;
+  }
+
+  std::string Target = normalizeSymbolicExpression(Operands[1], Constants);
+  emitDebugLocation();
+  OS << "adrp " << Operands[0] << ", " << Target << "; add " << Operands[0]
+     << ", " << Operands[0] << ", :lo12:" << Target;
   AtProcedureStart = false;
   return Error::success();
 }
@@ -4961,36 +4993,8 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
         return std::move(Err);
     } else if (First.equals_insensitive("ADRL") ||
                Second.equals_insensitive("ADRL")) {
-      ensureDefaultSection();
-      bool HasLabel = Second.equals_insensitive("ADRL");
-      StringRef OperandsText = HasLabel ? AfterFirst : Tail;
-      SmallVector<StringRef, 2> Operands;
-      splitOperands(OperandsText, Operands);
-      if (Operands.size() != 2 || Operands[0].empty() || Operands[1].empty())
-        return SourceError("A2003: improper line syntax");
-
-      if (HasLabel) {
-        StringRef Name = unquoteIdentifier(First);
-        if (ConflictsWithObjectDefinition(Name))
-          return SymbolConflict(Name);
-        DefinedObjectSymbols.insert(Name);
-        std::string AssemblerName = getAssemblerSymbolName(Name);
-        if (!Exports.contains(Name)) {
-          OS << ".def " << AssemblerName << "; .scl 6; ";
-          if (AtProcedureStart)
-            OS << ".type 32; ";
-          OS << ".endef; ";
-        }
-        OS << AssemblerName << ":; ";
-        recordDebugLabel(Name);
-        SymbolSizes[Name] = 8;
-      }
-
-      std::string Target = normalizeSymbolicExpression(Operands[1], Constants);
-      emitDebugLocation();
-      OS << "adrp " << Operands[0] << ", " << Target << "; add " << Operands[0]
-         << ", " << Operands[0] << ", :lo12:" << Target;
-      AtProcedureStart = false;
+      if (Error Err = handleAdrl(First, Second, Tail, AfterFirst))
+        return std::move(Err);
     } else if (isBranchDirective(First) || isBranchDirective(Second)) {
       if (Error Err = handleBranch(First, Second, Tail, AfterFirst))
         return std::move(Err);
