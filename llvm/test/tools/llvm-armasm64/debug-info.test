@@ -1,0 +1,72 @@
+# RUN: llvm-armasm64 -g %S/basic.asm %t-basic.obj
+# RUN: llvm-readobj --sections --relocations --codeview %t-basic.obj | FileCheck %s --check-prefixes=DEBUG,SHA256
+# RUN: llvm-armasm64 -g -gh:SHA1 %S/basic.asm %t-sha1.obj
+# RUN: llvm-readobj --codeview %t-sha1.obj | FileCheck %s --check-prefix=SHA1
+# RUN: llvm-armasm64 -g -gh:SHA1 -gh:SHA_256 %S/basic.asm %t-sha256.obj
+# RUN: llvm-readobj --codeview %t-sha256.obj | FileCheck %s --check-prefix=SHA256
+# RUN: llvm-armasm64 -g %S/include.asm %t-include.obj
+# RUN: llvm-readobj --codeview %t-include.obj | FileCheck %s --check-prefix=INCLUDE
+# RUN: llvm-armasm64 -g -sourcelink:%S/Inputs/source-link.json %S/basic.asm %t-sourcelink.obj
+# RUN: llvm-readobj --codeview %t-sourcelink.obj | FileCheck %s --check-prefix=SOURCELINK
+# RUN: llvm-armasm64 -sourcelink:%S/Inputs/source-link.json %S/basic.asm %t-no-g.obj
+# RUN: llvm-readobj --sections --codeview %t-no-g.obj | FileCheck %s --check-prefix=NO-G
+# RUN: llvm-armasm64 -sourcelink:%t.missing %S/basic.asm %t-no-g-missing.obj
+# RUN: not llvm-armasm64 -g -sourcelink:%t.missing %S/basic.asm %t.obj 2>&1 | FileCheck %s --check-prefix=MISSING
+
+# DEBUG:      Name: .debug$S
+# DEBUG:      IMAGE_SCN_ALIGN_1BYTES
+# DEBUG:      Name: .debug$T
+# DEBUG:      IMAGE_SCN_ALIGN_1BYTES
+# DEBUG:      CodeViewTypes [
+# DEBUG:      ArgList (0x1000)
+# DEBUG:      Procedure (0x1001)
+# DEBUG:      Compile3Sym {
+# DEBUG:      Language: Masm
+# DEBUG:      Machine: ARM64
+# SHA256:     FileChecksum {
+# SHA256:     Filename: {{.*}}basic.asm (0x0)
+# SHA256:     ChecksumSize: 0x20
+# SHA256-NEXT: ChecksumKind: SHA256
+# DEBUG:      SubSectionType: Lines
+# DEBUG:      LabelSym {
+# DEBUG:      DisplayName: test_wfi
+# DEBUG:      LinkageName: TestCode
+# DEBUG:      FunctionLineTable [
+# DEBUG:      CodeSize: 0x8
+# DEBUG:      LineNumberStart: 8
+# DEBUG:      IsStatement: Yes
+# DEBUG:      LineNumberStart: 9
+# DEBUG:      IsStatement: Yes
+
+# SHA1:      FileChecksum {
+# SHA1:      Filename: {{.*}}basic.asm
+# SHA1:      ChecksumSize: 0x14
+# SHA1-NEXT: ChecksumKind: SHA1
+
+# INCLUDE:      FileChecksum {
+# INCLUDE:      Filename: {{.*}}include-one.inc
+# INCLUDE:      FileChecksum {
+# INCLUDE:      Filename: {{.*}}include-two.inc
+# INCLUDE:      FileChecksum {
+# INCLUDE:      Filename: {{.*}}include.asm
+# INCLUDE:      GlobalProcSym {
+# INCLUDE:      DisplayName: include_test
+# INCLUDE:      Filename: {{.*}}include.asm
+# INCLUDE:      LineNumberStart: 8
+# INCLUDE:      Filename: {{.*}}include-one.inc
+# INCLUDE:      LineNumberStart: 1
+# INCLUDE:      Filename: {{.*}}include-two.inc
+# INCLUDE:      LineNumberStart: 2
+# INCLUDE:      Filename: {{.*}}include.asm
+# INCLUDE:      LineNumberStart: 10
+# INCLUDE:      LineNumberStart: 11
+
+# SOURCELINK:      StringId (0x1002) {
+# SOURCELINK:      StringData: {"documents":{"C:\\src\\*":"https://example.invalid/src/*"}}
+# SOURCELINK:      Kind: S_SOURCELINK
+
+# NO-G:      Name: TestCode
+# NO-G-NOT:  S_SOURCELINK
+# NO-G-NOT:  StringId
+
+# MISSING: error: can't open file: {{.*}}missing

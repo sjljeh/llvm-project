@@ -15,6 +15,8 @@
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/BinaryFormat/COFF.h"
+#include "llvm/Config/llvm-config.h"
+#include "llvm/DebugInfo/CodeView/CodeView.h"
 #include "llvm/MC/MCAsmBackend.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCCodeEmitter.h"
@@ -41,6 +43,8 @@
 #include "llvm/Support/LLVMDriver.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/SHA1.h"
+#include "llvm/Support/SHA256.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/StringSaver.h"
 #include "llvm/Support/TargetSelect.h"
@@ -231,6 +235,19 @@ static std::string getAssemblerSymbolName(StringRef Name) {
   raw_string_ostream OS(Quoted);
   OS << '"';
   for (char C : Name) {
+    if (C == '"' || C == '\\')
+      OS << '\\';
+    OS << C;
+  }
+  OS << '"';
+  return Quoted;
+}
+
+static std::string quoteAssemblyString(StringRef Value) {
+  std::string Quoted;
+  raw_string_ostream OS(Quoted);
+  OS << '"';
+  for (char C : Value) {
     if (C == '"' || C == '\\')
       OS << '\\';
     OS << C;
@@ -3034,17 +3051,115 @@ expandAssemblyControl(std::unique_ptr<MemoryBuffer> Input,
   return MemoryBuffer::getMemBufferCopy(Expanded, Filename);
 }
 
+struct DebugOptions {
+  bool Enabled = false;
+  bool UseSHA1 = false;
+  std::string ObjectFilename;
+  std::string SourceLink;
+};
+
+struct DebugFile {
+  std::string Filename;
+  std::string Checksum;
+  unsigned Number;
+};
+
+static std::string normalizeDebugPath(StringRef Filename) {
+  if (Filename == "<stdin>")
+    return Filename.str();
+  SmallString<256> Path(Filename);
+  sys::path::native(Path);
+  if (!sys::path::is_absolute(Path))
+    if (sys::fs::make_absolute(Path))
+      return Path.str().str();
+  sys::path::remove_dots(Path, /*remove_dot_dot=*/true);
+  return Path.str().str();
+}
+
+static Expected<SmallVector<DebugFile, 4>>
+collectDebugFiles(StringRef ExpandedInput, StringRef MainFilename,
+                  bool UseSHA1) {
+  SmallVector<std::string, 4> Filenames;
+  StringSet<> Seen;
+  while (!ExpandedInput.empty()) {
+    auto [Line, Rest] = ExpandedInput.split('\n');
+    ExpandedInput = Rest;
+    Line.consume_back("\r");
+    StringRef Marker = Line.trim();
+    if (!Marker.consume_front("# "))
+      continue;
+    StringRef LineNumber = takeToken(Marker);
+    unsigned ParsedLine;
+    Marker = Marker.trim();
+    if (LineNumber.getAsInteger(10, ParsedLine) ||
+        !Marker.consume_front("\"") || !Marker.consume_back("\""))
+      continue;
+    std::string Filename = normalizeDebugPath(Marker);
+    if (Seen.insert(Filename).second)
+      Filenames.push_back(std::move(Filename));
+  }
+
+  std::string MainPath = normalizeDebugPath(MainFilename);
+  llvm::erase(Filenames, MainPath);
+  Filenames.push_back(MainPath);
+
+  SmallVector<DebugFile, 4> Files;
+  for (auto [Index, Filename] : llvm::enumerate(Filenames)) {
+    ErrorOr<std::unique_ptr<MemoryBuffer>> Buffer =
+        MemoryBuffer::getFile(Filename, /*IsText=*/false);
+    if (!Buffer) {
+      if (Filename == "<stdin>") {
+        Files.push_back({Filename, {}, static_cast<unsigned>(Index + 1)});
+        continue;
+      }
+      return createStringError(Buffer.getError(), "can't open file: %s",
+                               Filename.c_str());
+    }
+    StringRef Contents = (*Buffer)->getBuffer();
+    ArrayRef<uint8_t> Bytes(reinterpret_cast<const uint8_t *>(Contents.data()),
+                            Contents.size());
+    std::string Checksum =
+        UseSHA1 ? toHex(SHA1::hash(Bytes)) : toHex(SHA256::hash(Bytes));
+    Files.push_back(
+        {Filename, std::move(Checksum), static_cast<unsigned>(Index + 1)});
+  }
+  return Files;
+}
+
 static Expected<std::unique_ptr<MemoryBuffer>>
 translateInput(std::unique_ptr<MemoryBuffer> Input,
                ArrayRef<std::string> IncludeDirs, StringRef ProgName,
                bool NoWarn, bool NoEscape,
                const DenseSet<unsigned> &IgnoredWarnings, raw_ostream &DiagOS,
-               ArrayRef<std::string> Predefines, StringRef CommandLine) {
+               ArrayRef<std::string> Predefines, StringRef CommandLine,
+               const DebugOptions &Debug) {
+  SmallVector<DebugFile, 4> DebugFiles;
+  StringMap<unsigned> DebugFileNumbers;
+  if (Debug.Enabled) {
+    Expected<SmallVector<DebugFile, 4>> Files = collectDebugFiles(
+        Input->getBuffer(), Input->getBufferIdentifier(), Debug.UseSHA1);
+    if (!Files)
+      return Files.takeError();
+    DebugFiles = std::move(*Files);
+    for (const DebugFile &File : DebugFiles)
+      DebugFileNumbers[File.Filename] = File.Number;
+  }
+
   StringRef Remaining = Input->getBuffer();
   std::string Translated;
   raw_string_ostream OS(Translated);
   OS << ".def @comp.id; .scl 3; .endef; .set @comp.id, 17010072\n"
         ".def @feat.00; .scl 3; .endef; .set @feat.00, 16\n";
+  for (const DebugFile &File : DebugFiles) {
+    OS << ".cv_file " << File.Number << ' '
+       << quoteAssemblyString(File.Filename);
+    if (!File.Checksum.empty())
+      OS << ' ' << quoteAssemblyString(File.Checksum) << ' '
+         << (Debug.UseSHA1
+                 ? static_cast<unsigned>(codeview::FileChecksumKind::SHA1)
+                 : static_cast<unsigned>(codeview::FileChecksumKind::SHA256));
+    OS << '\n';
+  }
   StringMap<std::string> Constants;
   StringMap<uint64_t> AbsoluteConstants;
   VariableMap Variables;
@@ -3071,6 +3186,30 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
   StorageMapFieldMap StorageMapFields;
   RegisterRelativeMap RegisterRelativeValues;
   StringMap<uint64_t> SymbolSizes;
+  struct DebugCodeSection {
+    std::string Name;
+    std::string Flags;
+    std::string Suffix;
+    std::string StartSymbol;
+    std::string EndSymbol;
+    unsigned FunctionId;
+    bool HasLines = false;
+  };
+  SmallVector<DebugCodeSection, 4> DebugCodeSections;
+  StringMap<unsigned> DebugCodeSectionIndices;
+  std::optional<unsigned> CurrentDebugCodeSection;
+  struct DebugSymbol {
+    std::string Name;
+    std::string AssemblerName;
+    std::string EndSymbol;
+    bool IsProcedure;
+    bool IsExternal;
+  };
+  SmallVector<DebugSymbol, 16> DebugSymbols;
+  StringSet<> DebugSymbolNames;
+  std::optional<unsigned> ActiveDebugProcedure;
+  unsigned DebugEndSymbolCount = 0;
+  unsigned DebugLabelSymbolCount = 0;
   struct PendingWeakExternal {
     std::string Name;
     std::string Fallback;
@@ -3292,6 +3431,31 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
     AreaBaseSymbols[AreaKey] = CurrentAreaBaseSymbol;
     OS << ".section \"__DefaultSection\",\"dw\"; .p2align 3; "
        << CurrentAreaBaseSymbol << ":\n";
+  };
+  auto EmitDebugLocation = [&]() {
+    if (!Debug.Enabled || !CurrentAreaIsCode || !CurrentDebugCodeSection)
+      return;
+    auto File = DebugFileNumbers.find(normalizeDebugPath(CurrentFilename));
+    if (File == DebugFileNumbers.end())
+      return;
+    DebugCodeSection &Section = DebugCodeSections[*CurrentDebugCodeSection];
+    OS << "\n.cv_loc " << Section.FunctionId << ' ' << File->second << ' '
+       << CurrentLine << " 0 is_stmt 1\n";
+    Section.HasLines = true;
+  };
+  auto RecordDebugLabel = [&](StringRef Name) {
+    if (!Debug.Enabled || !CurrentAreaIsCode ||
+        !DebugSymbolNames.insert(Name).second)
+      return;
+    std::string RelocationName =
+        (Twine(".Larmasm64_debug_label_") + Twine(DebugLabelSymbolCount++))
+            .str();
+    OS << "; " << RelocationName << ':';
+    DebugSymbols.push_back({Name.str(),
+                            std::move(RelocationName),
+                            {},
+                            /*IsProcedure=*/false,
+                            /*IsExternal=*/Exports.contains(Name)});
   };
 
   while (!Remaining.empty()) {
@@ -3869,6 +4033,24 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
         OS << "; .p2align " << Alignment;
       if (IsNewArea)
         OS << "; " << CurrentAreaBaseSymbol << ':';
+      CurrentDebugCodeSection.reset();
+      if (Debug.Enabled && IsCode) {
+        auto Existing = DebugCodeSectionIndices.find(AreaKey);
+        if (Existing == DebugCodeSectionIndices.end()) {
+          unsigned Index = DebugCodeSections.size();
+          unsigned FunctionId = Index;
+          std::string EndSymbol =
+              (Twine(".Larmasm64_debug_section_end_") + Twine(Index)).str();
+          DebugCodeSections.push_back({Area->Name.str(), Flags, SectionSuffix,
+                                       CurrentAreaBaseSymbol,
+                                       std::move(EndSymbol), FunctionId});
+          DebugCodeSectionIndices[AreaKey] = Index;
+          CurrentDebugCodeSection = Index;
+          OS << "; .cv_func_id " << FunctionId;
+        } else {
+          CurrentDebugCodeSection = Existing->second;
+        }
+      }
     } else if (isEquDirective(Second)) {
       StringRef Name = unquoteIdentifier(First);
       if (ConflictsWithObjectDefinition(Name))
@@ -3905,9 +4087,28 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
       ActiveProcedureArea = CurrentAreaName;
       AtProcedureStart = true;
       std::string AssemblerName = getAssemblerSymbolName(Name);
-      if (!Exports.contains(Name))
-        OS << ".def " << AssemblerName << "; .scl 6; .endef; ";
+      if (!Exports.contains(Name)) {
+        OS << ".def " << AssemblerName << "; .scl 6; ";
+        if (Debug.Enabled)
+          OS << ".type 32; ";
+        OS << ".endef; ";
+      } else if (Debug.Enabled) {
+        OS << ".def " << AssemblerName << "; .scl 2; .type 32; .endef; .globl "
+           << AssemblerName << "; ";
+      }
       OS << AssemblerName << ':';
+      ActiveDebugProcedure.reset();
+      if (Debug.Enabled && CurrentAreaIsCode &&
+          DebugSymbolNames.insert(Name).second) {
+        std::string EndSymbol =
+            (Twine(".Larmasm64_debug_proc_end_") + Twine(DebugEndSymbolCount++))
+                .str();
+        ActiveDebugProcedure = DebugSymbols.size();
+        DebugSymbols.push_back({Name.str(), std::move(AssemblerName),
+                                std::move(EndSymbol),
+                                /*IsProcedure=*/true,
+                                /*IsExternal=*/Exports.contains(Name)});
+      }
     } else if (First.equals_insensitive("ENDP") ||
                First.equals_insensitive("ENDFUNC") ||
                Second.equals_insensitive("ENDP") ||
@@ -3921,6 +4122,9 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
       if (!ActiveProcedureArea)
         return SourceError(
             "A2093: improper program syntax; unexpected ENDP directive");
+      if (ActiveDebugProcedure)
+        OS << "; " << DebugSymbols[*ActiveDebugProcedure].EndSymbol << ':';
+      ActiveDebugProcedure.reset();
       ActiveProcedureArea.reset();
       AtProcedureStart = false;
     } else if (IsStorageLine) {
@@ -3986,6 +4190,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
           if (!Exports.contains(Name))
             OS << ".def " << AssemblerName << "; .scl 3; .endef; ";
           OS << AssemblerName << ":; ";
+          RecordDebugLabel(Name);
         } else {
           EmitNumericLabel();
           OS << "; ";
@@ -3993,6 +4198,8 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
         if (!NumericLabel)
           SymbolSizes[Name] = *Count;
       }
+      if (*Count)
+        EmitDebugLocation();
       if (Value == 0)
         OS << ".space " << *Count;
       else
@@ -4035,6 +4242,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
           if (!Exports.contains(Name))
             OS << ".def " << AssemblerName << "; .scl 3; .endef; ";
           OS << AssemblerName << ":; ";
+          RecordDebugLabel(Name);
         } else {
           EmitNumericLabel();
           OS << "; ";
@@ -4044,6 +4252,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
       }
       if (UsesPC)
         EmitPCLabel();
+      EmitDebugLocation();
 
       SmallVector<StringRef, 8> Operands;
       splitOperands(Values, Operands);
@@ -4302,10 +4511,12 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
           OS << ".endef; ";
         }
         OS << AssemblerName << ":; ";
+        RecordDebugLabel(Name);
         SymbolSizes[Name] = 8;
       }
 
       std::string Target = normalizeSymbolicExpression(Operands[1], Constants);
+      EmitDebugLocation();
       OS << "adrp " << Operands[0] << ", " << Target << "; add " << Operands[0]
          << ", " << Operands[0] << ", :lo12:" << Target;
       AtProcedureStart = false;
@@ -4336,10 +4547,12 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
           OS << ".endef; ";
         }
         OS << AssemblerName << ":; ";
+        RecordDebugLabel(Name);
         SymbolSizes[Name] = 4;
       }
 
       std::string Target = normalizeSymbolicExpression(Operands[0], Constants);
+      EmitDebugLocation();
       OS << Mnemonic << ' ';
       size_t ExpressionOffset = OS.tell();
       OS << Target;
@@ -4378,6 +4591,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
             OS << ".endef; ";
           }
           OS << AssemblerName << ':';
+          RecordDebugLabel(Name);
         } else {
           EmitNumericLabel();
         }
@@ -4385,12 +4599,15 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
           if (!NumericLabel)
             SymbolSizes[Name] = 4;
           OS << "; ";
+          EmitDebugLocation();
           std::string Rewritten = rewriteSymbols(Tail, Constants);
           PendingSymbolUses.emplace_back(OS.tell(), Rewritten.size());
           OS << Rewritten;
         }
       } else {
         bool RewroteLiteralLoad = false;
+        if (!First.empty())
+          EmitDebugLocation();
         if (First.equals_insensitive("LDR")) {
           SmallVector<StringRef, 2> Operands;
           splitOperands(Tail, Operands);
@@ -4489,6 +4706,85 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
           Twine(Location.first) + ":" + Twine(Location.second) +
               ": A2023: undefined symbol: " + Export.first());
     }
+
+  if (Debug.Enabled) {
+    for (const DebugCodeSection &Section : DebugCodeSections)
+      OS << ".section \"" << Section.Name << "\",\"" << Section.Flags << "\""
+         << Section.Suffix << "; " << Section.EndSymbol << ":\n";
+
+    OS << ".section \".debug$S\",\"dr\"; .p2align 2\n"
+          ".long 4\n"
+          ".long 241\n"
+          ".long .Larmasm64_cv_compiler_end-.Larmasm64_cv_compiler_begin\n"
+          ".Larmasm64_cv_compiler_begin:\n"
+          ".short .Larmasm64_cv_obj_end-.Larmasm64_cv_obj_begin\n"
+          ".Larmasm64_cv_obj_begin:\n"
+          ".short 0x1101; .long 0; .asciz "
+       << quoteAssemblyString(Debug.ObjectFilename)
+       << "\n.Larmasm64_cv_obj_end:\n"
+          ".short .Larmasm64_cv_compile_end-.Larmasm64_cv_compile_begin\n"
+          ".Larmasm64_cv_compile_begin:\n"
+          ".short 0x113c; .long 3; .short 0xf6\n"
+          ".short 0; .short 0; .short 0; .short 0\n"
+          ".short "
+       << LLVM_VERSION_MAJOR << "; .short " << LLVM_VERSION_MINOR << "; .short "
+       << LLVM_VERSION_PATCH << "; .short 0\n.asciz "
+       << quoteAssemblyString("LLVM ARMASM64 Assembler " LLVM_VERSION_STRING)
+       << "\n.Larmasm64_cv_compile_end:\n"
+          ".Larmasm64_cv_compiler_end:\n"
+          ".p2align 2\n";
+
+    if (!Debug.SourceLink.empty())
+      OS << ".long 241; .long 8\n"
+            ".short 6; .short 0x117e; .long 0x1002\n"
+            ".p2align 2\n";
+
+    OS << ".cv_stringtable\n.cv_filechecksums\n";
+    for (const DebugCodeSection &Section : DebugCodeSections)
+      if (Section.HasLines)
+        OS << ".cv_linetable " << Section.FunctionId << ", "
+           << Section.StartSymbol << ", " << Section.EndSymbol << '\n';
+
+    unsigned SymbolIndex = 0;
+    for (const DebugSymbol &Symbol : DebugSymbols) {
+      std::string Prefix =
+          (Twine(".Larmasm64_cv_symbol_") + Twine(SymbolIndex++)).str();
+      OS << ".long 241\n.long " << Prefix << "_sub_end-" << Prefix
+         << "_sub_begin\n"
+         << Prefix << "_sub_begin:\n.short " << Prefix << "_record_end-"
+         << Prefix << "_record_begin\n"
+         << Prefix << "_record_begin:\n";
+      if (Symbol.IsProcedure) {
+        OS << ".short " << (Symbol.IsExternal ? 0x1110 : 0x110f)
+           << "\n.long 0; .long 0; .long 0\n.long " << Symbol.EndSymbol << '-'
+           << Symbol.AssemblerName << "\n.long 0\n.long " << Symbol.EndSymbol
+           << '-' << Symbol.AssemblerName << "\n.long 0x1001\n.secrel32 "
+           << Symbol.AssemblerName << "\n.secidx " << Symbol.AssemblerName
+           << "\n.byte 0\n.asciz " << quoteAssemblyString(Symbol.Name) << '\n';
+      } else {
+        OS << ".short 0x1105\n.secrel32 " << Symbol.AssemblerName
+           << "\n.secidx " << Symbol.AssemblerName << "\n.byte 0\n.asciz "
+           << quoteAssemblyString(Symbol.Name) << '\n';
+      }
+      OS << Prefix << "_record_end:\n";
+      if (Symbol.IsProcedure)
+        OS << ".short 2; .short 6\n";
+      OS << Prefix << "_sub_end:\n.p2align 2\n";
+    }
+
+    OS << ".section \".debug$T\",\"dr\"; .p2align 2\n"
+          ".long 4\n"
+          ".short 6; .short 0x1201; .long 0\n"
+          ".short 14; .short 0x1008; .long 3; .byte 0; .byte 0; .short 0; "
+          ".long 0x1000\n";
+    if (!Debug.SourceLink.empty())
+      OS << ".short .Larmasm64_cv_sourcelink_end-"
+            ".Larmasm64_cv_sourcelink_begin\n"
+            ".Larmasm64_cv_sourcelink_begin:\n"
+            ".short 0x1605; .long 0; .asciz "
+         << quoteAssemblyString(Debug.SourceLink)
+         << "\n.Larmasm64_cv_sourcelink_end:\n";
+  }
   OS.flush();
   for (const PendingWeakExternal &Weak : PendingWeakExternals)
     if (!Weak.Conditional || containsIdentifier(Translated, Weak.Name))
@@ -4565,6 +4861,22 @@ static int assembleInput(StringRef ProgName, StringRef InputFilename,
   }
 
   std::vector<std::string> Predefines = Args.getAllArgValues(OPT_predefine);
+  DebugOptions Debug;
+  Debug.Enabled = Args.hasArg(OPT_debug_info);
+  Debug.ObjectFilename = OutputFilename.str();
+  if (Arg *Hash = Args.getLastArg(OPT_sha1, OPT_sha256))
+    Debug.UseSHA1 = Hash->getOption().matches(OPT_sha1);
+  if (Debug.Enabled)
+    if (Arg *SourceLink = Args.getLastArg(OPT_source_link)) {
+      ErrorOr<std::unique_ptr<MemoryBuffer>> Buffer =
+          MemoryBuffer::getFile(SourceLink->getValue(), /*IsText=*/true);
+      if (!Buffer) {
+        WithColor::error(DiagOS, ProgName)
+            << "can't open file: " << SourceLink->getValue() << '\n';
+        return 1;
+      }
+      Debug.SourceLink = (*Buffer)->getBuffer().trim().str();
+    }
   Expected<std::unique_ptr<MemoryBuffer>> ExpandedInput = expandAssemblyControl(
       std::move(*InputOrErr), IncludeDirs, ProgName, Args.hasArg(OPT_no_warn),
       Args.hasArg(OPT_no_escape), IgnoredWarnings, DiagOS, Predefines,
@@ -4578,7 +4890,7 @@ static int assembleInput(StringRef ProgName, StringRef InputFilename,
   Expected<std::unique_ptr<MemoryBuffer>> TranslatedInput =
       translateInput(std::move(*ExpandedInput), IncludeDirs, ProgName,
                      Args.hasArg(OPT_no_warn), Args.hasArg(OPT_no_escape),
-                     IgnoredWarnings, DiagOS, Predefines, CommandLine);
+                     IgnoredWarnings, DiagOS, Predefines, CommandLine, Debug);
   if (!TranslatedInput) {
     WithColor::error(DiagOS, ProgName)
         << toString(TranslatedInput.takeError()) << '\n';
