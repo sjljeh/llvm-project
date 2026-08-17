@@ -2143,6 +2143,21 @@ static bool isEquDirective(StringRef Directive) {
   return Directive.equals_insensitive("EQU") || Directive == "*";
 }
 
+enum class ProcedureDirective { None, Start, End };
+
+static ProcedureDirective classifyProcedureDirective(StringRef First,
+                                                       StringRef Second) {
+  if (Second.equals_insensitive("PROC") ||
+      Second.equals_insensitive("FUNCTION"))
+    return ProcedureDirective::Start;
+  if (First.equals_insensitive("ENDP") ||
+      First.equals_insensitive("ENDFUNC") ||
+      Second.equals_insensitive("ENDP") ||
+      Second.equals_insensitive("ENDFUNC"))
+    return ProcedureDirective::End;
+  return ProcedureDirective::None;
+}
+
 enum class DataDirectiveKind { Byte, Word, Long, Quad, Single, Double };
 
 struct DataDirective {
@@ -3554,6 +3569,15 @@ class ARMAsm64Translator {
   std::string NumericLabelRoutName;
   DenseSet<unsigned> DefinedNumericLabels;
 
+  Error sourceError(const Twine &Message) const;
+  Error symbolConflict(StringRef Name) const;
+  bool hasInternalSymbol(StringRef Name) const;
+  bool conflictsWithObjectDefinition(StringRef Name) const;
+  void ensureDefaultSection();
+  Error handleProcedureStart(StringRef Name);
+  Error handleProcedureEnd(StringRef First, StringRef Tail,
+                           StringRef AfterFirst);
+
 public:
   ARMAsm64Translator(ArrayRef<std::string> IncludeDirs, bool NoEscape,
                      WarningReporter &Warnings,
@@ -3566,6 +3590,105 @@ public:
   Expected<std::unique_ptr<MemoryBuffer>>
   run(std::unique_ptr<MemoryBuffer> Input);
 };
+
+Error ARMAsm64Translator::sourceError(const Twine &Message) const {
+  return createStringError(inconvertibleErrorCode(),
+                           Twine(CurrentFilename) + ":" + Twine(CurrentLine) +
+                               ": " + Message);
+}
+
+Error ARMAsm64Translator::symbolConflict(StringRef Name) const {
+  return sourceError("A2026: multiple symbol definition or incompatibility: " +
+                     Name);
+}
+
+bool ARMAsm64Translator::hasInternalSymbol(StringRef Name) const {
+  return RegisterAliases.contains(Name) || StorageMapFields.contains(Name);
+}
+
+bool ARMAsm64Translator::conflictsWithObjectDefinition(StringRef Name) const {
+  return hasInternalSymbol(Name) || ExternalSymbols.contains(Name) ||
+         CommonSymbols.contains(Name);
+}
+
+void ARMAsm64Translator::ensureDefaultSection() {
+  if (!CurrentAreaName.empty())
+    return;
+  CurrentAreaName = "__DefaultSection";
+  CurrentAreaIsCode = false;
+  CurrentAreaIsNoInit = false;
+  CurrentAreaUsesCodeAlignment = false;
+  CurrentAreaAlignment = 8;
+  std::string AreaKey = "__DefaultSection{}";
+  CurrentAreaBaseSymbol =
+      (Twine(".Larmasm64_area_") + Twine(AreaBaseSymbolCount++)).str();
+  Areas[AreaKey] = {CurrentAreaAlignment,
+                    /*UsesCodeAlignment=*/false,
+                    /*IsCode=*/false,
+                    /*IsNoInit=*/false,
+                    "dw",
+                    "",
+                    "data,readwrite,align=3",
+                    CurrentAreaBaseSymbol};
+  OS << ".section \"__DefaultSection\",\"dw\"; .p2align 3; "
+     << CurrentAreaBaseSymbol << ":\n";
+}
+
+Error ARMAsm64Translator::handleProcedureStart(StringRef Name) {
+  if (ActiveProcedureArea)
+    return sourceError("A2092: improper program syntax; missing ENDP "
+                       "directive or nested function definition");
+  Name = unquoteIdentifier(Name);
+  if (conflictsWithObjectDefinition(Name))
+    return symbolConflict(Name);
+  ensureDefaultSection();
+  DefinedObjectSymbols.insert(Name);
+  ActiveProcedureArea = CurrentAreaName;
+  AtProcedureStart = true;
+  std::string AssemblerName = getAssemblerSymbolName(Name);
+  if (!Exports.contains(Name)) {
+    OS << ".def " << AssemblerName << "; .scl 6; ";
+    if (Debug.Enabled)
+      OS << ".type 32; ";
+    OS << ".endef; ";
+  } else if (Debug.Enabled) {
+    OS << ".def " << AssemblerName << "; .scl 2; .type 32; .endef; .globl "
+       << AssemblerName << "; ";
+  }
+  OS << AssemblerName << ':';
+  ActiveDebugProcedure.reset();
+  if (Debug.Enabled && CurrentAreaIsCode &&
+      DebugSymbolNames.insert(Name).second) {
+    std::string EndSymbol =
+        (Twine(".Larmasm64_debug_proc_end_") + Twine(DebugEndSymbolCount++))
+            .str();
+    ActiveDebugProcedure = DebugSymbols.size();
+    DebugSymbols.push_back({Name.str(), std::move(AssemblerName),
+                            std::move(EndSymbol),
+                            /*IsProcedure=*/true,
+                            /*IsExternal=*/Exports.contains(Name)});
+  }
+  return Error::success();
+}
+
+Error ARMAsm64Translator::handleProcedureEnd(StringRef First, StringRef Tail,
+                                              StringRef AfterFirst) {
+  StringRef EndTail = First.equals_insensitive("ENDP") ||
+                              First.equals_insensitive("ENDFUNC")
+                          ? Tail
+                          : AfterFirst;
+  if (!EndTail.empty())
+    return sourceError("A2003: improper line syntax: " + EndTail);
+  if (!ActiveProcedureArea)
+    return sourceError(
+        "A2093: improper program syntax; unexpected ENDP directive");
+  if (ActiveDebugProcedure)
+    OS << "; " << DebugSymbols[*ActiveDebugProcedure].EndSymbol << ':';
+  ActiveDebugProcedure.reset();
+  ActiveProcedureArea.reset();
+  AtProcedureStart = false;
+  return Error::success();
+}
 
 Expected<std::unique_ptr<MemoryBuffer>>
 ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
@@ -3612,28 +3735,6 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
       SymbolSizeCollector(Variables, AbsoluteConstants, NoEscape).run(Remaining);
 
   CurrentFilename = Input->getBufferIdentifier().str();
-  auto EnsureDefaultSection = [&]() {
-    if (!CurrentAreaName.empty())
-      return;
-    CurrentAreaName = "__DefaultSection";
-    CurrentAreaIsCode = false;
-    CurrentAreaIsNoInit = false;
-    CurrentAreaUsesCodeAlignment = false;
-    CurrentAreaAlignment = 8;
-    std::string AreaKey = "__DefaultSection{}";
-    CurrentAreaBaseSymbol =
-        (Twine(".Larmasm64_area_") + Twine(AreaBaseSymbolCount++)).str();
-    Areas[AreaKey] = {CurrentAreaAlignment,
-                      /*UsesCodeAlignment=*/false,
-                      /*IsCode=*/false,
-                      /*IsNoInit=*/false,
-                      "dw",
-                      "",
-                      "data,readwrite,align=3",
-                      CurrentAreaBaseSymbol};
-    OS << ".section \"__DefaultSection\",\"dw\"; .p2align 3; "
-       << CurrentAreaBaseSymbol << ":\n";
-  };
   auto EmitDebugLocation = [&]() {
     if (!Debug.Enabled || !CurrentAreaIsCode || !CurrentDebugCodeSection)
       return;
@@ -4034,7 +4135,7 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
         return SourceError("A2209: Immediate value " + Twine(SignedSize) +
                            " out of range");
       CommonSymbols.insert(Name);
-      EnsureDefaultSection();
+      ensureDefaultSection();
       std::string AssemblerName = getAssemblerSymbolName(Name);
       if (Size == 0)
         OS << ".globl " << AssemblerName;
@@ -4099,7 +4200,7 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
       if (!IncludedBuffer)
         return SourceError("unable to open include file '" + IncludedFilename +
                            "': " + IncludedBuffer.getError().message());
-      EnsureDefaultSection();
+      ensureDefaultSection();
       OS << ".incbin \"" << sys::path::convert_to_slash(IncludedPath) << '"';
     } else if (First.equals_insensitive("AREA")) {
       Literals.emit();
@@ -4269,61 +4370,16 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
         consumeError(Value.takeError());
       OS << ".equ " << AssemblerName << ", "
          << rewriteSymbols(AfterFirst, Constants);
-    } else if (Second.equals_insensitive("PROC") ||
-               Second.equals_insensitive("FUNCTION")) {
-      if (ActiveProcedureArea)
-        return SourceError("A2092: improper program syntax; missing ENDP "
-                           "directive or nested function definition");
-      StringRef Name = unquoteIdentifier(First);
-      if (ConflictsWithObjectDefinition(Name))
-        return SymbolConflict(Name);
-      EnsureDefaultSection();
-      DefinedObjectSymbols.insert(Name);
-      ActiveProcedureArea = CurrentAreaName;
-      AtProcedureStart = true;
-      std::string AssemblerName = getAssemblerSymbolName(Name);
-      if (!Exports.contains(Name)) {
-        OS << ".def " << AssemblerName << "; .scl 6; ";
-        if (Debug.Enabled)
-          OS << ".type 32; ";
-        OS << ".endef; ";
-      } else if (Debug.Enabled) {
-        OS << ".def " << AssemblerName << "; .scl 2; .type 32; .endef; .globl "
-           << AssemblerName << "; ";
-      }
-      OS << AssemblerName << ':';
-      ActiveDebugProcedure.reset();
-      if (Debug.Enabled && CurrentAreaIsCode &&
-          DebugSymbolNames.insert(Name).second) {
-        std::string EndSymbol =
-            (Twine(".Larmasm64_debug_proc_end_") + Twine(DebugEndSymbolCount++))
-                .str();
-        ActiveDebugProcedure = DebugSymbols.size();
-        DebugSymbols.push_back({Name.str(), std::move(AssemblerName),
-                                std::move(EndSymbol),
-                                /*IsProcedure=*/true,
-                                /*IsExternal=*/Exports.contains(Name)});
-      }
-    } else if (First.equals_insensitive("ENDP") ||
-               First.equals_insensitive("ENDFUNC") ||
-               Second.equals_insensitive("ENDP") ||
-               Second.equals_insensitive("ENDFUNC")) {
-      StringRef EndTail = First.equals_insensitive("ENDP") ||
-                                  First.equals_insensitive("ENDFUNC")
-                              ? Tail
-                              : AfterFirst;
-      if (!EndTail.empty())
-        return SourceError("A2003: improper line syntax: " + EndTail);
-      if (!ActiveProcedureArea)
-        return SourceError(
-            "A2093: improper program syntax; unexpected ENDP directive");
-      if (ActiveDebugProcedure)
-        OS << "; " << DebugSymbols[*ActiveDebugProcedure].EndSymbol << ':';
-      ActiveDebugProcedure.reset();
-      ActiveProcedureArea.reset();
-      AtProcedureStart = false;
+    } else if (ProcedureDirective Procedure =
+                   classifyProcedureDirective(First, Second);
+               Procedure != ProcedureDirective::None) {
+      Error Err = Procedure == ProcedureDirective::Start
+                      ? handleProcedureStart(First)
+                      : handleProcedureEnd(First, Tail, AfterFirst);
+      if (Err)
+        return std::move(Err);
     } else if (IsStorageLine) {
-      EnsureDefaultSection();
+      ensureDefaultSection();
       bool HasLabel = !isStorageDirective(First);
       StringRef Directive = HasLabel ? Second : First;
       StringRef Values = HasLabel ? AfterFirst : Tail;
@@ -4401,7 +4457,7 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
         OS << ".fill " << *Count / ValueSize << ", " << ValueSize << ", "
            << Value;
     } else if (IsDataLine) {
-      EnsureDefaultSection();
+      ensureDefaultSection();
       bool HasLabel = !isDataDirective(First);
       StringRef Directive = HasLabel ? Second : First;
       StringRef Values = HasLabel ? AfterFirst : Tail;
@@ -4574,7 +4630,7 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
       if (!RoutTail.empty())
         return SourceError("A2003: improper line syntax");
       if (Second.equals_insensitive("ROUT")) {
-        EnsureDefaultSection();
+        ensureDefaultSection();
         StringRef Name = unquoteIdentifier(First);
         if (ConflictsWithObjectDefinition(Name) ||
             DefinedObjectSymbols.contains(Name))
@@ -4659,7 +4715,7 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
          << ", " << Fill;
     } else if (First.equals_insensitive("ADRL") ||
                Second.equals_insensitive("ADRL")) {
-      EnsureDefaultSection();
+      ensureDefaultSection();
       bool HasLabel = Second.equals_insensitive("ADRL");
       StringRef OperandsText = HasLabel ? AfterFirst : Tail;
       SmallVector<StringRef, 2> Operands;
@@ -4693,7 +4749,7 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
                First.equals_insensitive("BL") ||
                Second.equals_insensitive("B") ||
                Second.equals_insensitive("BL")) {
-      EnsureDefaultSection();
+      ensureDefaultSection();
       bool HasLabel = Second.equals_insensitive("B") ||
                       Second.equals_insensitive("BL");
       StringRef Mnemonic = HasLabel ? Second : First;
@@ -4741,7 +4797,7 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
       Literals.emit();
     } else {
       if (!First.empty())
-        EnsureDefaultSection();
+        ensureDefaultSection();
       bool HasLabel =
           !Line.empty() && !isSpace(Line.front()) && !First.starts_with("#");
       if (HasLabel) {
