@@ -2172,6 +2172,18 @@ static ObjectDirective classifyObjectDirective(StringRef Token) {
   return ObjectDirective::None;
 }
 
+enum class ControlDirective { None, LiteralPool, Keep, End };
+
+static ControlDirective classifyControlDirective(StringRef Token) {
+  if (Token.equals_insensitive("LTORG"))
+    return ControlDirective::LiteralPool;
+  if (Token.equals_insensitive("KEEP"))
+    return ControlDirective::Keep;
+  if (Token.equals_insensitive("END"))
+    return ControlDirective::End;
+  return ControlDirective::None;
+}
+
 enum class DataDirectiveKind { Byte, Word, Long, Quad, Single, Double };
 
 struct DataDirective {
@@ -3601,6 +3613,7 @@ class ARMAsm64Translator {
   Error handleCommon(StringRef Tail);
   Error handleIncludeBinary(StringRef Tail);
   Error handleArea(StringRef Tail);
+  Error handleControlDirective(ControlDirective Directive, StringRef Tail);
 
 public:
   ARMAsm64Translator(ArrayRef<std::string> IncludeDirs, bool NoEscape,
@@ -4003,6 +4016,33 @@ Error ARMAsm64Translator::handleArea(StringRef Tail) {
     }
   }
   return Error::success();
+}
+
+Error ARMAsm64Translator::handleControlDirective(ControlDirective Directive,
+                                                 StringRef Tail) {
+  switch (Directive) {
+  case ControlDirective::LiteralPool:
+    if (!Tail.empty())
+      return sourceError("A2003: improper line syntax");
+    Literals.emit();
+    return Error::success();
+  case ControlDirective::Keep: {
+    SmallVector<StringRef, 2> Operands;
+    splitOperands(Tail, Operands);
+    if (Operands.size() != 1 || Operands[0].empty())
+      return sourceError("A2003: improper line syntax");
+    return Error::success();
+  }
+  case ControlDirective::End:
+    if (ActiveProcedureArea)
+      return sourceError("A2057: missing ENDP directive in section " +
+                         *ActiveProcedureArea);
+    Literals.emit();
+    return Error::success();
+  case ControlDirective::None:
+    llvm_unreachable("invalid control directive");
+  }
+  llvm_unreachable("unhandled control directive");
 }
 
 Expected<std::unique_ptr<MemoryBuffer>>
@@ -4431,10 +4471,10 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
       OS << ".reloc . - " << PreviousData->Size << ", " << RelocationName
          << ", " << Expression;
       PreviousData.reset();
-    } else if (First.equals_insensitive("LTORG")) {
-      if (!Tail.empty())
-        return SourceError("A2003: improper line syntax");
-      Literals.emit();
+    } else if (ControlDirective Directive = classifyControlDirective(First);
+               Directive != ControlDirective::None) {
+      if (Error Err = handleControlDirective(Directive, Tail))
+        return std::move(Err);
     } else if (First.equals_insensitive("AREA")) {
       if (Error Err = handleArea(Tail))
         return std::move(Err);
@@ -4839,16 +4879,6 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
     } else if (isBranchDirective(First) || isBranchDirective(Second)) {
       if (Error Err = handleBranch(First, Second, Tail, AfterFirst))
         return std::move(Err);
-    } else if (First.equals_insensitive("KEEP")) {
-      SmallVector<StringRef, 2> Operands;
-      splitOperands(Tail, Operands);
-      if (Operands.size() != 1 || Operands[0].empty())
-        return SourceError("A2003: improper line syntax");
-    } else if (First.equals_insensitive("END")) {
-      if (ActiveProcedureArea)
-        return SourceError("A2057: missing ENDP directive in section " +
-                           *ActiveProcedureArea);
-      Literals.emit();
     } else {
       if (!First.empty())
         ensureDefaultSection();
