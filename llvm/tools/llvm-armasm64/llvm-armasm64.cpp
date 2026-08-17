@@ -3460,38 +3460,52 @@ collectDebugFiles(StringRef ExpandedInput, StringRef MainFilename,
   return Files;
 }
 
-static Expected<std::unique_ptr<MemoryBuffer>>
-translateInput(std::unique_ptr<MemoryBuffer> Input,
-               ArrayRef<std::string> IncludeDirs, bool NoEscape,
-               WarningReporter &Warnings, ArrayRef<std::string> Predefines,
-               StringRef CommandLine, const DebugOptions &Debug) {
+class ARMAsm64Translator {
+  struct DebugCodeSection {
+    std::string Name;
+    std::string Flags;
+    std::string Suffix;
+    std::string StartSymbol;
+    std::string EndSymbol;
+    unsigned FunctionId;
+    bool HasLines = false;
+  };
+
+  struct DebugSymbol {
+    std::string Name;
+    std::string AssemblerName;
+    std::string EndSymbol;
+    bool IsProcedure;
+    bool IsExternal;
+  };
+
+  struct PendingWeakExternal {
+    std::string Name;
+    std::string Fallback;
+    uint64_t Search = COFF::IMAGE_WEAK_EXTERN_SEARCH_ALIAS;
+    bool Conditional = false;
+  };
+
+  struct PreviousDataDefinition {
+    std::optional<unsigned> DeferredExpression;
+    unsigned Size;
+    std::string Expression;
+    bool IsSymbolic;
+    bool ReplaceWithCurrentLocation = false;
+    bool IsInstruction = false;
+  };
+
+  ArrayRef<std::string> IncludeDirs;
+  bool NoEscape;
+  WarningReporter &Warnings;
+  ArrayRef<std::string> Predefines;
+  StringRef CommandLine;
+  const DebugOptions &Debug;
+
   SmallVector<DebugFile, 4> DebugFiles;
   StringMap<unsigned> DebugFileNumbers;
-  if (Debug.Enabled) {
-    Expected<SmallVector<DebugFile, 4>> Files = collectDebugFiles(
-        Input->getBuffer(), Input->getBufferIdentifier(), Debug.UseSHA1);
-    if (!Files)
-      return Files.takeError();
-    DebugFiles = std::move(*Files);
-    for (const DebugFile &File : DebugFiles)
-      DebugFileNumbers[File.Filename] = File.Number;
-  }
-
-  StringRef Remaining = Input->getBuffer();
   std::string Translated;
-  raw_string_ostream OS(Translated);
-  OS << ".def @comp.id; .scl 3; .endef; .set @comp.id, 17010072\n"
-        ".def @feat.00; .scl 3; .endef; .set @feat.00, 16\n";
-  for (const DebugFile &File : DebugFiles) {
-    OS << ".cv_file " << File.Number << ' '
-       << quoteAssemblyString(File.Filename);
-    if (!File.Checksum.empty())
-      OS << ' ' << quoteAssemblyString(File.Checksum) << ' '
-         << (Debug.UseSHA1
-                 ? static_cast<unsigned>(codeview::FileChecksumKind::SHA1)
-                 : static_cast<unsigned>(codeview::FileChecksumKind::SHA256));
-    OS << '\n';
-  }
+  raw_string_ostream OS;
   StringMap<std::string> Constants;
   StringMap<uint64_t> AbsoluteConstants;
   VariableMap Variables;
@@ -3510,49 +3524,74 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
   StorageMapFieldMap StorageMapFields;
   RegisterRelativeMap RegisterRelativeValues;
   StringMap<uint64_t> SymbolSizes;
-  struct DebugCodeSection {
-    std::string Name;
-    std::string Flags;
-    std::string Suffix;
-    std::string StartSymbol;
-    std::string EndSymbol;
-    unsigned FunctionId;
-    bool HasLines = false;
-  };
   SmallVector<DebugCodeSection, 4> DebugCodeSections;
   StringMap<unsigned> DebugCodeSectionIndices;
   std::optional<unsigned> CurrentDebugCodeSection;
-  struct DebugSymbol {
-    std::string Name;
-    std::string AssemblerName;
-    std::string EndSymbol;
-    bool IsProcedure;
-    bool IsExternal;
-  };
   SmallVector<DebugSymbol, 16> DebugSymbols;
   StringSet<> DebugSymbolNames;
   std::optional<unsigned> ActiveDebugProcedure;
   unsigned DebugEndSymbolCount = 0;
   unsigned DebugLabelSymbolCount = 0;
-  struct PendingWeakExternal {
-    std::string Name;
-    std::string Fallback;
-    uint64_t Search = COFF::IMAGE_WEAK_EXTERN_SEARCH_ALIAS;
-    bool Conditional = false;
-  };
   SmallVector<PendingWeakExternal, 4> PendingWeakExternals;
   SmallVector<unsigned, 16> PendingSymbolUses;
-  struct PreviousDataDefinition {
-    std::optional<unsigned> DeferredExpression;
-    unsigned Size;
-    std::string Expression;
-    bool IsSymbolic;
-    bool ReplaceWithCurrentLocation = false;
-    bool IsInstruction = false;
-  };
   std::optional<PreviousDataDefinition> PreviousData;
   DeferredText Deferred;
-  LiteralPool Literals(OS);
+  LiteralPool Literals;
+
+  std::string CurrentFilename;
+  unsigned CurrentLine = 0;
+  unsigned CurrentListingLine = 0;
+  unsigned PCSymbolCount = 0;
+  bool CurrentAreaIsCode = false;
+  bool CurrentAreaIsNoInit = false;
+  bool CurrentAreaUsesCodeAlignment = false;
+  uint64_t CurrentAreaAlignment = 8;
+  std::string CurrentAreaName;
+  std::string CurrentAreaBaseSymbol;
+  std::optional<std::string> ActiveProcedureArea;
+  bool AtProcedureStart = false;
+  unsigned NumericLabelScope = 0;
+  std::string NumericLabelRoutName;
+  DenseSet<unsigned> DefinedNumericLabels;
+
+public:
+  ARMAsm64Translator(ArrayRef<std::string> IncludeDirs, bool NoEscape,
+                     WarningReporter &Warnings,
+                     ArrayRef<std::string> Predefines, StringRef CommandLine,
+                     const DebugOptions &Debug)
+      : IncludeDirs(IncludeDirs), NoEscape(NoEscape), Warnings(Warnings),
+        Predefines(Predefines), CommandLine(CommandLine), Debug(Debug),
+        OS(Translated), Literals(OS) {}
+
+  Expected<std::unique_ptr<MemoryBuffer>>
+  run(std::unique_ptr<MemoryBuffer> Input);
+};
+
+Expected<std::unique_ptr<MemoryBuffer>>
+ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
+  if (Debug.Enabled) {
+    Expected<SmallVector<DebugFile, 4>> Files = collectDebugFiles(
+        Input->getBuffer(), Input->getBufferIdentifier(), Debug.UseSHA1);
+    if (!Files)
+      return Files.takeError();
+    DebugFiles = std::move(*Files);
+    for (const DebugFile &File : DebugFiles)
+      DebugFileNumbers[File.Filename] = File.Number;
+  }
+
+  StringRef Remaining = Input->getBuffer();
+  OS << ".def @comp.id; .scl 3; .endef; .set @comp.id, 17010072\n"
+        ".def @feat.00; .scl 3; .endef; .set @feat.00, 16\n";
+  for (const DebugFile &File : DebugFiles) {
+    OS << ".cv_file " << File.Number << ' '
+       << quoteAssemblyString(File.Filename);
+    if (!File.Checksum.empty())
+      OS << ' ' << quoteAssemblyString(File.Checksum) << ' '
+         << (Debug.UseSHA1
+                 ? static_cast<unsigned>(codeview::FileChecksumKind::SHA1)
+                 : static_cast<unsigned>(codeview::FileChecksumKind::SHA256));
+    OS << '\n';
+  }
   collectExports(Remaining, Exports);
 
   for (StringRef Predefine : Predefines)
@@ -3572,21 +3611,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
   SymbolSizes =
       SymbolSizeCollector(Variables, AbsoluteConstants, NoEscape).run(Remaining);
 
-  std::string CurrentFilename = Input->getBufferIdentifier().str();
-  unsigned CurrentLine = 0;
-  unsigned CurrentListingLine = 0;
-  unsigned PCSymbolCount = 0;
-  bool CurrentAreaIsCode = false;
-  bool CurrentAreaIsNoInit = false;
-  bool CurrentAreaUsesCodeAlignment = false;
-  uint64_t CurrentAreaAlignment = 8;
-  std::string CurrentAreaName;
-  std::string CurrentAreaBaseSymbol;
-  std::optional<std::string> ActiveProcedureArea;
-  bool AtProcedureStart = false;
-  unsigned NumericLabelScope = 0;
-  std::string NumericLabelRoutName;
-  DenseSet<unsigned> DefinedNumericLabels;
+  CurrentFilename = Input->getBufferIdentifier().str();
   auto EnsureDefaultSection = [&]() {
     if (!CurrentAreaName.empty())
       return;
@@ -4947,6 +4972,16 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
 
   return MemoryBuffer::getMemBufferCopy(Translated,
                                         Input->getBufferIdentifier());
+}
+
+static Expected<std::unique_ptr<MemoryBuffer>>
+translateInput(std::unique_ptr<MemoryBuffer> Input,
+               ArrayRef<std::string> IncludeDirs, bool NoEscape,
+               WarningReporter &Warnings, ArrayRef<std::string> Predefines,
+               StringRef CommandLine, const DebugOptions &Debug) {
+  ARMAsm64Translator Translator(IncludeDirs, NoEscape, Warnings, Predefines,
+                                CommandLine, Debug);
+  return Translator.run(std::move(Input));
 }
 
 static int assembleInput(StringRef ProgName, StringRef InputFilename,
