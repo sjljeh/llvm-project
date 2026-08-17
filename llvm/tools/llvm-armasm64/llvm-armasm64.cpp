@@ -2102,16 +2102,63 @@ static bool isEquDirective(StringRef Directive) {
   return Directive.equals_insensitive("EQU") || Directive == "*";
 }
 
+enum class DataDirectiveKind { Byte, Word, Long, Quad, Single, Double };
+
+struct DataDirective {
+  DataDirectiveKind Kind;
+  bool Unaligned = false;
+  bool MicrosoftCompatible = true;
+
+  unsigned size() const {
+    switch (Kind) {
+    case DataDirectiveKind::Byte:
+      return 1;
+    case DataDirectiveKind::Word:
+      return 2;
+    case DataDirectiveKind::Long:
+    case DataDirectiveKind::Single:
+      return 4;
+    case DataDirectiveKind::Quad:
+    case DataDirectiveKind::Double:
+      return 8;
+    }
+    llvm_unreachable("unknown data directive kind");
+  }
+
+  unsigned alignment() const { return std::min(size(), 4U); }
+};
+
+static std::optional<DataDirective> getDataDirective(StringRef Token) {
+  if (Token.equals_insensitive("DCB") || Token == "=")
+    return DataDirective{DataDirectiveKind::Byte};
+  if (Token.equals_insensitive("DCW"))
+    return DataDirective{DataDirectiveKind::Word};
+  if (Token.equals_insensitive("DCWU"))
+    return DataDirective{DataDirectiveKind::Word, /*Unaligned=*/true};
+  if (Token.equals_insensitive("DCD") || Token == "&")
+    return DataDirective{DataDirectiveKind::Long};
+  if (Token.equals_insensitive("DCDU"))
+    return DataDirective{DataDirectiveKind::Long, /*Unaligned=*/true};
+  if (Token.equals_insensitive("DCQ"))
+    return DataDirective{DataDirectiveKind::Quad};
+  if (Token.equals_insensitive("DCQU"))
+    return DataDirective{DataDirectiveKind::Quad, /*Unaligned=*/true};
+  if (Token.equals_insensitive("DCFS"))
+    return DataDirective{DataDirectiveKind::Single};
+  if (Token.equals_insensitive("DCFSU"))
+    return DataDirective{DataDirectiveKind::Single, /*Unaligned=*/true};
+  if (Token.equals_insensitive("DCFD"))
+    return DataDirective{DataDirectiveKind::Double};
+  if (Token.equals_insensitive("DCFDU"))
+    return DataDirective{DataDirectiveKind::Double, /*Unaligned=*/true};
+  if (Token.equals_insensitive("DCI") || Token.equals_insensitive("DCI.W"))
+    return DataDirective{DataDirectiveKind::Long, /*Unaligned=*/false,
+                         /*MicrosoftCompatible=*/false};
+  return std::nullopt;
+}
+
 static bool isDataDirective(StringRef Token) {
-  return Token.equals_insensitive("DCB") || Token == "=" ||
-         Token.equals_insensitive("DCW") || Token.equals_insensitive("DCWU") ||
-         Token.equals_insensitive("DCD") || Token.equals_insensitive("DCDU") ||
-         Token == "&" || Token.equals_insensitive("DCQ") ||
-         Token.equals_insensitive("DCQU") || Token.equals_insensitive("DCFS") ||
-         Token.equals_insensitive("DCFSU") ||
-         Token.equals_insensitive("DCFD") ||
-         Token.equals_insensitive("DCFDU") || Token.equals_insensitive("DCI") ||
-         Token.equals_insensitive("DCI.W");
+  return getDataDirective(Token).has_value();
 }
 
 static bool isStorageDirective(StringRef Token) {
@@ -3367,20 +3414,11 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
 
     StringRef Name = unquoteIdentifier(SizeFirst);
     uint64_t Size = 0;
-    if (isDataDirective(SizeSecond)) {
+    if (std::optional<DataDirective> Directive =
+            getDataDirective(SizeSecond)) {
       SmallVector<StringRef, 8> Operands;
       splitOperands(SizeAfterFirst, Operands);
-      bool IsByte = SizeSecond.equals_insensitive("DCB") || SizeSecond == "=";
-      unsigned ElementSize =
-          IsByte                                               ? 1
-          : SizeSecond.equals_insensitive("DCW") ||
-                  SizeSecond.equals_insensitive("DCWU")        ? 2
-          : SizeSecond.equals_insensitive("DCD") ||
-                  SizeSecond.equals_insensitive("DCDU") ||
-                  SizeSecond == "&" ||
-                  SizeSecond.equals_insensitive("DCI") ||
-                  SizeSecond.equals_insensitive("DCI.W")       ? 4
-                                                               : 8;
+      bool IsByte = Directive->Kind == DataDirectiveKind::Byte;
       for (StringRef Operand : Operands) {
         if (IsByte) {
           VariableExpressionParser Parser(Operand, SizeVariables,
@@ -3393,7 +3431,7 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
           if (!Value)
             consumeError(Value.takeError());
         }
-        Size += ElementSize;
+        Size += Directive->size();
       }
     } else if (isStorageDirective(SizeSecond)) {
       SmallVector<StringRef, 3> Operands;
@@ -4231,31 +4269,20 @@ translateInput(std::unique_ptr<MemoryBuffer> Input,
       bool HasLabel = !isDataDirective(First);
       StringRef Directive = HasLabel ? Second : First;
       StringRef Values = HasLabel ? AfterFirst : Tail;
-      bool IsByte = Directive.equals_insensitive("DCB") || Directive == "=";
-      bool IsWord = Directive.equals_insensitive("DCW") ||
-                    Directive.equals_insensitive("DCWU");
-      bool IsLong = Directive.equals_insensitive("DCD") ||
-                    Directive.equals_insensitive("DCDU") || Directive == "&" ||
-                    Directive.equals_insensitive("DCI") ||
-                    Directive.equals_insensitive("DCI.W");
-      bool IsSingle = Directive.equals_insensitive("DCFS") ||
-                      Directive.equals_insensitive("DCFSU");
-      bool IsDouble = Directive.equals_insensitive("DCFD") ||
-                      Directive.equals_insensitive("DCFDU");
-      if ((Directive.equals_insensitive("DCI") ||
-           Directive.equals_insensitive("DCI.W")))
+      std::optional<DataDirective> Data = getDataDirective(Directive);
+      assert(Data && "expected a data directive");
+      bool IsByte = Data->Kind == DataDirectiveKind::Byte;
+      bool IsWord = Data->Kind == DataDirectiveKind::Word;
+      bool IsLong = Data->Kind == DataDirectiveKind::Long;
+      bool IsSingle = Data->Kind == DataDirectiveKind::Single;
+      bool IsDouble = Data->Kind == DataDirectiveKind::Double;
+      if (!Data->MicrosoftCompatible)
         Warnings.report(CurrentFilename, CurrentLine, 2034,
                         "unknown opcode: " + Directive +
                             "; accepted as an LLVM extension");
-      bool IsUnaligned = Directive.equals_insensitive("DCWU") ||
-                         Directive.equals_insensitive("DCDU") ||
-                         Directive.equals_insensitive("DCQU") ||
-                         Directive.equals_insensitive("DCFSU") ||
-                         Directive.equals_insensitive("DCFDU");
-      unsigned Alignment = IsByte ? 1 : IsWord ? 2 : 4;
-      unsigned DataSize = IsByte ? 1 : IsWord ? 2 : IsLong ? 4 : 8;
-      if (!IsUnaligned && Alignment != 1)
-        OS << ".balign " << Alignment << "; ";
+      if (!Data->Unaligned && Data->alignment() != 1)
+        OS << ".balign " << Data->alignment() << "; ";
+      unsigned DataSize = Data->size();
 
       std::optional<std::string> DataLabel;
       if (HasLabel) {
