@@ -2196,6 +2196,27 @@ static StorageMapDirective classifyStorageMapDirective(StringRef First,
   return StorageMapDirective::None;
 }
 
+enum class VariableDirective {
+  None,
+  DeclareArithmetic,
+  DeclareLogical,
+  DeclareString,
+  Assign
+};
+
+static VariableDirective classifyVariableDirective(StringRef First,
+                                                    StringRef Second) {
+  if (First.equals_insensitive("GBLA"))
+    return VariableDirective::DeclareArithmetic;
+  if (First.equals_insensitive("GBLL"))
+    return VariableDirective::DeclareLogical;
+  if (First.equals_insensitive("GBLS"))
+    return VariableDirective::DeclareString;
+  if (isSetDirective(Second))
+    return VariableDirective::Assign;
+  return VariableDirective::None;
+}
+
 enum class DataDirectiveKind { Byte, Word, Long, Quad, Single, Double };
 
 struct DataDirective {
@@ -3636,6 +3657,13 @@ class ARMAsm64Translator {
   Error handleMap(StringRef Tail);
   Error handleField(StringRef First, StringRef AfterFirst, StringRef Tail,
                     bool FirstWasDefined);
+  Error handleVariableDirective(VariableDirective Directive, StringRef First,
+                                StringRef Second, StringRef AfterFirst,
+                                StringRef Tail);
+  Error handleVariableDeclaration(VariableKind Kind, StringRef Directive,
+                                  StringRef Tail);
+  Error handleVariableAssignment(StringRef NameToken, StringRef Directive,
+                                 StringRef Expression);
 
 public:
   ARMAsm64Translator(ArrayRef<std::string> IncludeDirs, bool NoEscape,
@@ -4162,6 +4190,57 @@ Error ARMAsm64Translator::handleStorageMapDirective(
   llvm_unreachable("unhandled storage map directive");
 }
 
+Error ARMAsm64Translator::handleVariableDeclaration(VariableKind Kind,
+                                                    StringRef Directive,
+                                                    StringRef Tail) {
+  StringRef NameToken = takeToken(Tail);
+  if (!isValidVariableName(NameToken) || !Tail.empty())
+    return sourceError("expected one variable name after " + Directive);
+  StringRef Name = unquoteIdentifier(NameToken);
+  if (hasInternalSymbol(Name))
+    return symbolConflict(Name);
+  if (Constants.contains(Name))
+    return sourceError("variable name '" + Name + "' is already defined");
+  if (Error Err = declareVariable(Name, Kind, Variables))
+    return sourceError(toString(std::move(Err)));
+  OS << '\n';
+  return Error::success();
+}
+
+Error ARMAsm64Translator::handleVariableAssignment(StringRef NameToken,
+                                                   StringRef Directive,
+                                                   StringRef Expression) {
+  StringRef Name = unquoteIdentifier(NameToken);
+  if (!isValidVariableName(NameToken) || Expression.empty())
+    return sourceError("expected variable assignment expression");
+  if (Error Err = assignVariable(
+          Name, Directive, Expression,
+          /*ImplicitDeclaration=*/false, Variables, AbsoluteConstants,
+          NoEscape,
+          /*ExpressionVariables=*/nullptr, &DefinedSymbols, &BuiltinVariables))
+    return sourceError(toString(std::move(Err)));
+  OS << '\n';
+  return Error::success();
+}
+
+Error ARMAsm64Translator::handleVariableDirective(
+    VariableDirective Directive, StringRef First, StringRef Second,
+    StringRef AfterFirst, StringRef Tail) {
+  switch (Directive) {
+  case VariableDirective::DeclareArithmetic:
+    return handleVariableDeclaration(VariableKind::Arithmetic, First, Tail);
+  case VariableDirective::DeclareLogical:
+    return handleVariableDeclaration(VariableKind::Logical, First, Tail);
+  case VariableDirective::DeclareString:
+    return handleVariableDeclaration(VariableKind::String, First, Tail);
+  case VariableDirective::Assign:
+    return handleVariableAssignment(First, Second, AfterFirst);
+  case VariableDirective::None:
+    llvm_unreachable("invalid variable directive");
+  }
+  llvm_unreachable("unhandled variable directive");
+}
+
 Expected<std::unique_ptr<MemoryBuffer>>
 ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
   if (Debug.Enabled) {
@@ -4278,39 +4357,12 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
     if (!First.empty() && !IsRelocDirective)
       PreviousData.reset();
 
-    std::optional<VariableKind> DeclarationKind;
-    if (First.equals_insensitive("GBLA"))
-      DeclarationKind = VariableKind::Arithmetic;
-    else if (First.equals_insensitive("GBLL"))
-      DeclarationKind = VariableKind::Logical;
-    else if (First.equals_insensitive("GBLS"))
-      DeclarationKind = VariableKind::String;
-    if (DeclarationKind) {
-      StringRef NameToken = takeToken(Tail);
-      if (!isValidVariableName(NameToken) || !Tail.empty())
-        return SourceError("expected one variable name after " + First);
-      StringRef Name = unquoteIdentifier(NameToken);
-      if (HasInternalSymbol(Name))
-        return SymbolConflict(Name);
-      if (Constants.contains(Name))
-        return SourceError("variable name '" + Name + "' is already defined");
-      if (Error Err = declareVariable(Name, *DeclarationKind, Variables))
-        return SourceError(toString(std::move(Err)));
-      OS << '\n';
-      continue;
-    }
-    if (isSetDirective(Second)) {
-      StringRef Name = unquoteIdentifier(First);
-      if (!isValidVariableName(First) || AfterFirst.empty())
-        return SourceError("expected variable assignment expression");
-      if (Error Err =
-               assignVariable(Name, Second, AfterFirst,
-                              /*ImplicitDeclaration=*/false, Variables,
-                              AbsoluteConstants, NoEscape,
-                              /*ExpressionVariables=*/nullptr, &DefinedSymbols,
-                              &BuiltinVariables))
-        return SourceError(toString(std::move(Err)));
-      OS << '\n';
+    if (VariableDirective Directive =
+            classifyVariableDirective(First, Second);
+        Directive != VariableDirective::None) {
+      if (Error Err = handleVariableDirective(Directive, First, Second,
+                                              AfterFirst, Tail))
+        return std::move(Err);
       continue;
     }
 
