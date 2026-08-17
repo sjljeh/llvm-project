@@ -3575,6 +3575,8 @@ class ARMAsm64Translator {
 
   Error sourceError(const Twine &Message) const;
   Error symbolConflict(StringRef Name) const;
+  Expected<VariableValue> evaluate(StringRef Expression);
+  Expected<uint64_t> evaluateAbsolute(StringRef Expression);
   bool hasInternalSymbol(StringRef Name) const;
   bool conflictsWithObjectDefinition(StringRef Name) const;
   void ensureDefaultSection();
@@ -3608,6 +3610,25 @@ Error ARMAsm64Translator::sourceError(const Twine &Message) const {
 Error ARMAsm64Translator::symbolConflict(StringRef Name) const {
   return sourceError("A2026: multiple symbol definition or incompatibility: " +
                      Name);
+}
+
+Expected<VariableValue> ARMAsm64Translator::evaluate(StringRef Expression) {
+  VariableExpressionParser Parser(Expression, Variables, AbsoluteConstants,
+                                  NoEscape, &DefinedSymbols,
+                                  &RegisterRelativeValues, &SymbolSizes,
+                                  &BuiltinVariables);
+  return Parser.parse();
+}
+
+Expected<uint64_t>
+ARMAsm64Translator::evaluateAbsolute(StringRef Expression) {
+  Expected<VariableValue> Value = evaluate(Expression);
+  if (!Value)
+    return Value.takeError();
+  if (Value->Kind != VariableKind::Arithmetic)
+    return createStringError(inconvertibleErrorCode(),
+                             "expected absolute numeric expression");
+  return Value->Arithmetic;
 }
 
 bool ARMAsm64Translator::hasInternalSymbol(StringRef Name) const {
@@ -3850,23 +3871,6 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
       return HasInternalSymbol(Name) || ExternalSymbols.contains(Name) ||
              CommonSymbols.contains(Name);
     };
-    auto Evaluate = [&](StringRef Expression) -> Expected<VariableValue> {
-      VariableExpressionParser Parser(Expression, Variables, AbsoluteConstants,
-                                       NoEscape, &DefinedSymbols,
-                                       &RegisterRelativeValues, &SymbolSizes,
-                                       &BuiltinVariables);
-      return Parser.parse();
-    };
-    auto EvaluateAbsolute = [&](StringRef Expression) -> Expected<uint64_t> {
-      Expected<VariableValue> Value = Evaluate(Expression);
-      if (!Value)
-        return Value.takeError();
-      if (Value->Kind != VariableKind::Arithmetic)
-        return createStringError(inconvertibleErrorCode(),
-                                 "expected absolute numeric expression");
-      return Value->Arithmetic;
-    };
-
     if (First == "#") {
       StringRef Marker = Tail;
       StringRef MarkerKind = takeToken(Marker);
@@ -3969,7 +3973,7 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
       if (Operands.empty() || Operands.size() > 2 || Operands[0].empty() ||
           (Operands.size() == 2 && Operands[1].empty()))
         return SourceError("A2003: improper line syntax");
-      Expected<uint64_t> Offset = EvaluateAbsolute(Operands[0]);
+      Expected<uint64_t> Offset = evaluateAbsolute(Operands[0]);
       if (!Offset)
         return SourceError(toString(Offset.takeError()));
       CurrentStorageMap.Offset = static_cast<int64_t>(*Offset);
@@ -3986,7 +3990,7 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
     if (IsField) {
       bool HasLabel = !First.equals_insensitive("FIELD") && First != "#";
       StringRef Expression = HasLabel ? AfterFirst : Tail;
-      Expected<uint64_t> Size = EvaluateAbsolute(Expression);
+      Expected<uint64_t> Size = evaluateAbsolute(Expression);
       if (!Size)
         return SourceError(toString(Size.takeError()));
       int64_t SignedSize = static_cast<int64_t>(*Size);
@@ -4139,7 +4143,7 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
           StringRef Type = takeToken(TypeOperand);
           if (!Type.equals_insensitive("TYPE") || TypeOperand.empty())
             return SourceError("A2003: improper line syntax");
-          Expected<uint64_t> Value = EvaluateAbsolute(TypeOperand);
+          Expected<uint64_t> Value = evaluateAbsolute(TypeOperand);
           if (!Value)
             return SourceError(toString(Value.takeError()));
           Search = *Value;
@@ -4173,7 +4177,7 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
         return SymbolConflict(Name);
       uint64_t Size = 0;
       if (Operands.size() == 2) {
-        Expected<uint64_t> Value = EvaluateAbsolute(Operands[1]);
+        Expected<uint64_t> Value = evaluateAbsolute(Operands[1]);
         if (!Value)
           return SourceError(toString(Value.takeError()));
         Size = *Value;
@@ -4199,7 +4203,7 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
         return SourceError("A2203: RELOC directive must follow an instruction "
                            "or data definition directive");
 
-      Expected<uint64_t> Type = EvaluateAbsolute(Operands[0]);
+      Expected<uint64_t> Type = evaluateAbsolute(Operands[0]);
       if (!Type)
         return SourceError(toString(Type.takeError()));
       StringRef RelocationName = getARM64RelocationName(*Type);
@@ -4294,7 +4298,7 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
                           Attribute + " attribute does not pertain to a "
                                       "relocatable module; ignored");
         } else if (Attribute.consume_front_insensitive("ALIGN=")) {
-          Expected<uint64_t> Value = EvaluateAbsolute(Attribute);
+          Expected<uint64_t> Value = evaluateAbsolute(Attribute);
           if (!Value)
             return SourceError(toString(Value.takeError()));
           if (*Value > 31)
@@ -4442,7 +4446,7 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
                       }))))
         return SourceError("A2173: syntax error in expression");
 
-      Expected<uint64_t> Count = EvaluateAbsolute(Operands[0]);
+      Expected<uint64_t> Count = evaluateAbsolute(Operands[0]);
       if (!Count)
         return SourceError(toString(Count.takeError()));
       int64_t SignedCount = static_cast<int64_t>(*Count);
@@ -4453,13 +4457,13 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
       uint64_t Value = 0;
       uint64_t ValueSize = 1;
       if (Operands.size() >= 2) {
-        Expected<uint64_t> EvaluatedValue = EvaluateAbsolute(Operands[1]);
+        Expected<uint64_t> EvaluatedValue = evaluateAbsolute(Operands[1]);
         if (!EvaluatedValue)
           return SourceError(toString(EvaluatedValue.takeError()));
         Value = *EvaluatedValue;
       }
       if (Operands.size() == 3) {
-        Expected<uint64_t> EvaluatedSize = EvaluateAbsolute(Operands[2]);
+        Expected<uint64_t> EvaluatedSize = evaluateAbsolute(Operands[2]);
         if (!EvaluatedSize)
           return SourceError(toString(EvaluatedSize.takeError()));
         ValueSize = *EvaluatedSize;
@@ -4574,7 +4578,7 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
           APFloat Float(IsSingle ? APFloat::IEEEsingle()
                                  : APFloat::IEEEdouble());
           APFloat::opStatus Status;
-          Expected<VariableValue> Value = Evaluate(Operand);
+          Expected<VariableValue> Value = evaluate(Operand);
           if (Value) {
             if (Value->Kind != VariableKind::Arithmetic)
               return SourceError(
@@ -4613,7 +4617,7 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
           continue;
         }
 
-        Expected<VariableValue> Value = Evaluate(Operand);
+        Expected<VariableValue> Value = evaluate(Operand);
         if (!Value) {
           std::string Message = toString(Value.takeError());
           if (!StringRef(Message).starts_with(
@@ -4708,7 +4712,7 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
       uint64_t FillSize = 1;
       bool HasFill = Operands.size() >= 3;
       if (!Operands.front().empty()) {
-        Expected<uint64_t> Value = EvaluateAbsolute(Operands[0]);
+        Expected<uint64_t> Value = evaluateAbsolute(Operands[0]);
         if (!Value)
           return SourceError(toString(Value.takeError()));
         Alignment = *Value;
@@ -4717,13 +4721,13 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
         return SourceError("A2209: Immediate value " + Twine(Alignment) +
                            " out of range");
       if (Operands.size() >= 2) {
-        Expected<uint64_t> Value = EvaluateAbsolute(Operands[1]);
+        Expected<uint64_t> Value = evaluateAbsolute(Operands[1]);
         if (!Value)
           return SourceError(toString(Value.takeError()));
         Offset = *Value;
       }
       if (HasFill) {
-        Expected<uint64_t> Value = EvaluateAbsolute(Operands[2]);
+        Expected<uint64_t> Value = evaluateAbsolute(Operands[2]);
         if (!Value)
           return SourceError(toString(Value.takeError()));
         Fill = *Value;
@@ -4733,7 +4737,7 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
         FillSize = 4;
       }
       if (Operands.size() == 4) {
-        Expected<uint64_t> Value = EvaluateAbsolute(Operands[3]);
+        Expected<uint64_t> Value = evaluateAbsolute(Operands[3]);
         if (!Value)
           return SourceError(toString(Value.takeError()));
         FillSize = *Value;
@@ -4849,7 +4853,7 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
             StringRef Expression = Operands[1].trim();
             if (Expression.consume_front("=")) {
               Expression = Expression.trim();
-              Expected<VariableValue> Value = Evaluate(Expression);
+              Expected<VariableValue> Value = evaluate(Expression);
               if (Value) {
                 if (Value->Kind != VariableKind::Arithmetic)
                   return SourceError(
