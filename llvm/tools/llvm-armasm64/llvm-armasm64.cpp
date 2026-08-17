@@ -3600,6 +3600,7 @@ class ARMAsm64Translator {
   Error handleObjectDirective(ObjectDirective Directive, StringRef Tail);
   Error handleCommon(StringRef Tail);
   Error handleIncludeBinary(StringRef Tail);
+  Error handleArea(StringRef Tail);
 
 public:
   ARMAsm64Translator(ArrayRef<std::string> IncludeDirs, bool NoEscape,
@@ -3858,6 +3859,150 @@ Error ARMAsm64Translator::handleObjectDirective(ObjectDirective Directive,
     llvm_unreachable("invalid object directive");
   }
   llvm_unreachable("unhandled object directive");
+}
+
+Error ARMAsm64Translator::handleArea(StringRef Tail) {
+  Literals.emit();
+  SmallVector<StringRef, 8> Attributes;
+  splitOperands(Tail, Attributes);
+  if (Attributes.front().empty())
+    return sourceError("A2003: improper line syntax");
+  if (llvm::any_of(ArrayRef(Attributes).drop_front(),
+                   [](StringRef Attribute) { return Attribute.empty(); }))
+    return sourceError("A2146: illegal symbol ,; AREA attribute expected");
+  Expected<AreaName> Area = parseAreaName(Attributes.front());
+  if (!Area)
+    return sourceError(toString(Area.takeError()));
+  bool IsCode = false;
+  bool IsData = false;
+  bool IsReadOnly = false;
+  bool IsReadWrite = false;
+  bool IsNoInit = false;
+  bool IsPData = false;
+  bool UsesCodeAlignment = false;
+  unsigned Alignment = 3;
+  std::optional<AreaName> AssociativeArea;
+  for (StringRef Attribute : ArrayRef(Attributes).drop_front()) {
+    Attribute = Attribute.trim();
+    if (Attribute.equals_insensitive("CODE")) {
+      IsCode = true;
+    } else if (Attribute.equals_insensitive("DATA")) {
+      IsData = true;
+    } else if (Attribute.equals_insensitive("READWRITE")) {
+      IsReadWrite = true;
+    } else if (Attribute.equals_insensitive("READONLY")) {
+      IsReadOnly = true;
+    } else if (Attribute.equals_insensitive("NOINIT")) {
+      IsNoInit = true;
+    } else if (Attribute.equals_insensitive("PDATA")) {
+      IsPData = true;
+    } else if (Attribute.equals_insensitive("CODEALIGN")) {
+      UsesCodeAlignment = true;
+    } else if (Attribute.equals_insensitive("COMDEF") ||
+               Attribute.equals_insensitive("COMMON")) {
+      Warnings.report(CurrentFilename, CurrentLine, 4039,
+                      Attribute + " attribute does not pertain to a "
+                                  "relocatable module; ignored");
+    } else if (Attribute.consume_front_insensitive("ALIGN=")) {
+      Expected<uint64_t> Value = evaluateAbsolute(Attribute);
+      if (!Value)
+        return sourceError(toString(Value.takeError()));
+      if (*Value > 31)
+        return sourceError("A2209: Immediate value " + Attribute +
+                           " out of range");
+      Alignment = *Value;
+    } else if (Attribute.consume_front_insensitive("ASSOC=")) {
+      Expected<AreaName> Associated = parseAreaName(Attribute);
+      if (!Associated)
+        return sourceError(toString(Associated.takeError()));
+      AssociativeArea = *Associated;
+    } else {
+      return sourceError("A2041: unknown section flag: " + Attribute);
+    }
+  }
+
+  if ((IsCode && (IsData || IsNoInit)) || (IsReadOnly && IsReadWrite))
+    Warnings.report(
+        CurrentFilename, CurrentLine, 4172,
+        "illegal combination of section flags: section flags can not be "
+        "inferred, code and data/uninitialized, readonly/readwrite");
+
+  bool IsWritable = IsReadWrite || (!IsReadOnly && !IsCode && !IsPData);
+  std::string Flags;
+  if (IsCode)
+    Flags = IsWritable ? "xrw" : "xr";
+  else if (IsNoInit)
+    Flags = IsWritable ? "bw" : "br";
+  else
+    Flags = IsWritable ? "dw" : "dr";
+  std::string SectionSuffix;
+  raw_string_ostream SuffixOS(SectionSuffix);
+  if (AssociativeArea) {
+    if (AssociativeArea->ComdatSymbol.empty())
+      return sourceError("A2003: improper line syntax");
+    SuffixOS << ",associative,\"" << AssociativeArea->ComdatSymbol << '\"';
+  } else if (!Area->ComdatSymbol.empty()) {
+    SuffixOS << ",one_only,\"" << Area->ComdatSymbol << '\"';
+  }
+  SuffixOS.flush();
+  std::string AreaKey =
+      (Twine(Area->Name) + "{" + Area->ComdatSymbol + "}").str();
+  std::string AttributeSignature =
+      (Twine(IsCode) + "," + Twine(IsReadOnly) + "," + Twine(IsReadWrite) +
+       "," + Twine(IsNoInit) + "," + Twine(IsPData) + "," +
+       Twine(UsesCodeAlignment) + "," + Twine(Alignment) + "," +
+       SectionSuffix)
+          .str();
+  auto [AreaEntry, IsNewArea] = Areas.try_emplace(AreaKey);
+  AreaDefinition &Definition = AreaEntry->second;
+  if (IsNewArea) {
+    Definition = {
+        1ULL << Alignment,
+        UsesCodeAlignment,
+        IsCode,
+        IsNoInit,
+        Flags,
+        SectionSuffix,
+        AttributeSignature,
+        (Twine(".Larmasm64_area_") + Twine(AreaBaseSymbolCount++)).str()};
+  } else if (Definition.AttributeSignature != AttributeSignature) {
+    Warnings.report(CurrentFilename, CurrentLine, 4043,
+                    "redefinition of section flags ignored");
+  }
+  Flags = Definition.Flags;
+  SectionSuffix = Definition.SectionSuffix;
+  CurrentAreaIsCode = Definition.IsCode;
+  CurrentAreaIsNoInit = Definition.IsNoInit;
+  CurrentAreaName = Area->Name.str();
+  CurrentAreaAlignment = Definition.Alignment;
+  CurrentAreaUsesCodeAlignment = Definition.UsesCodeAlignment;
+  CurrentAreaBaseSymbol = Definition.BaseSymbol;
+  OS << ".section \"" << Area->Name << "\",\"" << Flags << "\""
+     << SectionSuffix;
+  ++NumericLabelScope;
+  NumericLabelRoutName.clear();
+  DefinedNumericLabels.clear();
+  if (IsNewArea)
+    OS << "; .p2align " << Alignment << "; " << CurrentAreaBaseSymbol << ':';
+  CurrentDebugCodeSection.reset();
+  if (Debug.Enabled && CurrentAreaIsCode) {
+    auto Existing = DebugCodeSectionIndices.find(AreaKey);
+    if (Existing == DebugCodeSectionIndices.end()) {
+      unsigned Index = DebugCodeSections.size();
+      unsigned FunctionId = Index;
+      std::string EndSymbol =
+          (Twine(".Larmasm64_debug_section_end_") + Twine(Index)).str();
+      DebugCodeSections.push_back({Area->Name.str(), Flags, SectionSuffix,
+                                   CurrentAreaBaseSymbol, std::move(EndSymbol),
+                                   FunctionId});
+      DebugCodeSectionIndices[AreaKey] = Index;
+      CurrentDebugCodeSection = Index;
+      OS << "; .cv_func_id " << FunctionId;
+    } else {
+      CurrentDebugCodeSection = Existing->second;
+    }
+  }
+  return Error::success();
 }
 
 Expected<std::unique_ptr<MemoryBuffer>>
@@ -4291,150 +4436,8 @@ ARMAsm64Translator::run(std::unique_ptr<MemoryBuffer> Input) {
         return SourceError("A2003: improper line syntax");
       Literals.emit();
     } else if (First.equals_insensitive("AREA")) {
-      Literals.emit();
-      SmallVector<StringRef, 8> Attributes;
-      splitOperands(Tail, Attributes);
-      if (Attributes.front().empty())
-        return SourceError("A2003: improper line syntax");
-      if (llvm::any_of(ArrayRef(Attributes).drop_front(),
-                       [](StringRef Attribute) { return Attribute.empty(); }))
-        return SourceError(
-            "A2146: illegal symbol ,; AREA attribute expected");
-      Expected<AreaName> Area = parseAreaName(Attributes.front());
-      if (!Area)
-        return SourceError(toString(Area.takeError()));
-      bool IsCode = false;
-      bool IsData = false;
-      bool IsReadOnly = false;
-      bool IsReadWrite = false;
-      bool IsNoInit = false;
-      bool IsPData = false;
-      bool UsesCodeAlignment = false;
-      unsigned Alignment = 3;
-      std::optional<AreaName> AssociativeArea;
-      for (StringRef Attribute : ArrayRef(Attributes).drop_front()) {
-        Attribute = Attribute.trim();
-        if (Attribute.equals_insensitive("CODE")) {
-          IsCode = true;
-        } else if (Attribute.equals_insensitive("DATA")) {
-          IsData = true;
-        } else if (Attribute.equals_insensitive("READWRITE")) {
-          IsReadWrite = true;
-        } else if (Attribute.equals_insensitive("READONLY")) {
-          IsReadOnly = true;
-        } else if (Attribute.equals_insensitive("NOINIT")) {
-          IsNoInit = true;
-        } else if (Attribute.equals_insensitive("PDATA")) {
-          IsPData = true;
-        } else if (Attribute.equals_insensitive("CODEALIGN")) {
-          UsesCodeAlignment = true;
-        } else if (Attribute.equals_insensitive("COMDEF") ||
-                   Attribute.equals_insensitive("COMMON")) {
-          Warnings.report(CurrentFilename, CurrentLine, 4039,
-                          Attribute + " attribute does not pertain to a "
-                                      "relocatable module; ignored");
-        } else if (Attribute.consume_front_insensitive("ALIGN=")) {
-          Expected<uint64_t> Value = evaluateAbsolute(Attribute);
-          if (!Value)
-            return SourceError(toString(Value.takeError()));
-          if (*Value > 31)
-            return SourceError("A2209: Immediate value " + Attribute +
-                               " out of range");
-          Alignment = *Value;
-        } else if (Attribute.consume_front_insensitive("ASSOC=")) {
-          Expected<AreaName> Associated = parseAreaName(Attribute);
-          if (!Associated)
-            return SourceError(toString(Associated.takeError()));
-          AssociativeArea = *Associated;
-        } else {
-          return SourceError("A2041: unknown section flag: " + Attribute);
-        }
-      }
-
-      if ((IsCode && (IsData || IsNoInit)) || (IsReadOnly && IsReadWrite))
-        Warnings.report(
-            CurrentFilename, CurrentLine, 4172,
-            "illegal combination of section flags: section flags can not be "
-            "inferred, code and data/uninitialized, readonly/readwrite");
-
-      bool IsWritable =
-          IsReadWrite || (!IsReadOnly && !IsCode && !IsPData);
-      std::string Flags = IsCode     ? (IsWritable ? "xrw" : "xr")
-                          : IsNoInit ? (IsWritable ? "bw" : "br")
-                          : IsWritable ? "dw"
-                                       : "dr";
-      std::string SectionSuffix;
-      raw_string_ostream SuffixOS(SectionSuffix);
-      if (AssociativeArea) {
-        if (AssociativeArea->ComdatSymbol.empty())
-          return SourceError("A2003: improper line syntax");
-        SuffixOS << ",associative,\"" << AssociativeArea->ComdatSymbol << '\"';
-      } else if (!Area->ComdatSymbol.empty()) {
-        SuffixOS << ",one_only,\"" << Area->ComdatSymbol << '\"';
-      }
-      SuffixOS.flush();
-      std::string AreaKey =
-          (Twine(Area->Name) + "{" + Area->ComdatSymbol + "}").str();
-      std::string AttributeSignature =
-          (Twine(IsCode) + "," + Twine(IsReadOnly) + "," +
-           Twine(IsReadWrite) + "," + Twine(IsNoInit) + "," +
-           Twine(IsPData) + "," + Twine(UsesCodeAlignment) + "," +
-           Twine(Alignment) + "," + SectionSuffix)
-              .str();
-      auto [AreaEntry, IsNewArea] = Areas.try_emplace(AreaKey);
-      AreaDefinition &Definition = AreaEntry->second;
-      if (IsNewArea) {
-        Definition = {
-            1ULL << Alignment,
-            UsesCodeAlignment,
-            IsCode,
-            IsNoInit,
-            Flags,
-            SectionSuffix,
-            AttributeSignature,
-            (Twine(".Larmasm64_area_") + Twine(AreaBaseSymbolCount++)).str()};
-      } else {
-        if (Definition.AttributeSignature != AttributeSignature)
-          Warnings.report(CurrentFilename, CurrentLine, 4043,
-                          "redefinition of section flags ignored");
-      }
-      IsCode = Definition.IsCode;
-      IsNoInit = Definition.IsNoInit;
-      Flags = Definition.Flags;
-      SectionSuffix = Definition.SectionSuffix;
-      CurrentAreaIsCode = Definition.IsCode;
-      CurrentAreaIsNoInit = Definition.IsNoInit;
-      CurrentAreaName = Area->Name.str();
-      CurrentAreaAlignment = Definition.Alignment;
-      CurrentAreaUsesCodeAlignment = Definition.UsesCodeAlignment;
-      CurrentAreaBaseSymbol = Definition.BaseSymbol;
-      OS << ".section \"" << Area->Name << "\",\"" << Flags << "\""
-         << SectionSuffix;
-      ++NumericLabelScope;
-      NumericLabelRoutName.clear();
-      DefinedNumericLabels.clear();
-      if (IsNewArea)
-        OS << "; .p2align " << Alignment;
-      if (IsNewArea)
-        OS << "; " << CurrentAreaBaseSymbol << ':';
-      CurrentDebugCodeSection.reset();
-      if (Debug.Enabled && IsCode) {
-        auto Existing = DebugCodeSectionIndices.find(AreaKey);
-        if (Existing == DebugCodeSectionIndices.end()) {
-          unsigned Index = DebugCodeSections.size();
-          unsigned FunctionId = Index;
-          std::string EndSymbol =
-              (Twine(".Larmasm64_debug_section_end_") + Twine(Index)).str();
-          DebugCodeSections.push_back({Area->Name.str(), Flags, SectionSuffix,
-                                       CurrentAreaBaseSymbol,
-                                       std::move(EndSymbol), FunctionId});
-          DebugCodeSectionIndices[AreaKey] = Index;
-          CurrentDebugCodeSection = Index;
-          OS << "; .cv_func_id " << FunctionId;
-        } else {
-          CurrentDebugCodeSection = Existing->second;
-        }
-      }
+      if (Error Err = handleArea(Tail))
+        return std::move(Err);
     } else if (isEquDirective(Second)) {
       StringRef Name = unquoteIdentifier(First);
       if (ConflictsWithObjectDefinition(Name))
