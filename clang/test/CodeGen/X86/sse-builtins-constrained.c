@@ -35,3 +35,21 @@ __m128 test_sqrt_ss(__m128 x) {
   // COMMONIR: insertelement <4 x float> {{.*}}, float {{.*}}, i32 0
   return _mm_sqrt_ss(x);
 }
+
+__m128 test_builtin_sqrtps(__m128 x) {
+  // COMMON-LABEL: test_builtin_sqrtps
+  // UNCONSTRAINED: call {{.*}}<4 x float> @llvm.sqrt.v4f32(<4 x float> {{.*}})
+  // CONSTRAINED: call {{.*}}<4 x float> @llvm.experimental.constrained.sqrt.v4f32(<4 x float> {{.*}}, metadata !{{.*}})
+  // CHECK-ASM: sqrtps
+  return __builtin_ia32_sqrtps(x);
+}
+
+__m128 test_builtin_sqrtss(__m128 x) {
+  // COMMON-LABEL: test_builtin_sqrtss
+  // COMMONIR: extractelement <4 x float> {{.*}}, i32 0
+  // UNCONSTRAINED: call float @llvm.sqrt.f32(float {{.*}})
+  // CONSTRAINED: call float @llvm.experimental.constrained.sqrt.f32(float {{.*}}, metadata !{{.*}})
+  // CHECK-ASM: sqrtss
+  // COMMONIR: insertelement <4 x float> {{.*}}, float {{.*}}, i32 0
+  return __builtin_ia32_sqrtss(x);
+}
