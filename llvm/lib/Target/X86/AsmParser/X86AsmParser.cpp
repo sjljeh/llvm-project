@@ -2931,7 +2931,8 @@ bool X86AsmParser::parseIntelOperand(OperandVector &Operands, StringRef Name) {
 
   if (Parser.isParsingMasm()) {
     if (is64BitMode() &&
-        ((PtrInOperand && !IndexReg) || SM.getElementSize() > 0)) {
+        ((PtrInOperand && !IndexReg && SM.getSym()) ||
+         SM.getElementSize() > 0)) {
       DefaultBaseReg = X86::RIP;
     }
     if (IsUnconditionalBranch) {
