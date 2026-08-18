@@ -15,6 +15,27 @@
 # RUN:   /section:.foo,s %t.obj
 # RUN: llvm-readobj --sections %t.exe | FileCheck -check-prefix=S %s
 
+# RUN: lld-link /out:%t.exe /entry:main /subsystem:console /force \
+# RUN:   /section:.foo,d %t.obj
+# RUN: llvm-readobj --sections %t.exe | FileCheck -check-prefix=D %s
+
+# RUN: lld-link /out:%t.exe /entry:main /subsystem:console /force \
+# RUN:   /section:.foo,kp %t.obj
+# RUN: llvm-readobj --sections %t.exe | FileCheck -check-prefix=KP %s
+
+# RUN: lld-link /out:%t.exe /entry:main /subsystem:console /force \
+# RUN:   /section:.foo,!k!p %t.obj
+# RUN: llvm-readobj --sections %t.exe | FileCheck -check-prefix=NOT-KP %s
+
+# RUN: lld-link /out:%t.exe /entry:main /subsystem:console /force \
+# RUN:   /section:.foo,!s %t.obj
+# RUN: llvm-readobj --sections %t.exe | FileCheck -check-prefix=NOT-S %s
+
+# RUN: not lld-link /out:%t.exe /entry:main /subsystem:console /force \
+# RUN:   /section:.foo,!!r %t.obj 2>&1 | FileCheck -check-prefix=INVALID %s
+# RUN: not lld-link /out:%t.exe /entry:main /subsystem:console /force \
+# RUN:   /section:.foo,r! %t.obj 2>&1 | FileCheck -check-prefix=INVALID %s
+
 # R:      Characteristics [
 # R-NEXT:   IMAGE_SCN_CNT_INITIALIZED_DATA
 # R-NEXT:   IMAGE_SCN_MEM_READ
@@ -33,7 +54,38 @@
 # S:      Characteristics [
 # S-NEXT:   IMAGE_SCN_CNT_INITIALIZED_DATA
 # S-NEXT:   IMAGE_SCN_MEM_SHARED
+# S-NEXT:   IMAGE_SCN_MEM_READ
+# S-NEXT:   IMAGE_SCN_MEM_WRITE
 # S-NEXT: ]
+
+# D:      Characteristics [
+# D-NEXT:   IMAGE_SCN_CNT_INITIALIZED_DATA
+# D-NEXT:   IMAGE_SCN_MEM_DISCARDABLE
+# D-NEXT:   IMAGE_SCN_MEM_READ
+# D-NEXT:   IMAGE_SCN_MEM_WRITE
+# D-NEXT: ]
+
+# KP:      Characteristics [
+# KP-NEXT:   IMAGE_SCN_CNT_INITIALIZED_DATA
+# KP-NEXT:   IMAGE_SCN_MEM_READ
+# KP-NEXT:   IMAGE_SCN_MEM_WRITE
+# KP-NEXT: ]
+
+# NOT-KP:      Characteristics [
+# NOT-KP-NEXT:   IMAGE_SCN_CNT_INITIALIZED_DATA
+# NOT-KP-NEXT:   IMAGE_SCN_MEM_NOT_CACHED
+# NOT-KP-NEXT:   IMAGE_SCN_MEM_NOT_PAGED
+# NOT-KP-NEXT:   IMAGE_SCN_MEM_READ
+# NOT-KP-NEXT:   IMAGE_SCN_MEM_WRITE
+# NOT-KP-NEXT: ]
+
+# NOT-S:      Characteristics [
+# NOT-S-NEXT:   IMAGE_SCN_CNT_INITIALIZED_DATA
+# NOT-S-NEXT:   IMAGE_SCN_MEM_READ
+# NOT-S-NEXT:   IMAGE_SCN_MEM_WRITE
+# NOT-S-NEXT: ]
+
+# INVALID: /section: invalid argument:
 
 --- !COFF
 header:
@@ -41,7 +93,7 @@ header:
   Characteristics: []
 sections:
   - Name:            .foo
-    Characteristics: [ IMAGE_SCN_CNT_INITIALIZED_DATA, IMAGE_SCN_MEM_READ, IMAGE_SCN_MEM_WRITE ]
+    Characteristics: [ IMAGE_SCN_CNT_INITIALIZED_DATA, IMAGE_SCN_MEM_DISCARDABLE, IMAGE_SCN_MEM_NOT_CACHED, IMAGE_SCN_MEM_NOT_PAGED, IMAGE_SCN_MEM_SHARED, IMAGE_SCN_MEM_READ, IMAGE_SCN_MEM_WRITE ]
     Alignment:       4
     SectionData:     000000000000
 symbols:
