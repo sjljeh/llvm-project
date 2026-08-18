@@ -367,6 +367,7 @@ private:
                                .Case("int32_t", "Zi")
                                .Case("int64_t", "Wi")
                                .Case("jmp_buf", "J")
+                               .Case("lptrint_t", "Qp")
                                .Case("msint32_t", "Ni")
                                .Case("msuint32_t", "UNi")
                                .Case("objc_super", "M")
