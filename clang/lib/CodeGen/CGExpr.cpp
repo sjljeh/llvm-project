@@ -6547,6 +6547,19 @@ static bool OnlyHasInlineBuiltinDeclaration(const FunctionDecl *FD) {
   return true;
 }
 
+static bool IsDisabledByMSFunctionPragma(const CodeGenFunction &CGF,
+                                         StringRef BuiltinName) {
+  const auto *Caller = dyn_cast_or_null<FunctionDecl>(CGF.CurFuncDecl);
+  if (!Caller)
+    return false;
+
+  for (const NoBuiltinAttr *A : Caller->specific_attrs<NoBuiltinAttr>())
+    if (A->isImplicit() &&
+        llvm::is_contained(A->builtinNames(), BuiltinName))
+      return true;
+  return false;
+}
+
 static CGCallee EmitDirectCallee(CodeGenFunction &CGF, GlobalDecl GD) {
   const FunctionDecl *FD = cast<FunctionDecl>(GD.getDecl());
 
@@ -6562,6 +6575,8 @@ static CGCallee EmitDirectCallee(CodeGenFunction &CGF, GlobalDecl GD) {
     bool HasAttributeNoBuiltin =
         CGF.CurFn->getAttributes().hasFnAttr(NoBuiltinFD) ||
         CGF.CurFn->getAttributes().hasFnAttr(NoBuiltins);
+    bool IsMSFunctionCall =
+        IsDisabledByMSFunctionPragma(CGF, FD->getName());
 
     // When directing calling an inline builtin, call it through it's mangled
     // name to make it clear it's not the actual builtin.
@@ -6583,10 +6598,11 @@ static CGCallee EmitDirectCallee(CodeGenFunction &CGF, GlobalDecl GD) {
     // Replaceable builtins provide their own implementation of a builtin. If we
     // are in an inline builtin implementation, avoid trivial infinite
     // recursion. Honor __attribute__((no_builtin("foo"))) or
-    // __attribute__((no_builtin)) on the current function unless foo is
-    // not a predefined library function which means we must generate the
-    // builtin no matter what.
-    else if (!IsPredefinedLibFunction || !HasAttributeNoBuiltin)
+    // __attribute__((no_builtin)) for predefined library functions. Target
+    // builtins normally must be generated, except when #pragma function
+    // explicitly requires an external call.
+    else if ((!IsPredefinedLibFunction || !HasAttributeNoBuiltin) &&
+             !IsMSFunctionCall)
       return CGCallee::forBuiltin(builtinID, FD);
   }
 
