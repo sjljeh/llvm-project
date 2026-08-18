@@ -1,10 +1,30 @@
 // RUN: %clang_cc1 -triple i686-pc-windows-msvc -ffreestanding \
 // RUN:   -fms-extensions -fms-compatibility -fsyntax-only -verify %s
+// RUN: %clang_cc1 -triple i686-pc-windows-msvc -ffreestanding \
+// RUN:   -fms-extensions -fms-compatibility \
+// RUN:   -fdefault-calling-conv=stdcall -fsyntax-only -verify %s
+// RUN: %clang_cc1 -x c++ -triple i686-pc-windows-msvc -ffreestanding \
+// RUN:   -fms-extensions -fms-compatibility \
+// RUN:   -fdefault-calling-conv=stdcall -fsyntax-only -verify %s
 // RUN: %clang_cc1 -triple x86_64-pc-windows-msvc -ffreestanding \
 // RUN:   -fms-extensions -fms-compatibility -fsyntax-only -verify %s
 
 typedef __SIZE_TYPE__ size_t;
 #include <intrin.h>
+
+#ifdef __cplusplus
+using HaltType = void (__cdecl *)(void);
+#ifdef __x86_64__
+using ReadEFlagsType = unsigned long long (__cdecl *)(void);
+#else
+using ReadEFlagsType = unsigned int (__cdecl *)(void);
+#endif
+using MovsbType = void (__cdecl *)(unsigned char *, unsigned char const *,
+                                   size_t);
+static_assert(__is_same(decltype(&__halt), HaltType), "");
+static_assert(__is_same(decltype(&__readeflags), ReadEFlagsType), "");
+static_assert(__is_same(decltype(&__movsb), MovsbType), "");
+#endif
 
 void test_control_register_type(void) { (void)__readcr0(); }
 

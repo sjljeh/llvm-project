@@ -268,6 +268,17 @@ __popcntq(unsigned long long __A)
 #endif /* __x86_64__ */
 
 #ifdef __x86_64__
+#if defined(_MSC_VER) && __has_builtin(__readeflags) &&                         \
+    __has_builtin(__writeeflags)
+#ifdef __cplusplus
+extern "C" {
+#endif
+unsigned long long __cdecl __readeflags(void);
+void __cdecl __writeeflags(unsigned long long __f);
+#ifdef __cplusplus
+}
+#endif
+#else
 /// Returns the program status-and-control \c RFLAGS register with the \c VM
 ///    and \c RF flags cleared.
 ///
@@ -296,8 +307,20 @@ __writeeflags(unsigned long long __f)
 {
   __builtin_ia32_writeeflags_u64(__f);
 }
+#endif
 
 #else /* !__x86_64__ */
+#if defined(_MSC_VER) && __has_builtin(__readeflags) &&                         \
+    __has_builtin(__writeeflags)
+#ifdef __cplusplus
+extern "C" {
+#endif
+unsigned int __cdecl __readeflags(void);
+void __cdecl __writeeflags(unsigned int __f);
+#ifdef __cplusplus
+}
+#endif
+#else
 /// Returns the program status-and-control \c EFLAGS register with the \c VM
 ///    and \c RF flags cleared.
 ///
@@ -326,6 +349,7 @@ __writeeflags(unsigned int __f)
 {
   __builtin_ia32_writeeflags_u32(__f);
 }
+#endif
 #endif /* !__x86_64__ */
 
 /// Casts a 32-bit float value to a 32-bit unsigned integer value.
