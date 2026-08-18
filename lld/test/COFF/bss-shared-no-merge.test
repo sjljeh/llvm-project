@@ -5,19 +5,36 @@
 
 # RUN: yaml2obj %s -o %t.obj
 
-## .bss should NOT be merged when .data is shared.
-# RUN: lld-link /out:%t.dll /dll /entry:DllMain /section:.data,rws %t.obj
-# RUN: llvm-readobj --sections %t.dll | FileCheck -check-prefix=SHARED %s
+## Follow the merge chain and keep .bss separate from its shared destination.
+# RUN: lld-link /out:%t.dll /dll /entry:DllMain \
+# RUN:   /merge:.data=.shared %t.obj
+# RUN: llvm-readobj --sections %t.dll | FileCheck -check-prefix=SHARED-CHAIN %s
 
-# SHARED: Name: .bss
-# SHARED: Name: .data
+# SHARED-CHAIN: Name: .bss
+# SHARED-CHAIN: Name: .shared
 
-## .bss should still be merged when .data is not shared (default behavior).
-# RUN: lld-link /out:%t2.dll /dll /entry:DllMain %t.obj
-# RUN: llvm-readobj --sections %t2.dll | FileCheck -check-prefix=NOSHARED %s
+## Explicitly retaining the shared attribute also keeps .bss separate.
+# RUN: lld-link /out:%t2.dll /dll /entry:DllMain /section:.data,rws %t.obj
+# RUN: llvm-readobj --sections %t2.dll | FileCheck -check-prefix=SHARED-OPTION %s
 
-# NOSHARED-NOT: Name: .bss
-# NOSHARED:     Name: .data
+# SHARED-OPTION: Name: .bss
+# SHARED-OPTION: Name: .data
+
+## Omitting or negating the shared attribute permits the merge.
+# RUN: lld-link /out:%t3.dll /dll /entry:DllMain /section:.data,rw %t.obj
+# RUN: llvm-readobj --sections %t3.dll | FileCheck -check-prefix=OMITTED-S %s
+# RUN: lld-link /out:%t4.dll /dll /entry:DllMain /section:.data,rw!s %t.obj
+# RUN: llvm-readobj --sections %t4.dll | FileCheck -check-prefix=NEGATED-S %s
+# RUN: lld-link /out:%t5.dll /dll /entry:DllMain /merge:.data=.shared \
+# RUN:   /section:.shared,rw %t.obj
+# RUN: llvm-readobj --sections %t5.dll | FileCheck -check-prefix=CHAIN-CLEARED %s
+
+# OMITTED-S-NOT: Name: .bss
+# OMITTED-S:     Name: .data
+# NEGATED-S-NOT: Name: .bss
+# NEGATED-S:     Name: .data
+# CHAIN-CLEARED-NOT: Name: .bss
+# CHAIN-CLEARED:     Name: .shared
 
 --- !COFF
 header:
@@ -33,6 +50,11 @@ sections:
     Characteristics: [ IMAGE_SCN_CNT_INITIALIZED_DATA, IMAGE_SCN_MEM_READ, IMAGE_SCN_MEM_WRITE ]
     Alignment:       4
     SectionData:     '01000000'
+    SizeOfRawData:   4
+  - Name:            .shared
+    Characteristics: [ IMAGE_SCN_CNT_INITIALIZED_DATA, IMAGE_SCN_MEM_SHARED, IMAGE_SCN_MEM_READ, IMAGE_SCN_MEM_WRITE ]
+    Alignment:       4
+    SectionData:     '02000000'
     SizeOfRawData:   4
   - Name:            .bss
     Characteristics: [ IMAGE_SCN_CNT_UNINITIALIZED_DATA, IMAGE_SCN_MEM_READ, IMAGE_SCN_MEM_WRITE ]
