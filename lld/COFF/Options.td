@@ -373,6 +373,7 @@ def summary : F<"summary">;
 // The flags below do nothing. They are defined only for link.exe compatibility.
 //==============================================================================
 
+def d2_fh4 : F<"d2:-FH4-">;
 def ignoreidl : F<"ignoreidl">;
 def ltcg : F<"ltcg">;
 def assemblydebug : F<"assemblydebug">;
