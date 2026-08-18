@@ -2097,7 +2097,8 @@ bool X86AsmParser::ParseIntelExpression(IntelExprStateMachine &SM, SMLoc &End) {
       UpdateLocLex = false;
       if (Parser.isParsingMasm()) {
         size_t DotOffset = Identifier.find_first_of('.');
-        if (DotOffset != StringRef::npos) {
+        if (DotOffset != StringRef::npos &&
+            !(Parser.isMasmDotName() && DotOffset == 0)) {
           consumeToken();
           StringRef LHS = Identifier.slice(0, DotOffset);
           StringRef Dot = Identifier.substr(DotOffset, 1);

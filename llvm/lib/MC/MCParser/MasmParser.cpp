@@ -407,6 +407,21 @@ private:
     std::string TextValue;
   };
   StringMap<Variable> Variables;
+  StringMap<bool> PublicSymbols;
+
+  StringMap<uint64_t> RecordFieldMasks;
+  StringMap<unsigned> RecordWidths;
+
+  struct ProcedureSymbol {
+    std::string Name;
+    MCSymbol *Symbol;
+  };
+  struct ProcedureContext {
+    StringMap<ProcedureSymbol> Symbols;
+  };
+  SmallVector<ProcedureContext, 1> ProcedureContexts;
+
+  MCSymbol *getProcedureSymbol(StringRef Name, bool IsDefinition);
 
   /// Stack of active struct definitions.
   SmallVector<StructInfo, 1> StructInProgress;
@@ -521,6 +536,12 @@ public:
   }
 
   void setMasmDotName(bool Value) override { DotName = Value; }
+
+  bool isMasmDotName() const override { return DotName; }
+
+  void enterMasmProcedure() override { ProcedureContexts.emplace_back(); }
+
+  void exitMasmProcedure() override;
 
   bool defineMacro(StringRef Name, StringRef Value) override;
 
@@ -737,6 +758,7 @@ private:
     DK_ECHO,
     DK_STRUCT,
     DK_UNION,
+    DK_RECORD,
     DK_ENDS,
     DK_END,
     DK_PUSHFRAME,
@@ -898,6 +920,7 @@ private:
 
   bool parseDirectiveStruct(StringRef Directive, DirectiveKind DirKind,
                             StringRef Name, SMLoc NameLoc);
+  bool parseDirectiveRecord(StringRef Name, SMLoc NameLoc);
   bool parseDirectiveNestedStruct(StringRef Directive, DirectiveKind DirKind);
   bool parseDirectiveEnds(StringRef Name, SMLoc NameLoc);
   bool parseDirectiveNestedEnds();
@@ -1032,6 +1055,44 @@ MasmParser::~MasmParser() {
   SrcMgr.setDiagHandler(SavedDiagHandler, SavedDiagContext);
 }
 
+MCSymbol *MasmParser::getProcedureSymbol(StringRef Name, bool IsDefinition) {
+  if (ProcedureContexts.empty())
+    return getContext().parseSymbol(Name);
+
+  ProcedureContext &Procedure = ProcedureContexts.back();
+  std::string Key = identifierKey(Name);
+  auto Local = Procedure.Symbols.find(Key);
+  if (Local != Procedure.Symbols.end())
+    return Local->getValue().Symbol;
+
+  if (!IsDefinition) {
+    if (MCSymbol *Global = getContext().lookupSymbol(Name)) {
+      auto *COFFGlobal = static_cast<MCSymbolCOFF *>(Global);
+      if (Global->isDefined() || Global->isVariable() ||
+          COFFGlobal->isExternal())
+        return Global;
+    }
+  }
+
+  MCSymbol *Symbol = getContext().createLocalSymbol(Name);
+  Procedure.Symbols.try_emplace(Key, ProcedureSymbol{Name.str(), Symbol});
+  return Symbol;
+}
+
+void MasmParser::exitMasmProcedure() {
+  assert(!ProcedureContexts.empty() && "exiting procedure outside PROC block");
+  for (auto &Entry : ProcedureContexts.back().Symbols) {
+    ProcedureSymbol &Local = Entry.getValue();
+    if (!Local.Symbol->isUndefined())
+      continue;
+
+    MCSymbol *Global = getContext().parseSymbol(Local.Name);
+    Local.Symbol->setVariableValue(
+        MCSymbolRefExpr::create(Global, getContext()));
+  }
+  ProcedureContexts.pop_back();
+}
+
 void MasmParser::printMacroInstantiations() {
   // Print the active macro instantiation stack.
   for (std::vector<MacroInstantiation *>::const_reverse_iterator
@@ -1138,6 +1199,12 @@ bool MasmParser::expandMacros() {
 
   if (!ExpandedValue)
     return true;
+  if (EndStatementAtEOFStack.size() - EndStatementAtEOFStack.count() >=
+      AsmMacroMaxNestingDepth) {
+    Error(Tok.getLoc(), "text macro expansion of '" + Tok.getIdentifier() +
+                            "' exceeds the maximum nesting depth");
+    return true;
+  }
   std::unique_ptr<MemoryBuffer> Instantiation =
       MemoryBuffer::getMemBufferCopy(*ExpandedValue, "<instantiation>");
 
@@ -1154,7 +1221,6 @@ bool MasmParser::expandMacros() {
 const AsmToken &MasmParser::Lex(ExpandKind ExpandNextToken) {
   if (Lexer.getTok().is(AsmToken::Error))
     Error(Lexer.getErrLoc(), Lexer.getErr());
-  bool StartOfStatement = false;
 
   // if it's a end of statement with a comment in it
   if (getTok().is(AsmToken::EndOfStatement)) {
@@ -1162,23 +1228,20 @@ const AsmToken &MasmParser::Lex(ExpandKind ExpandNextToken) {
     if (!getTok().getString().empty() && getTok().getString().front() != '\n' &&
         getTok().getString().front() != '\r' && MAI.preserveAsmComments())
       Out.addExplicitComment(Twine(getTok().getString()));
-    StartOfStatement = true;
   }
 
   const AsmToken *tok = &Lexer.Lex();
 
   while (ExpandNextToken == ExpandMacros && tok->is(AsmToken::Identifier)) {
-    if (StartOfStatement) {
-      AsmToken NextTok;
-      MutableArrayRef<AsmToken> Buf(NextTok);
-      size_t ReadCount = Lexer.peekTokens(Buf);
-      if (ReadCount && NextTok.is(AsmToken::Identifier) &&
-          (NextTok.getString().equals_insensitive("equ") ||
-           NextTok.getString().equals_insensitive("textequ"))) {
-        // This looks like an EQU or TEXTEQU directive; don't expand the
-        // identifier, allowing for redefinitions.
-        break;
-      }
+    AsmToken NextTok;
+    MutableArrayRef<AsmToken> Buf(NextTok);
+    size_t ReadCount = Lexer.peekTokens(Buf);
+    if (ReadCount && NextTok.is(AsmToken::Identifier) &&
+        (NextTok.getString().equals_insensitive("equ") ||
+         NextTok.getString().equals_insensitive("textequ"))) {
+      // This looks like an EQU or TEXTEQU directive; don't expand the
+      // identifier, allowing for redefinitions.
+      break;
     }
     if (expandMacros())
       break;
@@ -1270,7 +1333,9 @@ bool MasmParser::Run(bool NoInitialTextSection, bool NoFinalize) {
     printPendingErrors();
 
     // Skipping to the next line if needed.
-    if (HasError && !getLexer().justConsumedEOL())
+    if (HasError &&
+        (!getLexer().justConsumedEOL() ||
+         (!EndStatementAtEOFStack.empty() && !EndStatementAtEOFStack.back())))
       eatToEndOfStatement();
   }
 
@@ -1470,6 +1535,25 @@ bool MasmParser::parsePrimaryExpr(const MCExpr *&Res, SMLoc &EndLoc,
       }
       return Error(FirstTokenLoc, "cannot apply 'imagerel' to this expression");
     }
+    if (Identifier.equals_insensitive("mask")) {
+      SMLoc FieldLoc = getTok().getLoc();
+      StringRef Field;
+      if (parseIdentifier(Field))
+        return Error(FieldLoc, "expected record field after MASK");
+      auto Mask = RecordFieldMasks.find(identifierKey(Field));
+      if (Mask == RecordFieldMasks.end())
+        return Error(FieldLoc, "expected record field after MASK");
+      Res = MCConstantExpr::create(Mask->getValue(), getContext());
+      EndLoc = SMLoc::getFromPointer(Field.end());
+      return false;
+    }
+    if (Identifier == "$") {
+      MCSymbol *Sym = getContext().createTempSymbol();
+      getStreamer().emitLabel(Sym);
+      Res = MCSymbolRefExpr::create(Sym, getContext(), FirstTokenLoc);
+      EndLoc = FirstTokenLoc;
+      return false;
+    }
     // Parse directional local label references.
     if (Identifier.equals_insensitive("@b") ||
         Identifier.equals_insensitive("@f")) {
@@ -1491,7 +1575,7 @@ bool MasmParser::parsePrimaryExpr(const MCExpr *&Res, SMLoc &EndLoc,
     // Find the field offset if used.
     AsmFieldInfo Info;
     auto Split = SymbolName.split('.');
-    if (Split.second.empty()) {
+    if (Split.second.empty() || (DotName && SymbolName.starts_with("."))) {
     } else {
       SymbolName = Split.first;
       if (lookUpField(SymbolName, Split.second, Info)) {
@@ -1525,7 +1609,10 @@ bool MasmParser::parsePrimaryExpr(const MCExpr *&Res, SMLoc &EndLoc,
       auto VarIt = Variables.find(identifierKey(SymbolName));
       if (VarIt != Variables.end())
         SymbolName = VarIt->second.Name;
-      Sym = getContext().parseSymbol(SymbolName);
+      if (VarIt != Variables.end())
+        Sym = getContext().parseSymbol(SymbolName);
+      else
+        Sym = getProcedureSymbol(SymbolName, /*IsDefinition=*/false);
     }
 
     // If this is an absolute variable reference, substitute it now to preserve
@@ -1874,7 +1961,11 @@ bool MasmParser::parseStatement(ParseStatementInfo &Info,
 
   // If preceded by an expansion operator, first expand all text macros and
   // macro functions.
+  unsigned ExpansionDepth = 0;
   while (getTok().is(AsmToken::Percent)) {
+    if (ExpansionDepth++ == AsmMacroMaxNestingDepth)
+      return Error(getTok().getLoc(),
+                   "statement expansion exceeds the maximum nesting depth");
     SMLoc ExpansionLoc = getTok().getLoc();
     if (parseToken(AsmToken::Percent) || expandStatement(ExpansionLoc))
       return true;
@@ -1979,13 +2070,19 @@ bool MasmParser::parseStatement(ParseStatementInfo &Info,
 
   // Check for a label.
   //   ::= identifier ':'
+  //   ::= identifier '::'
   //   ::= number ':'
   if (Lexer.is(AsmToken::Colon) && getTargetParser().isLabel(ID)) {
     if (checkForValidSection())
       return true;
 
-    // identifier ':'   -> Label.
+    bool IsGlobal = peekTok(false).is(AsmToken::Colon);
+
+    // identifier ':'   -> procedure-local label.
+    // identifier '::'  -> global label.
     Lex();
+    if (IsGlobal)
+      Lex();
 
     // Diagnose attempt to use '.' as a label.
     if (IDVal == ".")
@@ -2010,7 +2107,8 @@ bool MasmParser::parseStatement(ParseStatementInfo &Info,
     if (IDVal == "@@") {
       Sym = Ctx.createDirectionalLocalSymbol(0);
     } else {
-      Sym = getContext().parseSymbol(IDVal);
+      Sym = IsGlobal ? getContext().parseSymbol(IDVal)
+                     : getProcedureSymbol(IDVal, /*IsDefinition=*/true);
     }
 
     // End of Labels should be treated as end of line for lexing
@@ -2325,6 +2423,9 @@ bool MasmParser::parseStatement(ParseStatementInfo &Info,
   case DK_UNION:
     Lex();
     return parseDirectiveStruct(nextVal, DirKind, IDVal, IDLoc);
+  case DK_RECORD:
+    Lex();
+    return parseDirectiveRecord(IDVal, IDLoc);
   case DK_ENDS:
     Lex();
     return parseDirectiveEnds(IDVal, IDLoc);
@@ -2588,7 +2689,14 @@ bool MasmParser::expandMacro(raw_svector_ostream &OS, StringRef Body,
         OS << Argument;
       Pos = I;
     } else {
+      StringRef PreviousToken;
       for (const AsmToken &Token : A[Index]) {
+        StringRef TokenText = Token.getString();
+        if (!PreviousToken.empty() && !TokenText.empty() &&
+            isMacroParameterChar(PreviousToken.back()) &&
+            isMacroParameterChar(TokenText.front()))
+          OS << ' ';
+
         // In MASM, you can write '%expr'.
         // The prefix '%' evaluates the expression 'expr'
         // and uses the result as a string (e.g. replace %(1+2) with the
@@ -2596,11 +2704,12 @@ bool MasmParser::expandMacro(raw_svector_ostream &OS, StringRef Body,
         // Here, we identify the integer token which is the result of the
         // absolute expression evaluation and replace it with its string
         // representation.
-        if (Token.getString().front() == '%' && Token.is(AsmToken::Integer))
+        if (TokenText.front() == '%' && Token.is(AsmToken::Integer))
           // Emit an integer value to the buffer.
           OS << Token.getIntVal();
         else
-          OS << Token.getString();
+          OS << TokenText;
+        PreviousToken = TokenText;
       }
 
       Pos += Argument.size();
@@ -2888,7 +2997,9 @@ bool MasmParser::handleMacroInvocation(const MCAsmMacro *M, SMLoc NameLoc) {
     printPendingErrors();
 
     // Skipping to the next line if needed.
-    if (HasError && !getLexer().justConsumedEOL())
+    if (HasError &&
+        (!getLexer().justConsumedEOL() ||
+         (!EndStatementAtEOFStack.empty() && !EndStatementAtEOFStack.back())))
       eatToEndOfStatement();
   }
 
@@ -3012,14 +3123,10 @@ bool MasmParser::parseDirectiveEquate(StringRef IDVal, StringRef Name,
   StringRef ExprAsString = StringRef(
       StartLoc.getPointer(), EndLoc.getPointer() - StartLoc.getPointer());
 
-  int64_t Value;
-  if (!Expr->evaluateAsAbsolute(Value, getStreamer().getAssemblerPtr())) {
-    if (DirKind == DK_ASSIGN)
-      return Error(
-          StartLoc,
-          "expected absolute expression; not all symbols have known values",
-          {StartLoc, EndLoc});
-
+  int64_t Value = 0;
+  bool IsAbsolute =
+      Expr->evaluateAsAbsolute(Value, getStreamer().getAssemblerPtr());
+  if (!IsAbsolute && DirKind != DK_ASSIGN) {
     // Not an absolute expression; define as a text replacement.
     return setTextVariable(Var, Name, ExprAsString, NameLoc,
                            Variable::REDEFINABLE);
@@ -3030,7 +3137,8 @@ bool MasmParser::parseDirectiveEquate(StringRef IDVal, StringRef Name,
       Sym->isVariable()
           ? dyn_cast_or_null<MCConstantExpr>(Sym->getVariableValue())
           : nullptr;
-  if (Var.IsText || !PrevValue || PrevValue->getValue() != Value) {
+  if (Var.IsText || !PrevValue || !IsAbsolute ||
+      PrevValue->getValue() != Value) {
     switch (Var.Redefinable) {
     case Variable::NOT_REDEFINABLE:
       return Error(getTok().getLoc(), "invalid variable redefinition");
@@ -3051,7 +3159,7 @@ bool MasmParser::parseDirectiveEquate(StringRef IDVal, StringRef Name,
 
   Sym->setRedefinable(Var.Redefinable != Variable::NOT_REDEFINABLE);
   Sym->setVariableValue(Expr);
-  Sym->setExternal(false);
+  Sym->setExternal(PublicSymbols.contains(identifierKey(Var.Name)));
 
   return false;
 }
@@ -3372,7 +3480,7 @@ bool MasmParser::parseDirectiveNamedValue(StringRef TypeName, unsigned Size,
                                           StringRef Name, SMLoc NameLoc) {
   if (StructInProgress.empty()) {
     // Initialize named data value.
-    MCSymbol *Sym = getContext().parseSymbol(Name);
+    MCSymbol *Sym = getProcedureSymbol(Name, /*IsDefinition=*/true);
     getStreamer().emitLabel(Sym);
     unsigned Count;
     if (emitIntegralValues(Size, &Count))
@@ -3563,7 +3671,7 @@ bool MasmParser::parseDirectiveNamedRealValue(StringRef TypeName,
                                               SMLoc NameLoc) {
   if (StructInProgress.empty()) {
     // Initialize named data value.
-    MCSymbol *Sym = getContext().parseSymbol(Name);
+    MCSymbol *Sym = getProcedureSymbol(Name, /*IsDefinition=*/true);
     getStreamer().emitLabel(Sym);
     unsigned Count;
     if (emitRealValues(Semantics, &Count))
@@ -4057,7 +4165,7 @@ bool MasmParser::parseDirectiveNamedStructValue(const StructInfo &Structure,
                                                 SMLoc DirLoc, StringRef Name) {
   if (StructInProgress.empty()) {
     // Initialize named data value.
-    MCSymbol *Sym = getContext().parseSymbol(Name);
+    MCSymbol *Sym = getProcedureSymbol(Name, /*IsDefinition=*/true);
     getStreamer().emitLabel(Sym);
     unsigned Count;
     if (emitStructValues(Structure, &Count))
@@ -4072,6 +4180,79 @@ bool MasmParser::parseDirectiveNamedStructValue(const StructInfo &Structure,
     return addErrorSuffix(" in '" + Twine(Directive) + "' directive");
   }
 
+  return false;
+}
+
+/// parseDirectiveRecord
+///   ::= name RECORD field:width[=value] [, field:width[=value]]*
+bool MasmParser::parseDirectiveRecord(StringRef Name, SMLoc NameLoc) {
+  if (RecordWidths.contains(identifierKey(Name)))
+    return Error(NameLoc, "record '" + Name + "' is already defined");
+
+  struct FieldInfo {
+    StringRef Name;
+    SMLoc Loc;
+    unsigned Width;
+  };
+  SmallVector<FieldInfo, 8> Fields;
+  unsigned TotalWidth = 0;
+
+  while (true) {
+    SMLoc FieldLoc = getTok().getLoc();
+    StringRef FieldName;
+    if (parseIdentifier(FieldName))
+      return Error(FieldLoc, "expected field name in RECORD directive");
+    if (parseToken(AsmToken::Colon, "expected ':' after record field name"))
+      return true;
+
+    int64_t Width;
+    SMLoc WidthLoc = getTok().getLoc();
+    if (parseAbsoluteExpression(Width))
+      return Error(WidthLoc, "expected record field width");
+    if (Width <= 0 || Width > 64 || TotalWidth + Width > 64)
+      return Error(WidthLoc, "record width must be between 1 and 64 bits");
+
+    if (parseOptionalToken(AsmToken::Equal)) {
+      int64_t InitialValue;
+      if (parseAbsoluteExpression(InitialValue))
+        return Error(getTok().getLoc(), "expected record field value");
+      uint64_t MaxValue = Width == 64 ? UINT64_MAX : (1ULL << Width) - 1;
+      if (InitialValue < 0 || static_cast<uint64_t>(InitialValue) > MaxValue)
+        return Error(WidthLoc, "record field value does not fit its width");
+    }
+
+    Fields.push_back({FieldName, FieldLoc, static_cast<unsigned>(Width)});
+    TotalWidth += Width;
+
+    if (!parseOptionalToken(AsmToken::Comma))
+      break;
+    while (getTok().is(AsmToken::EndOfStatement))
+      Lex();
+  }
+
+  unsigned Offset = TotalWidth;
+  for (const FieldInfo &Field : Fields) {
+    Offset -= Field.Width;
+    std::string Key = identifierKey(Field.Name);
+    if (Variables.contains(Key) || RecordFieldMasks.contains(Key))
+      return Error(Field.Loc,
+                   "record field '" + Field.Name + "' is already defined");
+
+    uint64_t Mask =
+        Field.Width == 64 ? UINT64_MAX : ((1ULL << Field.Width) - 1) << Offset;
+    RecordFieldMasks[Key] = Mask;
+
+    Variable &Var = Variables[Key];
+    Var.Name = Field.Name;
+    Var.Redefinable = Variable::NOT_REDEFINABLE;
+    auto *Sym =
+        static_cast<MCSymbolCOFF *>(getContext().parseSymbol(Field.Name));
+    Sym->setRedefinable(false);
+    Sym->setVariableValue(MCConstantExpr::create(Offset, getContext()));
+    Sym->setExternal(false);
+  }
+
+  RecordWidths[identifierKey(Name)] = TotalWidth;
   return false;
 }
 
@@ -4410,8 +4591,13 @@ bool MasmParser::parseDirectiveMacro(StringRef Name, SMLoc NameLoc) {
   Lexer.Lex();
 
   std::vector<std::string> Locals;
-  if (getTok().is(AsmToken::Identifier) &&
-      getTok().getIdentifier().equals_insensitive("local")) {
+  while (true) {
+    while (getTok().is(AsmToken::EndOfStatement))
+      Lexer.Lex();
+    if (getTok().isNot(AsmToken::Identifier) ||
+        !getTok().getIdentifier().equals_insensitive("local"))
+      break;
+
     Lex(); // Eat the LOCAL directive.
 
     StringRef ID;
@@ -4604,6 +4790,8 @@ bool MasmParser::parseDirectiveSymbolAttribute(MCSymbolAttr Attr) {
 
     if (!getStreamer().emitSymbolAttribute(Sym, Attr))
       return Error(Loc, "unable to emit symbol attribute");
+    if (Attr == MCSA_Global)
+      PublicSymbols[identifierKey(Sym->getName())] = true;
     return false;
   };
 
@@ -5274,6 +5462,7 @@ void MasmParser::initializeDirectiveKindMap() {
   DirectiveKindMap["real4"] = DK_REAL4;
   DirectiveKindMap["real8"] = DK_REAL8;
   DirectiveKindMap["real10"] = DK_REAL10;
+  DirectiveKindMap["record"] = DK_RECORD;
   DirectiveKindMap["align"] = DK_ALIGN;
   DirectiveKindMap["even"] = DK_EVEN;
   DirectiveKindMap["org"] = DK_ORG;
@@ -5501,7 +5690,8 @@ bool MasmParser::expandStatement(SMLoc Loc) {
 
   // Jump to the expanded statement and prime the lexer.
   CurBuffer = SrcMgr.AddNewSourceBuffer(std::move(Expansion), EndLoc);
-  Lexer.setBuffer(SrcMgr.getMemoryBuffer(CurBuffer)->getBuffer());
+  Lexer.setBuffer(SrcMgr.getMemoryBuffer(CurBuffer)->getBuffer(), nullptr,
+                  /*EndStatementAtEOF=*/false);
   EndStatementAtEOFStack.push_back(false);
   Lex();
   return false;
