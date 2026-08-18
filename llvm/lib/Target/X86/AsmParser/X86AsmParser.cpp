@@ -2872,6 +2872,15 @@ bool X86AsmParser::parseIntelOperand(OperandVector &Operands, StringRef Name) {
   if (!PtrInOperand)
     Size = SM.getElementSize() << 3;
 
+  unsigned FrontendSize = 0;
+  if (!PtrInOperand && Size && Parser.isParsingMasm() &&
+      llvm::any_of(Operands, [](const auto &Operand) {
+        return static_cast<X86Operand *>(Operand.get())->isVectorReg();
+      })) {
+    FrontendSize = Size;
+    Size = 0;
+  }
+
   if (Scale == 0 && BaseReg != X86::ESP && BaseReg != X86::RSP &&
       (IndexReg == X86::ESP || IndexReg == X86::RSP))
     std::swap(BaseReg, IndexReg);
@@ -2958,11 +2967,11 @@ bool X86AsmParser::parseIntelOperand(OperandVector &Operands, StringRef Name) {
     Operands.push_back(X86Operand::CreateMem(
         getPointerWidth(), RegNo, Disp, BaseReg, IndexReg, Scale, Start, End,
         Size, DefaultBaseReg, /*SymName=*/StringRef(), /*OpDecl=*/nullptr,
-        /*FrontendSize=*/0, /*UseUpRegs=*/false, MaybeDirectBranchDest));
+        FrontendSize, /*UseUpRegs=*/false, MaybeDirectBranchDest));
   else
     Operands.push_back(X86Operand::CreateMem(
         getPointerWidth(), Disp, Start, End, Size, /*SymName=*/StringRef(),
-        /*OpDecl=*/nullptr, /*FrontendSize=*/0, /*UseUpRegs=*/false,
+        /*OpDecl=*/nullptr, FrontendSize, /*UseUpRegs=*/false,
         MaybeDirectBranchDest));
   return false;
 }
