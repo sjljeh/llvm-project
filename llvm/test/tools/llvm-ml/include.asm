@@ -1,7 +1,8 @@
-; RUN: llvm-ml -filetype=s %s /I %S /Fo - | FileCheck %s
+; RUN: llvm-ml -filetype=s %s /Fo - | FileCheck %s
 
 include included.inc
 
+.model flat
 .code
 
 t1:
