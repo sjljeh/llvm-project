@@ -70,52 +70,52 @@ void __cpuidex(int[4], int, int);
 __int64 __emul(int, int);
 unsigned __int64 __emulu(unsigned int, unsigned int);
 unsigned int __getcallerseflags(void);
-void __halt(void);
-unsigned char __inbyte(unsigned short);
-void __inbytestring(unsigned short, unsigned char *, unsigned long);
+void __cdecl __halt(void);
+unsigned char __cdecl __inbyte(unsigned short);
+void __cdecl __inbytestring(unsigned short, unsigned char *, unsigned long);
 void __incfsbyte(unsigned long);
 void __incfsdword(unsigned long);
 void __incfsword(unsigned long);
-unsigned long __indword(unsigned short);
-void __indwordstring(unsigned short, unsigned long *, unsigned long);
+unsigned long __cdecl __indword(unsigned short);
+void __cdecl __indwordstring(unsigned short, unsigned long *, unsigned long);
 void __int2c(void);
-void __invlpg(void *);
-unsigned short __inword(unsigned short);
-void __inwordstring(unsigned short, unsigned short *, unsigned long);
-void __lidt(void *);
-unsigned __int64 __ll_lshift(unsigned __int64, int);
-__int64 __ll_rshift(__int64, int);
-void __movsb(unsigned char *, unsigned char const *, size_t);
-void __movsd(unsigned long *, unsigned long const *, size_t);
-void __movsw(unsigned short *, unsigned short const *, size_t);
+void __cdecl __invlpg(void *);
+unsigned short __cdecl __inword(unsigned short);
+void __cdecl __inwordstring(unsigned short, unsigned short *, unsigned long);
+void __cdecl __lidt(void *);
+unsigned __int64 __cdecl __ll_lshift(unsigned __int64, int);
+__int64 __cdecl __ll_rshift(__int64, int);
+void __cdecl __movsb(unsigned char *, unsigned char const *, size_t);
+void __cdecl __movsd(unsigned long *, unsigned long const *, size_t);
+void __cdecl __movsw(unsigned short *, unsigned short const *, size_t);
 void __nop(void);
 void __nvreg_restore_fence(void);
 void __nvreg_save_fence(void);
-void __outbyte(unsigned short, unsigned char);
-void __outbytestring(unsigned short, unsigned char *, unsigned long);
-void __outdword(unsigned short, unsigned long);
-void __outdwordstring(unsigned short, unsigned long *, unsigned long);
-void __outword(unsigned short, unsigned short);
-void __outwordstring(unsigned short, unsigned short *, unsigned long);
-unsigned __LPTRINT_TYPE__ __readcr0(void);
-unsigned __LPTRINT_TYPE__ __readcr2(void);
-unsigned __LPTRINT_TYPE__ __readcr3(void);
-unsigned __LPTRINT_TYPE__ __readcr4(void);
-unsigned __LPTRINT_TYPE__ __readcr8(void);
-unsigned __IPTRINT_TYPE__ __readdr(unsigned int);
+void __cdecl __outbyte(unsigned short, unsigned char);
+void __cdecl __outbytestring(unsigned short, unsigned char *, unsigned long);
+void __cdecl __outdword(unsigned short, unsigned long);
+void __cdecl __outdwordstring(unsigned short, unsigned long *, unsigned long);
+void __cdecl __outword(unsigned short, unsigned short);
+void __cdecl __outwordstring(unsigned short, unsigned short *, unsigned long);
+unsigned __LPTRINT_TYPE__ __cdecl __readcr0(void);
+unsigned __LPTRINT_TYPE__ __cdecl __readcr2(void);
+unsigned __LPTRINT_TYPE__ __cdecl __readcr3(void);
+unsigned __LPTRINT_TYPE__ __cdecl __readcr4(void);
+unsigned __LPTRINT_TYPE__ __cdecl __readcr8(void);
+unsigned __IPTRINT_TYPE__ __cdecl __readdr(unsigned int);
 #ifdef __i386__
 unsigned char __readfsbyte(unsigned long);
 unsigned short __readfsword(unsigned long);
 unsigned long __readfsdword(unsigned long);
 unsigned __int64 __readfsqword(unsigned long);
 #endif
-unsigned __int64 __readmsr(unsigned long);
+unsigned __int64 __cdecl __readmsr(unsigned long);
 unsigned __int64 __readpmc(unsigned long);
 unsigned long __segmentlimit(unsigned long);
-void __sidt(void *);
+void __cdecl __sidt(void *);
 void __stosb(unsigned char *, unsigned char, size_t);
-void __stosd(unsigned long *, unsigned long, size_t);
-void __stosw(unsigned short *, unsigned short, size_t);
+void __cdecl __stosd(unsigned long *, unsigned long, size_t);
+void __cdecl __stosw(unsigned short *, unsigned short, size_t);
 void __svm_clgi(void);
 void __svm_invlpga(void *, int);
 void __svm_skinit(int);
@@ -124,21 +124,21 @@ void __svm_vmload(size_t);
 void __svm_vmrun(size_t);
 void __svm_vmsave(size_t);
 void __ud2(void);
-unsigned __int64 __ull_rshift(unsigned __int64, int);
+unsigned __int64 __cdecl __ull_rshift(unsigned __int64, int);
 void __vmx_off(void);
 void __vmx_vmptrst(unsigned __int64 *);
-void __wbinvd(void);
-void __writecr0(unsigned __IPTRINT_TYPE__);
-void __writecr2(unsigned __IPTRINT_TYPE__);
-void __writecr3(unsigned __IPTRINT_TYPE__);
-void __writecr4(unsigned __IPTRINT_TYPE__);
-void __writecr8(unsigned __IPTRINT_TYPE__);
-void __writedr(unsigned int, unsigned __IPTRINT_TYPE__);
+void __cdecl __wbinvd(void);
+void __cdecl __writecr0(unsigned __IPTRINT_TYPE__);
+void __cdecl __writecr2(unsigned __IPTRINT_TYPE__);
+void __cdecl __writecr3(unsigned __IPTRINT_TYPE__);
+void __cdecl __writecr4(unsigned __IPTRINT_TYPE__);
+void __cdecl __writecr8(unsigned __IPTRINT_TYPE__);
+void __cdecl __writedr(unsigned int, unsigned __IPTRINT_TYPE__);
 void __writefsbyte(unsigned long, unsigned char);
 void __writefsdword(unsigned long, unsigned long);
 void __writefsqword(unsigned long, unsigned __int64);
 void __writefsword(unsigned long, unsigned short);
-void __writemsr(unsigned long, unsigned __int64);
+void __cdecl __writemsr(unsigned long, unsigned __int64);
 void *_AddressOfReturnAddress(void);
 unsigned char _bittest(long const *, long);
 unsigned char _bittestandcomplement(long *, long);
@@ -173,7 +173,7 @@ void _WriteBarrier(void);
 /* These additional intrinsics are turned on in x64/amd64/x86_64 mode. */
 #if defined(__x86_64__) && !defined(__arm64ec__)
 void __addgsbyte(unsigned long, unsigned char);
-void __addgsdword(unsigned long, unsigned long);
+void __cdecl __addgsdword(unsigned long, unsigned long);
 void __addgsqword(unsigned long, unsigned __int64);
 void __addgsword(unsigned long, unsigned short);
 void __faststorefence(void);
@@ -181,12 +181,12 @@ void __incgsbyte(unsigned long);
 void __incgsdword(unsigned long);
 void __incgsqword(unsigned long);
 void __incgsword(unsigned long);
-void __movsq(unsigned long long *, unsigned long long const *, size_t);
+void __cdecl __movsq(unsigned long long *, unsigned long long const *, size_t);
 unsigned char __readgsbyte(unsigned long);
 unsigned long __readgsdword(unsigned long);
 unsigned __int64 __readgsqword(unsigned long);
 unsigned short __readgsword(unsigned long);
-void __stosq(unsigned __int64 *, unsigned __int64, size_t);
+void __cdecl __stosq(unsigned __int64 *, unsigned __int64, size_t);
 unsigned char __vmx_on(unsigned __int64 *);
 unsigned char __vmx_vmclear(unsigned __int64 *);
 unsigned char __vmx_vmlaunch(void);
@@ -243,6 +243,7 @@ __int64 _mul128(__int64, __int64, __int64 *);
 \*----------------------------------------------------------------------------*/
 
 #if defined(__i386__) || (defined(__x86_64__) && !defined(__arm64ec__))
+#if !defined(_MSC_VER) || !__has_builtin(__movsb)
 static __inline__ void __DEFAULT_FN_ATTRS __movsb(unsigned char *__dst,
                                                   unsigned char const *__src,
                                                   size_t __n) {
@@ -311,7 +312,9 @@ static __inline__ void __DEFAULT_FN_ATTRS __stosw(unsigned short *__dst,
                        : "memory");
 }
 #endif
+#endif
 #if defined(__x86_64__) && !defined(__arm64ec__)
+#if !defined(_MSC_VER) || !__has_builtin(__movsq)
 static __inline__ void __DEFAULT_FN_ATTRS __movsq(
     unsigned long long *__dst, unsigned long long const *__src, size_t __n) {
   __asm__ __volatile__("rep movsq"
@@ -326,15 +329,19 @@ static __inline__ void __DEFAULT_FN_ATTRS __stosq(unsigned __int64 *__dst,
                        : "memory");
 }
 #endif
+#endif
 
 /*----------------------------------------------------------------------------*\
 |* Misc
 \*----------------------------------------------------------------------------*/
 #if defined(__i386__) || (defined(__x86_64__) && !defined(__arm64ec__))
+#if !defined(_MSC_VER) || !__has_builtin(__halt)
 static __inline__ void __DEFAULT_FN_ATTRS __halt(void) {
   __asm__ volatile("hlt");
 }
+#endif
 
+#if !defined(_MSC_VER) || !__has_builtin(__inbyte)
 static __inline__ unsigned char __inbyte(unsigned short port) {
   unsigned char ret;
   __asm__ __volatile__("inb %w1, %b0" : "=a"(ret) : "Nd"(port));
@@ -364,6 +371,7 @@ static __inline__ void __outword(unsigned short port, unsigned short data) {
 static __inline__ void __outdword(unsigned short port, unsigned long data) {
   __asm__ __volatile__("outl %k0, %w1" : : "a"(data), "Nd"(port));
 }
+#endif
 #endif
 
 #if defined(__i386__) || defined(__x86_64__) || defined(__aarch64__)
@@ -460,6 +468,7 @@ void __cdecl __prefetch2(const void *, unsigned char);
 |* Privileged intrinsics
 \*----------------------------------------------------------------------------*/
 #if defined(__i386__) || (defined(__x86_64__) && !defined(__arm64ec__))
+#if !defined(_MSC_VER) || !__has_builtin(__readmsr)
 static __inline__ unsigned __int64 __DEFAULT_FN_ATTRS
 __readmsr(unsigned long __register) {
   // Loads the contents of a 64-bit model specific register (MSR) specified in
@@ -488,6 +497,7 @@ static __inline__ void __DEFAULT_FN_ATTRS
 __writecr3(unsigned __IPTRINT_TYPE__ __cr3_val) {
   __asm__ ("mov {%0, %%cr3|cr3, %0}" : : "r"(__cr3_val) : "memory");
 }
+#endif
 #endif
 
 #ifdef __cplusplus
