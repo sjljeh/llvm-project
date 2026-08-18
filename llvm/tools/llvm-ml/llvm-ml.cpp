@@ -157,6 +157,8 @@ static int AssembleInput(StringRef ProgName, const Target *TheTarget,
 
   std::unique_ptr<MCAsmParser> Parser(
       createMCMasmParser(SrcMgr, Ctx, Str, MAI, TM, 0));
+  Parser->setMasmIdentifierCaseSensitive(
+      InputArgs.hasArg(OPT_preserve_identifier_case));
   std::unique_ptr<MCTargetAsmParser> TAP(
       TheTarget->createMCAsmParser(STI, *Parser, MCII));
 

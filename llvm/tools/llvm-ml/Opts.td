@@ -92,11 +92,12 @@ def parse_only : MLFlag<"Zs">, HelpText<"Run a syntax-check only">,
                  Alias<filetype>, AliasArgs<["null"]>;
 def ignore_include_envvar : MLFlag<"X">,
                             HelpText<"Ignore the INCLUDE environment variable">;
+def preserve_identifier_case : MLFlag<"Cp">,
+                               HelpText<"Preserve identifier case">;
 
 def tiny_model_support : UnsupportedFlag<"AT">, HelpText<"">;
 def alternate_linker : UnsupportedJoined<"Bl">, HelpText<"">;
 def coff_object_file : UnsupportedFlag<"coff">, HelpText<"">;
-def preserve_identifier_case : UnsupportedFlag<"Cp">, HelpText<"">;
 def uppercase_identifiers : UnsupportedFlag<"Cu">, HelpText<"">;
 def preserve_extern_case : UnsupportedFlag<"Cx">, HelpText<"">;
 def output_preprocessed : UnsupportedFlag<"EP">, HelpText<"">;
