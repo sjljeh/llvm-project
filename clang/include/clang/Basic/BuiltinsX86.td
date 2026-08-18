@@ -143,6 +143,12 @@ let Features = "sse", Attributes = [NoThrow] in {
   def sfence : X86Builtin<"void()">;
 }
 
+let Attributes = [NoThrow, RequiredVectorWidth<128>] in {
+  def __builtin_msvc_mm_load_ss : X86NoPrefixBuiltin<"_Vector<4, float>(float const *)">;
+  def __builtin_msvc_mm_sqrt_ss : X86NoPrefixBuiltin<"_Vector<4, float>(_Vector<4, float>)">;
+  def __builtin_msvc_mm_store_ss : X86NoPrefixBuiltin<"void(float *, _Vector<4, float>)">;
+}
+
 let Features = "sse", Header = "xmmintrin.h", Attributes = [NoThrow, RequireDeclaration] in {
   def _mm_sfence : X86LibBuiltin<"void()">;
 }
@@ -212,6 +218,29 @@ let Features = "sse2", Attributes = [NoThrow] in {
 
 let Features = "sse2", Header = "emmintrin.h", Attributes = [NoThrow, RequireDeclaration] in {
   def _mm_clflush : X86LibBuiltin<"void(void const *)">;
+}
+
+let Attributes = [NoThrow, RequiredVectorWidth<128>] in {
+  def __builtin_msvc_mm_cmpeq_epi16 : X86NoPrefixBuiltin<"_Vector<8, short>(_Vector<8, short>, _Vector<8, short>)">;
+  def __builtin_msvc_mm_cmpeq_epi8 : X86NoPrefixBuiltin<"_Vector<16, char>(_Vector<16, char>, _Vector<16, char>)">;
+  def __builtin_msvc_mm_cvtsi32_si128 : X86NoPrefixBuiltin<"_Vector<4, int>(int)">;
+  def __builtin_msvc_mm_load_sd : X86NoPrefixBuiltin<"_Vector<2, double>(double const *)">;
+  def __builtin_msvc_mm_loadu_si128 : X86NoPrefixBuiltin<"_Vector<2, long long int>(void const *)">;
+  def __builtin_msvc_mm_movemask_epi8 : X86NoPrefixBuiltin<"int(_Vector<16, char>)">;
+  def __builtin_msvc_mm_or_si128 : X86NoPrefixBuiltin<"_Vector<2, long long int>(_Vector<2, long long int>, _Vector<2, long long int>)">;
+  def __builtin_msvc_mm_setzero_pd : X86NoPrefixBuiltin<"_Vector<2, double>()">;
+  def __builtin_msvc_mm_setzero_si128 : X86NoPrefixBuiltin<"_Vector<2, long long int>()">;
+  def __builtin_msvc_mm_shuffle_epi32 : X86NoPrefixBuiltin<"_Vector<4, int>(_Vector<4, int>, _Constant int)">;
+  def __builtin_msvc_mm_slli_si128 : X86NoPrefixBuiltin<"_Vector<2, long long int>(_Vector<2, long long int>, _Constant int)">;
+  def __builtin_msvc_mm_sqrt_sd : X86NoPrefixBuiltin<"_Vector<2, double>(_Vector<2, double>, _Vector<2, double>)">;
+  def __builtin_msvc_mm_srli_si128 : X86NoPrefixBuiltin<"_Vector<2, long long int>(_Vector<2, long long int>, _Constant int)">;
+  def __builtin_msvc_mm_store_sd : X86NoPrefixBuiltin<"void(double *, _Vector<2, double>)">;
+  def __builtin_msvc_mm_storeu_si128 : X86NoPrefixBuiltin<"void(void *, _Vector<2, long long int>)">;
+  def __builtin_msvc_mm_unpackhi_epi16 : X86NoPrefixBuiltin<"_Vector<8, short>(_Vector<8, short>, _Vector<8, short>)">;
+  def __builtin_msvc_mm_unpackhi_epi8 : X86NoPrefixBuiltin<"_Vector<16, char>(_Vector<16, char>, _Vector<16, char>)">;
+  def __builtin_msvc_mm_unpacklo_epi16 : X86NoPrefixBuiltin<"_Vector<8, short>(_Vector<8, short>, _Vector<8, short>)">;
+  def __builtin_msvc_mm_unpacklo_epi8 : X86NoPrefixBuiltin<"_Vector<16, char>(_Vector<16, char>, _Vector<16, char>)">;
+  def __builtin_msvc_mm_xor_si128 : X86NoPrefixBuiltin<"_Vector<2, long long int>(_Vector<2, long long int>, _Vector<2, long long int>)">;
 }
 
 let Features = "sse2", Attributes = [NoThrow] in {
