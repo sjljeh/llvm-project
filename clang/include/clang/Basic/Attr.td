@@ -4541,6 +4541,14 @@ def : IgnoredAttr {
   let Spellings = [Declspec<"property">];
 }
 
+def MSIntrinsicType : InheritableAttr {
+  let Spellings = [Declspec<"intrin_type">];
+  let Subjects = SubjectList<[Record], ErrorDiag>;
+  let LangOpts = [MicrosoftExt];
+  let Documentation = [Undocumented];
+  let SimpleHandler = 1;
+}
+
 def MSAllocator : InheritableAttr {
   let Spellings = [Declspec<"allocator">];
   let Subjects = SubjectList<[Function]>;
