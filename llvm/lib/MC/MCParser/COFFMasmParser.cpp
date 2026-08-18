@@ -362,6 +362,7 @@ bool COFFMasmParser::parseDirectiveSegment(StringRef Directive, SMLoc Loc) {
                          .CaseLower("data", SectionKind::getData())
                          .CaseLower("code", SectionKind::getText())
                          .CaseLower("const", SectionKind::getReadOnly())
+                         .CaseLower("bss", SectionKind::getBSS())
                          .Default(SectionKind::getData());
   if (Kind.isText()) {
     if (DefaultCharacteristics) {
@@ -372,7 +373,8 @@ bool COFFMasmParser::parseDirectiveSegment(StringRef Directive, SMLoc Loc) {
     if (DefaultCharacteristics) {
       Flags |= COFF::IMAGE_SCN_MEM_READ | COFF::IMAGE_SCN_MEM_WRITE;
     }
-    Flags |= COFF::IMAGE_SCN_CNT_INITIALIZED_DATA;
+    Flags |= Kind.isBSS() ? COFF::IMAGE_SCN_CNT_UNINITIALIZED_DATA
+                          : COFF::IMAGE_SCN_CNT_INITIALIZED_DATA;
   }
   if (Readonly) {
     Flags &= ~COFF::IMAGE_SCN_MEM_WRITE;
