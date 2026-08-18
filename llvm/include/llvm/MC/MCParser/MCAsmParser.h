@@ -197,6 +197,12 @@ public:
 
   virtual void setMasmDotName(bool) {}
 
+  virtual bool isMasmDotName() const { return false; }
+
+  virtual void enterMasmProcedure() {}
+
+  virtual void exitMasmProcedure() {}
+
   virtual bool defineMacro(StringRef Name, StringRef Value) { return true; }
 
   virtual bool lookUpField(StringRef Name, AsmFieldInfo &Info) const {
