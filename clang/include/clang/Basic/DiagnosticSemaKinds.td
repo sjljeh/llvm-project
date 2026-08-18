@@ -11570,6 +11570,8 @@ def err_x86_builtin_reserved_vunpackb_imm : Error<
   "start (bits [1:0])">;
 def err_x86_builtin_invalid_scale : Error<
   "scale argument must be 1, 2, 4, or 8">;
+def err_x86_builtin_invalid_debug_register : Error<
+  "debug register argument must be between 0 and 7">;
 def err_x86_builtin_tile_arg_duplicate : Error<
   "tile arguments must refer to different tiles">;
 
