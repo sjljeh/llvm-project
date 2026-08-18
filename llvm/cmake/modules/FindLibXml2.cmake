@@ -4,6 +4,7 @@
 # LIBXML2_INCLUDE_DIR
 # LIBXML2_LIBRARY
 # LIBXML2_STATIC_LIBRARY
+# LIBXML2_STATIC_DEPS
 # LibXml2_FOUND
 #
 # Additionally, the following import targets will be defined:
@@ -78,13 +79,18 @@ if(LibXml2_FOUND)
         INTERFACE_INCLUDE_DIRECTORIES "${LIBXML2_INCLUDE_DIR}"
         INTERFACE_COMPILE_OPTIONS "${PC_LIBXML_CFLAGS_OTHER}"
         IMPORTED_LOCATION "${LIBXML2_STATIC_LIBRARY}")
+    if(WIN32)
+      set_property(TARGET LibXml2::LibXml2Static APPEND PROPERTY
+          INTERFACE_COMPILE_DEFINITIONS LIBXML_STATIC)
+    endif()
     # Static libraries need their transitive dependencies for linking.
-    set(LIBXML2_STATIC_DEPS)
-    foreach(lib IN LISTS PC_LIBXML_STATIC_LIBRARIES)
-      if(NOT lib STREQUAL "xml2")
-        list(APPEND LIBXML2_STATIC_DEPS ${lib})
-      endif()
-    endforeach()
+    if(NOT LIBXML2_STATIC_DEPS)
+      foreach(lib IN LISTS PC_LIBXML_STATIC_LIBRARIES)
+        if(NOT lib STREQUAL "xml2")
+          list(APPEND LIBXML2_STATIC_DEPS ${lib})
+        endif()
+      endforeach()
+    endif()
     if(LIBXML2_STATIC_DEPS)
       set_target_properties(LibXml2::LibXml2Static PROPERTIES
           INTERFACE_LINK_LIBRARIES "${LIBXML2_STATIC_DEPS}")
