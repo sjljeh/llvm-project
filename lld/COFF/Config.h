@@ -220,8 +220,15 @@ struct Configuration {
   // Used for /discard-section:.name
   llvm::StringSet<> discardSection;
 
+  struct SectionAttributes {
+    uint32_t set = 0;
+    uint32_t clear = 0;
+
+    uint32_t apply(uint32_t value) const { return (value & ~clear) | set; }
+  };
+
   // Used for /section=.name,{DEKPRSW} to set section attributes.
-  std::map<StringRef, uint32_t> section;
+  std::map<StringRef, SectionAttributes> section;
   // Used for /sectionlayout: to layout sections in specified order.
   std::map<std::string, int> sectionOrder;
 

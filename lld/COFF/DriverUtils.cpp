@@ -176,35 +176,73 @@ void LinkerDriver::parsePDBPageSize(StringRef s) {
   ctx.config.pdbPageSize = v;
 }
 
-static uint32_t parseSectionAttributes(COFFLinkerContext &ctx, StringRef s) {
-  uint32_t ret = 0;
-  for (char c : s.lower()) {
+static Configuration::SectionAttributes
+parseSectionAttributes(COFFLinkerContext &ctx, StringRef s) {
+  const uint32_t rwx = IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE |
+                       IMAGE_SCN_MEM_EXECUTE;
+  Configuration::SectionAttributes ret;
+  // Omitted D/S attributes are disabled. K/P use inverse PE flags, so their
+  // omitted state is represented by clearing those flags as well.
+  ret.clear = IMAGE_SCN_MEM_DISCARDABLE | IMAGE_SCN_MEM_NOT_CACHED |
+              IMAGE_SCN_MEM_NOT_PAGED | IMAGE_SCN_MEM_SHARED;
+
+  bool hasRWX = false;
+  std::string attrs = s.lower();
+  for (size_t i = 0; i != attrs.size(); ++i) {
+    bool negated = attrs[i] == '!';
+    if (negated && (++i == attrs.size() || attrs[i] == '!')) {
+      Fatal(ctx) << "/section: invalid argument: " << s;
+      return ret;
+    }
+
+    uint32_t mask;
+    bool enable = !negated;
+    char c = attrs[i];
     switch (c) {
     case 'd':
-      ret |= IMAGE_SCN_MEM_DISCARDABLE;
+      mask = IMAGE_SCN_MEM_DISCARDABLE;
       break;
     case 'e':
-      ret |= IMAGE_SCN_MEM_EXECUTE;
+      mask = IMAGE_SCN_MEM_EXECUTE;
+      hasRWX = true;
       break;
     case 'k':
-      ret |= IMAGE_SCN_MEM_NOT_CACHED;
+      mask = IMAGE_SCN_MEM_NOT_CACHED;
+      enable = negated;
       break;
     case 'p':
-      ret |= IMAGE_SCN_MEM_NOT_PAGED;
+      mask = IMAGE_SCN_MEM_NOT_PAGED;
+      enable = negated;
       break;
     case 'r':
-      ret |= IMAGE_SCN_MEM_READ;
+      mask = IMAGE_SCN_MEM_READ;
+      hasRWX = true;
       break;
     case 's':
-      ret |= IMAGE_SCN_MEM_SHARED;
+      mask = IMAGE_SCN_MEM_SHARED;
       break;
     case 'w':
-      ret |= IMAGE_SCN_MEM_WRITE;
+      mask = IMAGE_SCN_MEM_WRITE;
+      hasRWX = true;
       break;
     default:
       Fatal(ctx) << "/section: invalid argument: " << s;
+      return ret;
+    }
+
+    if (enable) {
+      ret.set |= mask;
+      ret.clear &= ~mask;
+    } else {
+      ret.clear |= mask;
+      ret.set &= ~mask;
     }
   }
+
+  // Specifying any R/W/E attribute opts into replacing that group. Otherwise
+  // link.exe preserves the input section's existing R/W/E permissions.
+  if (hasRWX)
+    ret.clear |= rwx & ~ret.set;
   return ret;
 }
 
