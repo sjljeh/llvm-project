@@ -47,7 +47,11 @@ set_target_properties(c-index-test
 
 # If libxml2 is available, make it available for c-index-test.
 if (CLANG_HAVE_LIBXML)
-  target_link_libraries(c-index-test PRIVATE LibXml2::LibXml2)
+  if(LLVM_USE_STATIC_LIBXML2)
+    target_link_libraries(c-index-test PRIVATE LibXml2::LibXml2Static)
+  else()
+    target_link_libraries(c-index-test PRIVATE LibXml2::LibXml2)
+  endif()
 endif()
 
 if (NOT LLVM_INSTALL_TOOLCHAIN_ONLY)
