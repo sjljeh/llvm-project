@@ -12,6 +12,7 @@
 
 #include "CGBuiltin.h"
 #include "clang/Basic/TargetBuiltins.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/IntrinsicsX86.h"
 #include "llvm/TargetParser/X86TargetParser.h"
@@ -19,6 +20,43 @@
 using namespace clang;
 using namespace CodeGen;
 using namespace llvm;
+
+static void addX86TargetFeature(llvm::Function *Fn, StringRef Feature) {
+  if (!Fn)
+    return;
+
+  llvm::SmallVector<StringRef, 8> OldFeatures;
+  llvm::Attribute Attr = Fn->getFnAttribute("target-features");
+  if (Attr.isValid())
+    Attr.getValueAsString().split(OldFeatures, ',');
+
+  llvm::SmallVector<std::string, 8> NewFeatures;
+  std::string PlusFeature = ("+" + Feature).str();
+  std::string MinusFeature = ("-" + Feature).str();
+  bool HasFeature = false;
+  for (StringRef F : OldFeatures) {
+    if (F.empty() || F == MinusFeature)
+      continue;
+    if (F == PlusFeature)
+      HasFeature = true;
+    NewFeatures.push_back(F.str());
+  }
+
+  if (!HasFeature)
+    NewFeatures.push_back(PlusFeature);
+  Fn->removeFnAttr("target-features");
+  Fn->addFnAttr("target-features", llvm::join(NewFeatures, ","));
+
+  llvm::SmallVector<StringRef, 4> RequiredFeatures;
+  llvm::Attribute RequiredAttr =
+      Fn->getFnAttribute("clang-msvc-required-target-features");
+  if (RequiredAttr.isValid())
+    RequiredAttr.getValueAsString().split(RequiredFeatures, ',');
+  if (!llvm::is_contained(RequiredFeatures, StringRef(PlusFeature)))
+    RequiredFeatures.push_back(PlusFeature);
+  Fn->addFnAttr("clang-msvc-required-target-features",
+                llvm::join(RequiredFeatures, ","));
+}
 
 static std::optional<CodeGenFunction::MSVCIntrin>
 translateX86ToMsvcIntrin(unsigned BuiltinID) {
@@ -782,7 +820,8 @@ Value *CodeGenFunction::EmitX86CpuInit() {
 
 
 Value *CodeGenFunction::EmitX86BuiltinExpr(unsigned BuiltinID,
-                                           const CallExpr *E) {
+                                           const CallExpr *E,
+                                           ReturnValueSlot ReturnValue) {
   if (BuiltinID == Builtin::BI__builtin_cpu_is)
     return EmitX86CpuIs(E);
   if (BuiltinID == Builtin::BI__builtin_cpu_supports)
@@ -794,6 +833,222 @@ Value *CodeGenFunction::EmitX86BuiltinExpr(unsigned BuiltinID,
   // evaluation.
   if (std::optional<MSVCIntrin> MsvcIntId = translateX86ToMsvcIntrin(BuiltinID))
     return EmitMSVCBuiltinExpr(*MsvcIntId, E);
+
+  auto StoreMSVectorResult = [&](Value *V) -> Value * {
+    if (!ReturnValue.isNull())
+      Builder.CreateStore(
+          V, ReturnValue.getAddress().withElementType(V->getType()),
+          ReturnValue.isVolatile());
+    return V;
+  };
+
+  auto LoadMSVectorArg = [&](unsigned ArgNo, llvm::Type *Ty) -> Value * {
+    RValue RV = EmitAnyExprToTemp(E->getArg(ArgNo));
+    if (RV.isScalar())
+      return Builder.CreateBitCast(RV.getScalarVal(), Ty);
+    Address Addr = RV.getAggregateAddress().withElementType(Ty);
+    return Builder.CreateLoad(Addr, /*IsVolatile=*/false);
+  };
+
+  auto LoadMSPointerArg = [&](unsigned ArgNo) -> Value * {
+    return EmitScalarExpr(E->getArg(ArgNo));
+  };
+
+  auto GetConstantIntArg = [&](unsigned ArgNo) -> uint64_t {
+    std::optional<llvm::APSInt> Result =
+        E->getArg(ArgNo)->getIntegerConstantExpr(getContext());
+    assert(Result && "Expected constant immediate argument");
+    return Result->getZExtValue();
+  };
+
+  auto AddMSFeature = [&](StringRef Feature) {
+    addX86TargetFeature(CurFn, Feature);
+  };
+
+  auto EmitScalarSqrt = [&](Value *V, const Twine &Name) -> Value * {
+    CodeGenFunction::CGFPOptionsRAII FPOptsRAII(*this, E);
+    if (Builder.getIsFPConstrained()) {
+      Function *F = CGM.getIntrinsic(Intrinsic::experimental_constrained_sqrt,
+                                     V->getType());
+      return Builder.CreateConstrainedFPCall(F, V, Name);
+    }
+    return Builder.CreateUnaryIntrinsic(Intrinsic::sqrt, V, nullptr, Name);
+  };
+
+  auto ShuffleWithZero = [&](Value *V, ArrayRef<int> Indices) -> Value * {
+    return Builder.CreateShuffleVector(
+        V, llvm::Constant::getNullValue(V->getType()), Indices);
+  };
+
+  switch (BuiltinID) {
+  default:
+    break;
+  case X86::BI__builtin_msvc_mm_load_ss: {
+    AddMSFeature("sse");
+    auto *V4F = llvm::FixedVectorType::get(Builder.getFloatTy(), 4);
+    Value *Scalar = Builder.CreateLoad(Address(
+        LoadMSPointerArg(0), Builder.getFloatTy(), CharUnits::fromQuantity(1)));
+    Value *V = llvm::Constant::getNullValue(V4F);
+    return StoreMSVectorResult(
+        Builder.CreateInsertElement(V, Scalar, (uint64_t)0));
+  }
+  case X86::BI__builtin_msvc_mm_store_ss: {
+    AddMSFeature("sse");
+    auto *V4F = llvm::FixedVectorType::get(Builder.getFloatTy(), 4);
+    Value *V = LoadMSVectorArg(1, V4F);
+    Value *Scalar = Builder.CreateExtractElement(V, (uint64_t)0);
+    return Builder.CreateStore(
+        Scalar, Address(LoadMSPointerArg(0), Builder.getFloatTy(),
+                        CharUnits::fromQuantity(1)));
+  }
+  case X86::BI__builtin_msvc_mm_sqrt_ss: {
+    AddMSFeature("sse");
+    auto *V4F = llvm::FixedVectorType::get(Builder.getFloatTy(), 4);
+    Value *V = LoadMSVectorArg(0, V4F);
+    Value *Scalar = Builder.CreateExtractElement(V, (uint64_t)0);
+    Value *Sqrt = EmitScalarSqrt(Scalar, "sqrtss");
+    return StoreMSVectorResult(
+        Builder.CreateInsertElement(V, Sqrt, (uint64_t)0));
+  }
+  case X86::BI__builtin_msvc_mm_load_sd: {
+    AddMSFeature("sse2");
+    auto *V2D = llvm::FixedVectorType::get(Builder.getDoubleTy(), 2);
+    Value *Scalar = Builder.CreateLoad(Address(
+        LoadMSPointerArg(0), Builder.getDoubleTy(), CharUnits::fromQuantity(1)));
+    Value *V = llvm::Constant::getNullValue(V2D);
+    return StoreMSVectorResult(
+        Builder.CreateInsertElement(V, Scalar, (uint64_t)0));
+  }
+  case X86::BI__builtin_msvc_mm_store_sd: {
+    AddMSFeature("sse2");
+    auto *V2D = llvm::FixedVectorType::get(Builder.getDoubleTy(), 2);
+    Value *V = LoadMSVectorArg(1, V2D);
+    Value *Scalar = Builder.CreateExtractElement(V, (uint64_t)0);
+    return Builder.CreateStore(
+        Scalar, Address(LoadMSPointerArg(0), Builder.getDoubleTy(),
+                        CharUnits::fromQuantity(1)));
+  }
+  case X86::BI__builtin_msvc_mm_sqrt_sd: {
+    AddMSFeature("sse2");
+    auto *V2D = llvm::FixedVectorType::get(Builder.getDoubleTy(), 2);
+    Value *A = LoadMSVectorArg(0, V2D);
+    Value *B = LoadMSVectorArg(1, V2D);
+    Value *Scalar = Builder.CreateExtractElement(B, (uint64_t)0);
+    Value *Sqrt = EmitScalarSqrt(Scalar, "sqrtsd");
+    return StoreMSVectorResult(
+        Builder.CreateInsertElement(A, Sqrt, (uint64_t)0));
+  }
+  case X86::BI__builtin_msvc_mm_setzero_pd:
+    AddMSFeature("sse2");
+    return StoreMSVectorResult(llvm::Constant::getNullValue(
+        llvm::FixedVectorType::get(Builder.getDoubleTy(), 2)));
+  case X86::BI__builtin_msvc_mm_loadu_si128: {
+    AddMSFeature("sse2");
+    auto *V2I64 = llvm::FixedVectorType::get(Int64Ty, 2);
+    Address Addr(LoadMSPointerArg(0), V2I64, CharUnits::fromQuantity(1));
+    return StoreMSVectorResult(Builder.CreateLoad(Addr));
+  }
+  case X86::BI__builtin_msvc_mm_storeu_si128: {
+    AddMSFeature("sse2");
+    auto *V2I64 = llvm::FixedVectorType::get(Int64Ty, 2);
+    Address Addr(LoadMSPointerArg(0), V2I64, CharUnits::fromQuantity(1));
+    return Builder.CreateStore(LoadMSVectorArg(1, V2I64), Addr);
+  }
+  case X86::BI__builtin_msvc_mm_setzero_si128:
+    AddMSFeature("sse2");
+    return StoreMSVectorResult(
+        llvm::Constant::getNullValue(llvm::FixedVectorType::get(Int64Ty, 2)));
+  case X86::BI__builtin_msvc_mm_xor_si128:
+  case X86::BI__builtin_msvc_mm_or_si128: {
+    AddMSFeature("sse2");
+    auto *V2I64 = llvm::FixedVectorType::get(Int64Ty, 2);
+    Value *A = LoadMSVectorArg(0, V2I64);
+    Value *B = LoadMSVectorArg(1, V2I64);
+    return StoreMSVectorResult(BuiltinID == X86::BI__builtin_msvc_mm_xor_si128
+                                   ? Builder.CreateXor(A, B)
+                                   : Builder.CreateOr(A, B));
+  }
+  case X86::BI__builtin_msvc_mm_slli_si128:
+  case X86::BI__builtin_msvc_mm_srli_si128: {
+    AddMSFeature("sse2");
+    auto *V16I8 = llvm::FixedVectorType::get(Int8Ty, 16);
+    Value *V = LoadMSVectorArg(0, V16I8);
+    unsigned Shift = std::min<uint64_t>(GetConstantIntArg(1) & 0xff, 16);
+    int Mask[16];
+    for (int I = 0; I != 16; ++I) {
+      bool IsZero = BuiltinID == X86::BI__builtin_msvc_mm_slli_si128
+                        ? I < (int)Shift
+                        : I + (int)Shift >= 16;
+      Mask[I] = IsZero ? 16
+                       : (BuiltinID == X86::BI__builtin_msvc_mm_slli_si128
+                              ? I - Shift
+                              : I + Shift);
+    }
+    return StoreMSVectorResult(ShuffleWithZero(V, Mask));
+  }
+  case X86::BI__builtin_msvc_mm_cmpeq_epi8:
+  case X86::BI__builtin_msvc_mm_cmpeq_epi16: {
+    AddMSFeature("sse2");
+    auto *Ty = BuiltinID == X86::BI__builtin_msvc_mm_cmpeq_epi8
+                   ? llvm::FixedVectorType::get(Int8Ty, 16)
+                   : llvm::FixedVectorType::get(Builder.getInt16Ty(), 8);
+    Value *Cmp = Builder.CreateICmpEQ(LoadMSVectorArg(0, Ty),
+                                      LoadMSVectorArg(1, Ty));
+    return StoreMSVectorResult(Builder.CreateSExt(Cmp, Ty));
+  }
+  case X86::BI__builtin_msvc_mm_movemask_epi8: {
+    AddMSFeature("sse2");
+    auto *V16I8 = llvm::FixedVectorType::get(Int8Ty, 16);
+    return Builder.CreateCall(CGM.getIntrinsic(Intrinsic::x86_sse2_pmovmskb_128),
+                              LoadMSVectorArg(0, V16I8));
+  }
+  case X86::BI__builtin_msvc_mm_cvtsi32_si128: {
+    AddMSFeature("sse2");
+    auto *V4I32 = llvm::FixedVectorType::get(Int32Ty, 4);
+    Value *V = llvm::Constant::getNullValue(V4I32);
+    return StoreMSVectorResult(Builder.CreateInsertElement(
+        V, EmitScalarExpr(E->getArg(0)), (uint64_t)0));
+  }
+  case X86::BI__builtin_msvc_mm_unpacklo_epi8:
+  case X86::BI__builtin_msvc_mm_unpackhi_epi8: {
+    AddMSFeature("sse2");
+    auto *V16I8 = llvm::FixedVectorType::get(Int8Ty, 16);
+    Value *A = LoadMSVectorArg(0, V16I8);
+    Value *B = LoadMSVectorArg(1, V16I8);
+    int Mask[16];
+    int Base = BuiltinID == X86::BI__builtin_msvc_mm_unpacklo_epi8 ? 0 : 8;
+    for (int I = 0; I != 8; ++I) {
+      Mask[2 * I] = Base + I;
+      Mask[2 * I + 1] = 16 + Base + I;
+    }
+    return StoreMSVectorResult(Builder.CreateShuffleVector(A, B, Mask));
+  }
+  case X86::BI__builtin_msvc_mm_unpacklo_epi16:
+  case X86::BI__builtin_msvc_mm_unpackhi_epi16: {
+    AddMSFeature("sse2");
+    auto *V8I16 = llvm::FixedVectorType::get(Builder.getInt16Ty(), 8);
+    Value *A = LoadMSVectorArg(0, V8I16);
+    Value *B = LoadMSVectorArg(1, V8I16);
+    int Mask[8];
+    int Base = BuiltinID == X86::BI__builtin_msvc_mm_unpacklo_epi16 ? 0 : 4;
+    for (int I = 0; I != 4; ++I) {
+      Mask[2 * I] = Base + I;
+      Mask[2 * I + 1] = 8 + Base + I;
+    }
+    return StoreMSVectorResult(Builder.CreateShuffleVector(A, B, Mask));
+  }
+  case X86::BI__builtin_msvc_mm_shuffle_epi32: {
+    AddMSFeature("sse2");
+    auto *V4I32 = llvm::FixedVectorType::get(Int32Ty, 4);
+    Value *A = LoadMSVectorArg(0, V4I32);
+    uint64_t Imm = GetConstantIntArg(1);
+    int Mask[4] = {static_cast<int>(Imm & 3),
+                   static_cast<int>((Imm >> 2) & 3),
+                   static_cast<int>((Imm >> 4) & 3),
+                   static_cast<int>((Imm >> 6) & 3)};
+    return StoreMSVectorResult(Builder.CreateShuffleVector(A, Mask));
+  }
+  }
 
   SmallVector<Value*, 4> Ops;
   bool IsMaskFCmp = false;
