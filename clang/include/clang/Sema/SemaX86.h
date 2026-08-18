@@ -32,6 +32,8 @@ public:
   bool CheckBuiltinTileDuplicate(CallExpr *TheCall, ArrayRef<int> ArgNums);
   bool CheckBuiltinTileRangeAndDuplicate(CallExpr *TheCall,
                                          ArrayRef<int> ArgNums);
+  bool isMSVCVectorIntrinsicRedeclaration(const FunctionDecl *FD,
+                                          unsigned *BuiltinIDOut);
   bool CheckBuiltinFunctionCall(const TargetInfo &TI, unsigned BuiltinID,
                                 CallExpr *TheCall);
 

@@ -60,6 +60,7 @@
 #include "clang/Sema/SemaSYCL.h"
 #include "clang/Sema/SemaSwift.h"
 #include "clang/Sema/SemaWasm.h"
+#include "clang/Sema/SemaX86.h"
 #include "clang/Sema/Template.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLForwardCompat.h"
@@ -11206,6 +11207,17 @@ Sema::ActOnFunctionDeclarator(Scope *S, Declarator &D, DeclContext *DC,
         }
       }
     }
+  }
+
+  if (!D.isFunctionDefinition() && getLangOpts().MSVCCompat &&
+      Context.getTargetInfo().getTriple().isX86() &&
+      NewFD->getDeclContext()->getRedeclContext()->isFileContext() &&
+      NewFD->getLanguageLinkage() == CLanguageLinkage &&
+      NewFD->getTemplatedKind() == FunctionDecl::TK_NonTemplate &&
+      !NewFD->hasAttr<BuiltinAttr>()) {
+    unsigned BuiltinID = 0;
+    if (X86().isMSVCVectorIntrinsicRedeclaration(NewFD, &BuiltinID))
+      NewFD->addAttr(BuiltinAttr::CreateImplicit(Context, BuiltinID));
   }
 
   ProcessPragmaWeak(S, NewFD);

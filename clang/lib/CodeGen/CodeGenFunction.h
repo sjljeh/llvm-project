@@ -4976,7 +4976,8 @@ public:
   llvm::Value *EmitBPFBuiltinExpr(unsigned BuiltinID, const CallExpr *E);
 
   llvm::Value *BuildVector(ArrayRef<llvm::Value *> Ops);
-  llvm::Value *EmitX86BuiltinExpr(unsigned BuiltinID, const CallExpr *E);
+  llvm::Value *EmitX86BuiltinExpr(unsigned BuiltinID, const CallExpr *E,
+                                  ReturnValueSlot ReturnValue);
   llvm::Value *EmitPPCBuiltinCpu(unsigned BuiltinID, llvm::Type *ReturnType,
                                  StringRef CPUStr);
   llvm::Value *EmitPPCBuiltinExpr(unsigned BuiltinID, const CallExpr *E);

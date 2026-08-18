@@ -18,6 +18,7 @@
 #include "clang/Sema/ParsedAttr.h"
 #include "clang/Sema/Sema.h"
 #include "llvm/ADT/APSInt.h"
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/TargetParser/Triple.h"
 #include <bitset>
 
@@ -520,6 +521,7 @@ bool SemaX86::CheckBuiltinTileArguments(unsigned BuiltinID, CallExpr *TheCall) {
                                            /*RangeIsError=*/false);
   }
 }
+
 static bool isX86_32Builtin(unsigned BuiltinID) {
   // These builtins only work on x86-32 targets.
   switch (BuiltinID) {
@@ -529,6 +531,187 @@ static bool isX86_32Builtin(unsigned BuiltinID) {
   }
 
   return false;
+}
+
+static unsigned getMSVCVectorIntrinsicBuiltinID(StringRef Name) {
+  return llvm::StringSwitch<unsigned>(Name)
+      .Case("_mm_load_ss", X86::BI__builtin_msvc_mm_load_ss)
+      .Case("_mm_sqrt_ss", X86::BI__builtin_msvc_mm_sqrt_ss)
+      .Case("_mm_store_ss", X86::BI__builtin_msvc_mm_store_ss)
+      .Case("_mm_load_sd", X86::BI__builtin_msvc_mm_load_sd)
+      .Case("_mm_setzero_pd", X86::BI__builtin_msvc_mm_setzero_pd)
+      .Case("_mm_sqrt_sd", X86::BI__builtin_msvc_mm_sqrt_sd)
+      .Case("_mm_store_sd", X86::BI__builtin_msvc_mm_store_sd)
+      .Case("_mm_loadu_si128", X86::BI__builtin_msvc_mm_loadu_si128)
+      .Case("_mm_setzero_si128", X86::BI__builtin_msvc_mm_setzero_si128)
+      .Case("_mm_storeu_si128", X86::BI__builtin_msvc_mm_storeu_si128)
+      .Case("_mm_xor_si128", X86::BI__builtin_msvc_mm_xor_si128)
+      .Case("_mm_or_si128", X86::BI__builtin_msvc_mm_or_si128)
+      .Case("_mm_slli_si128", X86::BI__builtin_msvc_mm_slli_si128)
+      .Case("_mm_srli_si128", X86::BI__builtin_msvc_mm_srli_si128)
+      .Case("_mm_cmpeq_epi8", X86::BI__builtin_msvc_mm_cmpeq_epi8)
+      .Case("_mm_cmpeq_epi16", X86::BI__builtin_msvc_mm_cmpeq_epi16)
+      .Case("_mm_movemask_epi8", X86::BI__builtin_msvc_mm_movemask_epi8)
+      .Case("_mm_cvtsi32_si128", X86::BI__builtin_msvc_mm_cvtsi32_si128)
+      .Case("_mm_unpacklo_epi8", X86::BI__builtin_msvc_mm_unpacklo_epi8)
+      .Case("_mm_unpackhi_epi8", X86::BI__builtin_msvc_mm_unpackhi_epi8)
+      .Case("_mm_unpacklo_epi16", X86::BI__builtin_msvc_mm_unpacklo_epi16)
+      .Case("_mm_unpackhi_epi16", X86::BI__builtin_msvc_mm_unpackhi_epi16)
+      .Case("_mm_shuffle_epi32", X86::BI__builtin_msvc_mm_shuffle_epi32)
+      .Default(0);
+}
+
+static bool isMSVCIntrinsicRecord(ASTContext &Context, QualType Ty,
+                                  StringRef ExpectedName) {
+  Ty = Ty.getCanonicalType().getUnqualifiedType();
+  const auto *RT = Ty->getAs<RecordType>();
+  if (!RT)
+    return false;
+  const RecordDecl *RD = RT->getDecl();
+  if (!RD->hasAttr<MSIntrinsicTypeAttr>() || RD->getName() != ExpectedName ||
+      !RD->isCompleteDefinition())
+    return false;
+  return Context.getTypeSize(Ty) == 128 && Context.getTypeAlign(Ty) >= 128;
+}
+
+static bool isMSVCIntrinsicRecordPointer(ASTContext &Context, QualType Ty,
+                                         StringRef ExpectedName,
+                                         bool ExpectedConst) {
+  const auto *PT = Ty->getAs<PointerType>();
+  if (!PT || PT->getPointeeType().isVolatileQualified() ||
+      PT->getPointeeType().isConstQualified() != ExpectedConst)
+    return false;
+  return isMSVCIntrinsicRecord(Context, PT->getPointeeType(), ExpectedName);
+}
+
+static bool isNonVolatilePointerTo(ASTContext &Context, QualType Ty,
+                                   QualType PointeeTy, bool ExpectedConst) {
+  const auto *PT = Ty->getAs<PointerType>();
+  return PT && !PT->getPointeeType().isVolatileQualified() &&
+         PT->getPointeeType().isConstQualified() == ExpectedConst &&
+         Context.hasSameUnqualifiedType(PT->getPointeeType(), PointeeTy);
+}
+
+bool SemaX86::isMSVCVectorIntrinsicRedeclaration(const FunctionDecl *FD,
+                                                 unsigned *BuiltinIDOut) {
+  const IdentifierInfo *II = FD->getIdentifier();
+  if (!II)
+    return false;
+  unsigned BuiltinID = getMSVCVectorIntrinsicBuiltinID(II->getName());
+  if (!BuiltinID)
+    return false;
+
+  const auto *FPT = FD->getType()->getAs<FunctionProtoType>();
+  if (!FPT || FPT->isVariadic())
+    return false;
+
+  unsigned ExpectedParams = 2;
+  switch (BuiltinID) {
+  case X86::BI__builtin_msvc_mm_setzero_pd:
+  case X86::BI__builtin_msvc_mm_setzero_si128:
+    ExpectedParams = 0;
+    break;
+  case X86::BI__builtin_msvc_mm_load_ss:
+  case X86::BI__builtin_msvc_mm_sqrt_ss:
+  case X86::BI__builtin_msvc_mm_load_sd:
+  case X86::BI__builtin_msvc_mm_loadu_si128:
+  case X86::BI__builtin_msvc_mm_movemask_epi8:
+  case X86::BI__builtin_msvc_mm_cvtsi32_si128:
+    ExpectedParams = 1;
+    break;
+  default:
+    break;
+  }
+  if (FPT->getNumParams() != ExpectedParams)
+    return false;
+
+  ASTContext &Context = getASTContext();
+  QualType RetTy = FPT->getReturnType();
+  auto IsM128 = [&](QualType Ty) {
+    return isMSVCIntrinsicRecord(Context, Ty, "__m128");
+  };
+  auto IsM128d = [&](QualType Ty) {
+    return isMSVCIntrinsicRecord(Context, Ty, "__m128d");
+  };
+  auto IsM128i = [&](QualType Ty) {
+    return isMSVCIntrinsicRecord(Context, Ty, "__m128i");
+  };
+  auto IsInt = [&](QualType Ty) {
+    return Context.hasSameUnqualifiedType(Ty, Context.IntTy);
+  };
+
+  bool Matches = false;
+  switch (BuiltinID) {
+  case X86::BI__builtin_msvc_mm_load_ss:
+    Matches = IsM128(RetTy) &&
+              isNonVolatilePointerTo(Context, FPT->getParamType(0),
+                                     Context.FloatTy, /*ExpectedConst=*/true);
+    break;
+  case X86::BI__builtin_msvc_mm_store_ss:
+    Matches = RetTy->isVoidType() &&
+              isNonVolatilePointerTo(Context, FPT->getParamType(0),
+                                     Context.FloatTy, /*ExpectedConst=*/false) &&
+              IsM128(FPT->getParamType(1));
+    break;
+  case X86::BI__builtin_msvc_mm_sqrt_ss:
+    Matches = IsM128(RetTy) && IsM128(FPT->getParamType(0));
+    break;
+  case X86::BI__builtin_msvc_mm_load_sd:
+    Matches = IsM128d(RetTy) &&
+              isNonVolatilePointerTo(Context, FPT->getParamType(0),
+                                     Context.DoubleTy, /*ExpectedConst=*/true);
+    break;
+  case X86::BI__builtin_msvc_mm_store_sd:
+    Matches = RetTy->isVoidType() &&
+              isNonVolatilePointerTo(Context, FPT->getParamType(0),
+                                     Context.DoubleTy,
+                                     /*ExpectedConst=*/false) &&
+              IsM128d(FPT->getParamType(1));
+    break;
+  case X86::BI__builtin_msvc_mm_sqrt_sd:
+    Matches = IsM128d(RetTy) && IsM128d(FPT->getParamType(0)) &&
+              IsM128d(FPT->getParamType(1));
+    break;
+  case X86::BI__builtin_msvc_mm_setzero_pd:
+    Matches = IsM128d(RetTy);
+    break;
+  case X86::BI__builtin_msvc_mm_loadu_si128:
+    Matches = IsM128i(RetTy) &&
+              isMSVCIntrinsicRecordPointer(
+                  Context, FPT->getParamType(0), "__m128i",
+                  /*ExpectedConst=*/true);
+    break;
+  case X86::BI__builtin_msvc_mm_storeu_si128:
+    Matches = RetTy->isVoidType() &&
+              isMSVCIntrinsicRecordPointer(Context, FPT->getParamType(0),
+                                           "__m128i",
+                                           /*ExpectedConst=*/false) &&
+              IsM128i(FPT->getParamType(1));
+    break;
+  case X86::BI__builtin_msvc_mm_setzero_si128:
+    Matches = IsM128i(RetTy);
+    break;
+  case X86::BI__builtin_msvc_mm_movemask_epi8:
+    Matches = IsInt(RetTy) && IsM128i(FPT->getParamType(0));
+    break;
+  case X86::BI__builtin_msvc_mm_cvtsi32_si128:
+    Matches = IsM128i(RetTy) && IsInt(FPT->getParamType(0));
+    break;
+  case X86::BI__builtin_msvc_mm_slli_si128:
+  case X86::BI__builtin_msvc_mm_srli_si128:
+  case X86::BI__builtin_msvc_mm_shuffle_epi32:
+    Matches = IsM128i(RetTy) && IsM128i(FPT->getParamType(0)) &&
+              IsInt(FPT->getParamType(1));
+    break;
+  default:
+    Matches = IsM128i(RetTy) && IsM128i(FPT->getParamType(0)) &&
+              IsM128i(FPT->getParamType(1));
+    break;
+  }
+
+  if (Matches && BuiltinIDOut)
+    *BuiltinIDOut = BuiltinID;
+  return Matches;
 }
 
 bool SemaX86::CheckBuiltinFunctionCall(const TargetInfo &TI, unsigned BuiltinID,

@@ -3517,18 +3517,50 @@ void CodeGenModule::setNonAliasAttributes(GlobalDecl GD,
           F->setSection(SA->getName());
 
       llvm::AttrBuilder Attrs(F->getContext());
-      if (GetCPUAndFeaturesAttributes(GD, Attrs)) {
+      bool HasTargetAttrs = GetCPUAndFeaturesAttributes(GD, Attrs);
+      llvm::Attribute RequiredFeatures =
+          F->getFnAttribute("clang-msvc-required-target-features");
+      if (RequiredFeatures.isValid()) {
+        SmallVector<StringRef, 8> Features;
+        llvm::Attribute TargetFeatures = Attrs.getAttribute("target-features");
+        if (!TargetFeatures.isValid())
+          TargetFeatures = F->getFnAttribute("target-features");
+        if (TargetFeatures.isValid())
+          TargetFeatures.getValueAsString().split(Features, ',');
+        SmallVector<StringRef, 4> Required;
+        RequiredFeatures.getValueAsString().split(Required, ',');
+        for (StringRef RequiredFeature : Required) {
+          if (RequiredFeature.empty())
+            continue;
+          std::string Opposite;
+          StringRef FeatureName = RequiredFeature;
+          if (FeatureName.consume_front("+"))
+            Opposite = ("-" + FeatureName).str();
+          else if (FeatureName.consume_front("-"))
+            Opposite = ("+" + FeatureName).str();
+          if (!Opposite.empty())
+            llvm::erase_if(Features,
+                           [&](StringRef F) { return F == Opposite; });
+          if (!llvm::is_contained(Features, RequiredFeature))
+            Features.push_back(RequiredFeature);
+        }
+        Attrs.addAttribute("target-features", llvm::join(Features, ","));
+        HasTargetAttrs = true;
+      }
+      if (HasTargetAttrs) {
         // We know that GetCPUAndFeaturesAttributes will always have the
         // newest set, since it has the newest possible FunctionDecl, so the
         // new ones should replace the old.
         llvm::AttributeMask RemoveAttrs;
         RemoveAttrs.addAttribute("target-cpu");
         RemoveAttrs.addAttribute("target-features");
+        RemoveAttrs.addAttribute("clang-msvc-required-target-features");
         RemoveAttrs.addAttribute("fmv-features");
         RemoveAttrs.addAttribute("tune-cpu");
         F->removeFnAttrs(RemoveAttrs);
         F->addFnAttrs(Attrs);
       }
+      F->removeFnAttr("clang-msvc-required-target-features");
     }
 
     if (const auto *CSA = D->getAttr<CodeSegAttr>())
