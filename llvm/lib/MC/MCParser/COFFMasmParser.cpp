@@ -173,7 +173,8 @@ class COFFMasmParser : public MCAsmParserExtension {
 
     // Simplified segment directives
     addDirectiveHandler<&COFFMasmParser::parseSectionDirectiveCode>(".code");
-    // .const
+    addDirectiveHandler<&COFFMasmParser::parseSectionDirectiveReadOnlyData>(
+        ".const");
     addDirectiveHandler<&COFFMasmParser::parseSectionDirectiveInitializedData>(
         ".data");
     addDirectiveHandler<
@@ -200,6 +201,11 @@ class COFFMasmParser : public MCAsmParserExtension {
     return parseSectionSwitch(".text", COFF::IMAGE_SCN_CNT_CODE |
                                            COFF::IMAGE_SCN_MEM_EXECUTE |
                                            COFF::IMAGE_SCN_MEM_READ);
+  }
+
+  bool parseSectionDirectiveReadOnlyData(StringRef, SMLoc) {
+    return parseSectionSwitch(".rdata", COFF::IMAGE_SCN_CNT_INITIALIZED_DATA |
+                                            COFF::IMAGE_SCN_MEM_READ);
   }
 
   bool parseSectionDirectiveInitializedData(StringRef, SMLoc) {
@@ -440,6 +446,10 @@ bool COFFMasmParser::parseDirectiveOption(StringRef Directive, SMLoc Loc) {
         return false;
       }
       return TokError("OPTION EPILOGUE is currently unsupported");
+    }
+    if (Option.equals_insensitive("dotname")) {
+      getParser().setMasmDotName(true);
+      return false;
     }
     return TokError("OPTION '" + Option + "' is currently unsupported");
   };
