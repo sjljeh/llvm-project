@@ -177,6 +177,16 @@ _rdrand32_step(unsigned int *__p)
 /// \param __p
 ///    A pointer to a 64-bit memory location to place the random value.
 /// \returns 1 if the value was successfully generated, 0 otherwise.
+#if defined(_MSC_VER) && defined(__x86_64__) && \
+    __has_builtin(_rdrand64_step)
+#ifdef __cplusplus
+extern "C" {
+#endif
+int __cdecl _rdrand64_step(unsigned long long *__p);
+#ifdef __cplusplus
+}
+#endif
+#else
 static __inline__ int __attribute__((__always_inline__, __nodebug__, __target__("rdrnd")))
 _rdrand64_step(unsigned long long *__p)
 {
@@ -197,6 +207,7 @@ _rdrand64_step(unsigned long long *__p)
   }
 #endif
 }
+#endif
 
 #ifdef __x86_64__
 /// Reads the FS base register.
