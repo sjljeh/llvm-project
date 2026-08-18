@@ -63,4 +63,9 @@ t10:
 mov ebx, dword ptr [4*eax]
 ; CHECK: mov ebx, dword ptr [4*eax]
 
+t11:
+mov al, byte ptr [06f6ch]
+; CHECK-LABEL: t11:
+; CHECK: mov al, byte ptr [28524]
+
 END
