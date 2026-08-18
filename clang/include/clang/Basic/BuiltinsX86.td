@@ -156,10 +156,26 @@ let Features = "sse", Attributes = [NoThrow, Const, Constexpr, RequiredVectorWid
 }
 
 let Features = "sse", Attributes = [NoThrow, Const, RequiredVectorWidth<128>] in {
+  def sqrtps : X86Builtin<"_Vector<4, float>(_Vector<4, float>)">;
+  def sqrtss : X86Builtin<"_Vector<4, float>(_Vector<4, float>)">;
   def rcpps : X86Builtin<"_Vector<4, float>(_Vector<4, float>)">;
   def rcpss : X86Builtin<"_Vector<4, float>(_Vector<4, float>)">;
   def rsqrtps : X86Builtin<"_Vector<4, float>(_Vector<4, float>)">;
   def rsqrtss : X86Builtin<"_Vector<4, float>(_Vector<4, float>)">;
+}
+
+let Features = "mmx,sse", Attributes = [NoThrow, Const, RequiredVectorWidth<64>] in {
+  def cvtps2pi : X86Builtin<"_Vector<2, int>(_Vector<4, float>)">;
+  def cvttps2pi : X86Builtin<"_Vector<2, int>(_Vector<4, float>)">;
+  def cvtpi2ps : X86Builtin<"_Vector<4, float>(_Vector<4, float>, _Vector<2, int>)">;
+  def pmaxsw : X86Builtin<"_Vector<4, short>(_Vector<4, short>, _Vector<4, short>)">;
+  def pmaxub : X86Builtin<"_Vector<8, char>(_Vector<8, char>, _Vector<8, char>)">;
+  def pminsw : X86Builtin<"_Vector<4, short>(_Vector<4, short>, _Vector<4, short>)">;
+  def pminub : X86Builtin<"_Vector<8, char>(_Vector<8, char>, _Vector<8, char>)">;
+}
+
+let Features = "mmx", Attributes = [NoThrow, RequiredVectorWidth<64>] in {
+  def movntq : X86Builtin<"void(_Vector<1, long long int>*, _Vector<1, long long int>)">;
 }
 
 let Features = "sse2", Attributes = [NoThrow, RequiredVectorWidth<128>] in {
@@ -180,6 +196,8 @@ let Features = "avx512f", Attributes = [NoThrow, Const, Constexpr, RequiredVecto
 }
 
 let Features = "sse2", Attributes = [NoThrow, Const, Constexpr, RequiredVectorWidth<128>] in {
+  def sqrtpd : X86Builtin<"_Vector<2, double>(_Vector<2, double>)">;
+  def sqrtsd : X86Builtin<"_Vector<2, double>(_Vector<2, double>)">;
   def cvtpd2dq : X86Builtin<"_Vector<4, int>(_Vector<2, double>)">;
   def cvttpd2dq : X86Builtin<"_Vector<4, int>(_Vector<2, double>)">;
   def cvtsd2si : X86Builtin<"int(_Vector<2, double>)">;
