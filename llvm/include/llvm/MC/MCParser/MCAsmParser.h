@@ -193,6 +193,10 @@ public:
 
   virtual bool isParsingMasm() const { return false; }
 
+  virtual void setMasmIdentifierCaseSensitive(bool) {}
+
+  virtual void setMasmDotName(bool) {}
+
   virtual bool defineMacro(StringRef Name, StringRef Value) { return true; }
 
   virtual bool lookUpField(StringRef Name, AsmFieldInfo &Info) const {

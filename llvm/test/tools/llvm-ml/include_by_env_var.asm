@@ -1,6 +1,6 @@
-; RUN: env INCLUDE=%S llvm-ml -filetype=s %s /Fo - | FileCheck %s
+; RUN: env INCLUDE=%S/Inputs llvm-ml -filetype=s %s /Fo - | FileCheck %s
 
-include included.inc
+include env-included.inc
 
 .code
 
