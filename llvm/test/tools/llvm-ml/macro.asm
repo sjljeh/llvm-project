@@ -172,6 +172,7 @@ optional_parameter_test PROC
 optional_parameter_test ENDP
 
 LocalSymbolMacro MACRO
+
   LOCAL a
 a: ret
    jmp a
@@ -209,5 +210,20 @@ purge_test PROC
 ; CHECK-NEXT: xor eax, eax
 ; CHECK-NEXT: jmp "??0002"
 purge_test ENDP
+
+ExpressionArgumentMacro MACRO Flags
+IF (Flags AND 2)
+  mov eax, Flags
+ENDIF
+ENDM
+
+expression_argument_test PROC
+; CHECK-LABEL: expression_argument_test:
+
+  ExpressionArgumentMacro (1 OR 2)
+; CHECK: mov eax, 3
+
+  ret
+expression_argument_test ENDP
 
 END

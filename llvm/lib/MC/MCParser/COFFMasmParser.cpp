@@ -504,9 +504,13 @@ bool COFFMasmParser::parseDirectiveProc(StringRef Directive, SMLoc Loc) {
   }
 
   bool Framed = false;
+  MCSymbol *Handler = nullptr;
   if (getLexer().is(AsmToken::Identifier) &&
       getTok().getString().equals_insensitive("frame")) {
     Lex();
+    if (parseOptionalToken(AsmToken::Colon) && getParser().parseSymbol(Handler))
+      return Error(getTok().getLoc(),
+                   "expected exception handler after FRAME:");
     Framed = true;
   }
   if (parseEOL())
@@ -518,12 +522,17 @@ bool COFFMasmParser::parseDirectiveProc(StringRef Directive, SMLoc Loc) {
   COFFSym->setType(COFF::IMAGE_SYM_DTYPE_FUNCTION
                    << COFF::SCT_COMPLEX_TYPE_SHIFT);
 
-  if (Framed)
+  if (Framed) {
     getStreamer().emitWinCFIStartProc(Sym, Loc);
+    if (Handler)
+      getStreamer().emitWinEHHandler(Handler, /*Unwind=*/true,
+                                     /*Except=*/true, Loc);
+  }
   getStreamer().emitLabel(Sym, Loc);
 
   CurrentProcedures.push_back(Sym->getName());
   CurrentProceduresFramed.push_back(Framed);
+  getParser().enterMasmProcedure();
   return false;
 }
 bool COFFMasmParser::parseDirectiveEndProc(StringRef Directive, SMLoc Loc) {
@@ -541,6 +550,7 @@ bool COFFMasmParser::parseDirectiveEndProc(StringRef Directive, SMLoc Loc) {
   if (CurrentProceduresFramed.back()) {
     getStreamer().emitWinCFIEndProc(Loc);
   }
+  getParser().exitMasmProcedure();
   CurrentProcedures.pop_back();
   CurrentProceduresFramed.pop_back();
   if (parseEOL())
