@@ -391,6 +391,7 @@
 // RUN:    /cgthreads4 \
 // RUN:    /cgthreads8 \
 // RUN:    /d2FastFail \
+// RUN:    /d2FH4- \
 // RUN:    /d2Zi+ \
 // RUN:    /errorReport:foo \
 // RUN:    /execution-charset:utf-8 \
