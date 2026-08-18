@@ -2,7 +2,9 @@
 
 .code
 
-t1 PROC FRAME
+EXTERN handler:PROC
+
+t1 PROC FRAME:handler
   push rbp
   .pushreg rbp
   mov rbp, rsp
@@ -14,6 +16,7 @@ t1 PROC FRAME
 t1 ENDP
 
 ; CHECK: .seh_proc t1
+; CHECK: .seh_handler handler, @unwind, @except
 
 ; CHECK: t1:
 ; CHECK: push rbp
