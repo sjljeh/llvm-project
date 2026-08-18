@@ -813,6 +813,17 @@ let Features = "xsaves", Attributes = [NoThrow] in {
   def xsaves : X86Builtin<"void(void *, unsigned long long int)">;
 }
 
+let Header = "immintrin.h", Languages = "ALL_MS_LANGUAGES", Attributes = [NoThrow, RequireDeclaration] in {
+  def _fxrstor : X86LibBuiltin<"void(void const *)">;
+  def _fxsave : X86LibBuiltin<"void(void *)">;
+  def _xrstor : X86LibBuiltin<"void(void const *, unsigned long long int)">;
+  def _xsave : X86LibBuiltin<"void(void *, unsigned long long int)">;
+  def _xsavec : X86LibBuiltin<"void(void *, unsigned long long int)">;
+  def _xsaveopt : X86LibBuiltin<"void(void *, unsigned long long int)">;
+  def _xrstors : X86LibBuiltin<"void(void const *, unsigned long long int)">;
+  def _xsaves : X86LibBuiltin<"void(void *, unsigned long long int)">;
+}
+
 let Features = "shstk", Attributes = [NoThrow] in {
   def incsspd : X86Builtin<"void(unsigned int)">;
   def rdsspd : X86Builtin<"unsigned int(unsigned int)">;

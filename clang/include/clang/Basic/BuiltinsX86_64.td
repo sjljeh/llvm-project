@@ -38,7 +38,7 @@ let Header = "intrin.h", Languages = "ALL_MS_LANGUAGES", Attributes = [NoThrow, 
   def __shiftright128 : X86LibBuiltin<"unsigned long long int(unsigned long long int, unsigned long long int, unsigned char)">;
 }
 
-let Features = "cx16", Header = "intrin.h", Languages = "ALL_MS_LANGUAGES", Attributes = [NoThrow, RequireDeclaration] in {
+let Header = "intrin.h", Languages = "ALL_MS_LANGUAGES", Attributes = [NoThrow, RequireDeclaration] in {
   def _InterlockedCompareExchange128 : X86LibBuiltin<"unsigned char(long long int volatile *, long long int, long long int, long long int *)">;
 }
 
@@ -125,6 +125,18 @@ let Attributes = [NoThrow, Constexpr] in {
 
 let Features = "rdrnd", Attributes = [NoThrow] in {
   def rdrand64_step : X86Builtin<"unsigned int(unsigned long long int *)">;
+}
+
+let Header = "immintrin.h", Languages = "ALL_MS_LANGUAGES", Attributes = [NoThrow, RequireDeclaration] in {
+  def _fxrstor64 : X86LibBuiltin<"void(void const *)">;
+  def _fxsave64 : X86LibBuiltin<"void(void *)">;
+  def _rdrand64_step : X86LibBuiltin<"int(unsigned long long int *)">;
+  def _xrstor64 : X86LibBuiltin<"void(void const *, unsigned long long int)">;
+  def _xsave64 : X86LibBuiltin<"void(void *, unsigned long long int)">;
+  def _xsavec64 : X86LibBuiltin<"void(void *, unsigned long long int)">;
+  def _xsaveopt64 : X86LibBuiltin<"void(void *, unsigned long long int)">;
+  def _xrstors64 : X86LibBuiltin<"void(void const *, unsigned long long int)">;
+  def _xsaves64 : X86LibBuiltin<"void(void *, unsigned long long int)">;
 }
 
 let Features = "rdseed", Attributes = [NoThrow] in {
