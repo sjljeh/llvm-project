@@ -16540,9 +16540,12 @@ Decl *Sema::ActOnStartOfFunctionDef(Scope *FnBodyScope, Decl *D,
     PushFunctionScope();
   }
 
-  // Builtin functions cannot be defined.
+  // Builtin functions cannot be defined unless #pragma function selected an
+  // out-of-line implementation.
   if (unsigned BuiltinID = FD->getBuiltinID()) {
-    if (!Context.BuiltinInfo.isPredefinedLibFunction(BuiltinID) &&
+    IdentifierInfo *II = FD->getIdentifier();
+    if (!(II && MSFunctionNoBuiltins.contains(II->getName())) &&
+        !Context.BuiltinInfo.isPredefinedLibFunction(BuiltinID) &&
         !Context.BuiltinInfo.isPredefinedRuntimeFunction(BuiltinID)) {
       Diag(FD->getLocation(), diag::err_builtin_definition) << FD;
       FD->setInvalidDecl();
