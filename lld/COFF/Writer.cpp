@@ -1730,9 +1730,13 @@ void Writer::mergeSections() {
     // Don't merge .bss into a shared section. MSVC link.exe keeps .bss
     // separate when the target has IMAGE_SCN_MEM_SHARED, preventing unexpected
     // sharing across processes.
+    OutputSection *target = findSection(toSection);
+    uint32_t permissions =
+        target ? target->getPermissions() : bssSec->getPermissions();
     auto secIt = ctx.config.section.find(toSection);
-    if (secIt == ctx.config.section.end() ||
-        !(secIt->second & IMAGE_SCN_MEM_SHARED))
+    if (secIt != ctx.config.section.end())
+      permissions = secIt->second.apply(permissions);
+    if (!(permissions & IMAGE_SCN_MEM_SHARED))
       mergeSection({it->first, toSection});
   }
 }
@@ -2527,10 +2531,10 @@ void Writer::setSectionPermissions() {
   llvm::TimeTraceScope timeScope("Sections permissions");
   for (auto &p : ctx.config.section) {
     StringRef name = p.first;
-    uint32_t perm = p.second;
+    const auto &perm = p.second;
     for (OutputSection *sec : ctx.outputSections)
       if (sec->name == name)
-        sec->setPermissions(perm);
+        sec->setPermissions(perm.apply(sec->getPermissions()));
   }
 }
 
