@@ -17,6 +17,12 @@
 /* Define the default attributes for the functions in this file. */
 #define __DEFAULT_FN_ATTRS __attribute__((__always_inline__, __nodebug__,  __target__("xsavec")))
 
+#ifdef __cplusplus
+#define __XSAVEC_EXTERN_C extern "C"
+#else
+#define __XSAVEC_EXTERN_C
+#endif
+
 /// Performs a full or partial save of processor state to the memory at
 ///    \a __p. The exact state saved depends on the 64-bit mask \a __m and
 ///    processor control register \c XCR0.
@@ -42,10 +48,14 @@
 ///    Pointer to the save area; must be 64-byte aligned.
 /// \param __m
 ///    A 64-bit mask indicating what state should be saved.
+#if defined(_MSC_VER) && __has_builtin(_xsavec)
+__XSAVEC_EXTERN_C void __cdecl _xsavec(void *__p, unsigned __int64 __m);
+#else
 static __inline__ void __DEFAULT_FN_ATTRS
 _xsavec(void *__p, unsigned long long __m) {
   __builtin_ia32_xsavec(__p, __m);
 }
+#endif
 
 #ifdef __x86_64__
 /// Performs a full or partial save of processor state to the memory at
@@ -73,12 +83,17 @@ _xsavec(void *__p, unsigned long long __m) {
 ///    Pointer to the save area; must be 64-byte aligned.
 /// \param __m
 ///    A 64-bit mask indicating what state should be saved.
+#if defined(_MSC_VER) && __has_builtin(_xsavec64)
+__XSAVEC_EXTERN_C void __cdecl _xsavec64(void *__p, unsigned __int64 __m);
+#else
 static __inline__ void __DEFAULT_FN_ATTRS
 _xsavec64(void *__p, unsigned long long __m) {
   __builtin_ia32_xsavec64(__p, __m);
 }
 #endif
+#endif
 
+#undef __XSAVEC_EXTERN_C
 #undef __DEFAULT_FN_ATTRS
 
 #endif

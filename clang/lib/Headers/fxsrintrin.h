@@ -16,6 +16,12 @@
 
 #define __DEFAULT_FN_ATTRS __attribute__((__always_inline__, __nodebug__,  __target__("fxsr")))
 
+#ifdef __cplusplus
+#define __FXSR_EXTERN_C extern "C"
+#else
+#define __FXSR_EXTERN_C
+#endif
+
 /// Saves the XMM, MMX, MXCSR and x87 FPU registers into a 512-byte
 ///    memory region pointed to by the input parameter \a __p.
 ///
@@ -26,11 +32,15 @@
 /// \param __p
 ///    A pointer to a 512-byte memory region. The beginning of this memory
 ///    region should be aligned on a 16-byte boundary.
+#if defined(_MSC_VER) && __has_builtin(_fxsave)
+__FXSR_EXTERN_C void __cdecl _fxsave(void *__p);
+#else
 static __inline__ void __DEFAULT_FN_ATTRS
 _fxsave(void *__p)
 {
   __builtin_ia32_fxsave(__p);
 }
+#endif
 
 /// Restores the XMM, MMX, MXCSR and x87 FPU registers from the 512-byte
 ///    memory region pointed to by the input parameter \a __p. The contents of
@@ -44,11 +54,15 @@ _fxsave(void *__p)
 /// \param __p
 ///    A pointer to a 512-byte memory region. The beginning of this memory
 ///    region should be aligned on a 16-byte boundary.
+#if defined(_MSC_VER) && __has_builtin(_fxrstor)
+__FXSR_EXTERN_C void __cdecl _fxrstor(void const *__p);
+#else
 static __inline__ void __DEFAULT_FN_ATTRS
 _fxrstor(void *__p)
 {
   __builtin_ia32_fxrstor(__p);
 }
+#endif
 
 #ifdef __x86_64__
 /// Saves the XMM, MMX, MXCSR and x87 FPU registers into a 512-byte
@@ -61,11 +75,15 @@ _fxrstor(void *__p)
 /// \param __p
 ///    A pointer to a 512-byte memory region. The beginning of this memory
 ///    region should be aligned on a 16-byte boundary.
+#if defined(_MSC_VER) && __has_builtin(_fxsave64)
+__FXSR_EXTERN_C void __cdecl _fxsave64(void *__p);
+#else
 static __inline__ void __DEFAULT_FN_ATTRS
 _fxsave64(void *__p)
 {
   __builtin_ia32_fxsave64(__p);
 }
+#endif
 
 /// Restores the XMM, MMX, MXCSR and x87 FPU registers from the 512-byte
 ///    memory region pointed to by the input parameter \a __p. The contents of
@@ -79,13 +97,18 @@ _fxsave64(void *__p)
 /// \param __p
 ///    A pointer to a 512-byte memory region. The beginning of this memory
 ///    region should be aligned on a 16-byte boundary.
+#if defined(_MSC_VER) && __has_builtin(_fxrstor64)
+__FXSR_EXTERN_C void __cdecl _fxrstor64(void const *__p);
+#else
 static __inline__ void __DEFAULT_FN_ATTRS
 _fxrstor64(void *__p)
 {
   __builtin_ia32_fxrstor64(__p);
 }
 #endif
+#endif
 
+#undef __FXSR_EXTERN_C
 #undef __DEFAULT_FN_ATTRS
 
 #endif

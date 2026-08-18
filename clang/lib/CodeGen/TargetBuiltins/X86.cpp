@@ -831,8 +831,12 @@ Value *CodeGenFunction::EmitX86BuiltinExpr(unsigned BuiltinID,
 
   // Handle MSVC intrinsics before argument evaluation to prevent double
   // evaluation.
-  if (std::optional<MSVCIntrin> MsvcIntId = translateX86ToMsvcIntrin(BuiltinID))
+  if (std::optional<MSVCIntrin> MsvcIntId =
+          translateX86ToMsvcIntrin(BuiltinID)) {
+    if (*MsvcIntId == MSVCIntrin::_InterlockedCompareExchange128)
+      addX86TargetFeature(CurFn, "cx16");
     return EmitMSVCBuiltinExpr(*MsvcIntId, E);
+  }
 
   auto StoreMSVectorResult = [&](Value *V) -> Value * {
     if (!ReturnValue.isNull())
@@ -1292,6 +1296,30 @@ Value *CodeGenFunction::EmitX86BuiltinExpr(unsigned BuiltinID,
                        Tmp.getPointer());
     return Builder.CreateLoad(Tmp, "stmxcsr");
   }
+  case X86::BI_fxsave:
+  case X86::BI_fxsave64:
+  case X86::BI_fxrstor:
+  case X86::BI_fxrstor64: {
+    AddMSFeature("fxsr");
+    Intrinsic::ID ID;
+    switch (BuiltinID) {
+    default:
+      llvm_unreachable("Unsupported FXSTATE intrinsic");
+    case X86::BI_fxsave:
+      ID = Intrinsic::x86_fxsave;
+      break;
+    case X86::BI_fxsave64:
+      ID = Intrinsic::x86_fxsave64;
+      break;
+    case X86::BI_fxrstor:
+      ID = Intrinsic::x86_fxrstor;
+      break;
+    case X86::BI_fxrstor64:
+      ID = Intrinsic::x86_fxrstor64;
+      break;
+    }
+    return Builder.CreateCall(CGM.getIntrinsic(ID), Ops);
+  }
   case X86::BI__builtin_ia32_xsave:
   case X86::BI__builtin_ia32_xsave64:
   case X86::BI__builtin_ia32_xrstor:
@@ -1305,6 +1333,18 @@ Value *CodeGenFunction::EmitX86BuiltinExpr(unsigned BuiltinID,
   case X86::BI__builtin_ia32_xsaves:
   case X86::BI__builtin_ia32_xsaves64:
   case X86::BI__builtin_ia32_xsetbv:
+  case X86::BI_xsave:
+  case X86::BI_xsave64:
+  case X86::BI_xrstor:
+  case X86::BI_xrstor64:
+  case X86::BI_xsaveopt:
+  case X86::BI_xsaveopt64:
+  case X86::BI_xrstors:
+  case X86::BI_xrstors64:
+  case X86::BI_xsavec:
+  case X86::BI_xsavec64:
+  case X86::BI_xsaves:
+  case X86::BI_xsaves64:
   case X86::BI_xsetbv: {
     Intrinsic::ID ID;
 #define INTRINSIC_X86_XSAVE_ID(NAME) \
@@ -1326,7 +1366,56 @@ Value *CodeGenFunction::EmitX86BuiltinExpr(unsigned BuiltinID,
     INTRINSIC_X86_XSAVE_ID(xsaves);
     INTRINSIC_X86_XSAVE_ID(xsaves64);
     INTRINSIC_X86_XSAVE_ID(xsetbv);
+    case X86::BI_xsave:
+      AddMSFeature("xsave");
+      ID = Intrinsic::x86_xsave;
+      break;
+    case X86::BI_xsave64:
+      AddMSFeature("xsave");
+      ID = Intrinsic::x86_xsave64;
+      break;
+    case X86::BI_xrstor:
+      AddMSFeature("xsave");
+      ID = Intrinsic::x86_xrstor;
+      break;
+    case X86::BI_xrstor64:
+      AddMSFeature("xsave");
+      ID = Intrinsic::x86_xrstor64;
+      break;
+    case X86::BI_xsaveopt:
+      AddMSFeature("xsaveopt");
+      ID = Intrinsic::x86_xsaveopt;
+      break;
+    case X86::BI_xsaveopt64:
+      AddMSFeature("xsaveopt");
+      ID = Intrinsic::x86_xsaveopt64;
+      break;
+    case X86::BI_xrstors:
+      AddMSFeature("xsaves");
+      ID = Intrinsic::x86_xrstors;
+      break;
+    case X86::BI_xrstors64:
+      AddMSFeature("xsaves");
+      ID = Intrinsic::x86_xrstors64;
+      break;
+    case X86::BI_xsavec:
+      AddMSFeature("xsavec");
+      ID = Intrinsic::x86_xsavec;
+      break;
+    case X86::BI_xsavec64:
+      AddMSFeature("xsavec");
+      ID = Intrinsic::x86_xsavec64;
+      break;
+    case X86::BI_xsaves:
+      AddMSFeature("xsaves");
+      ID = Intrinsic::x86_xsaves;
+      break;
+    case X86::BI_xsaves64:
+      AddMSFeature("xsaves");
+      ID = Intrinsic::x86_xsaves64;
+      break;
     case X86::BI_xsetbv:
+      AddMSFeature("xsave");
       ID = Intrinsic::x86_xsetbv;
       break;
     }
@@ -1339,7 +1428,9 @@ Value *CodeGenFunction::EmitX86BuiltinExpr(unsigned BuiltinID,
     return Builder.CreateCall(CGM.getIntrinsic(ID), Ops);
   }
   case X86::BI__builtin_ia32_xgetbv:
+    return Builder.CreateCall(CGM.getIntrinsic(Intrinsic::x86_xgetbv), Ops);
   case X86::BI_xgetbv:
+    AddMSFeature("xsave");
     return Builder.CreateCall(CGM.getIntrinsic(Intrinsic::x86_xgetbv), Ops);
   case X86::BI__builtin_ia32_storedqudi128_mask:
   case X86::BI__builtin_ia32_storedqusi128_mask:
@@ -2752,6 +2843,7 @@ Value *CodeGenFunction::EmitX86BuiltinExpr(unsigned BuiltinID,
   case X86::BI__builtin_ia32_rdrand16_step:
   case X86::BI__builtin_ia32_rdrand32_step:
   case X86::BI__builtin_ia32_rdrand64_step:
+  case X86::BI_rdrand64_step:
   case X86::BI__builtin_ia32_rdseed16_step:
   case X86::BI__builtin_ia32_rdseed32_step:
   case X86::BI__builtin_ia32_rdseed64_step: {
@@ -2765,6 +2857,10 @@ Value *CodeGenFunction::EmitX86BuiltinExpr(unsigned BuiltinID,
       ID = Intrinsic::x86_rdrand_32;
       break;
     case X86::BI__builtin_ia32_rdrand64_step:
+      ID = Intrinsic::x86_rdrand_64;
+      break;
+    case X86::BI_rdrand64_step:
+      AddMSFeature("rdrnd");
       ID = Intrinsic::x86_rdrand_64;
       break;
     case X86::BI__builtin_ia32_rdseed16_step:
