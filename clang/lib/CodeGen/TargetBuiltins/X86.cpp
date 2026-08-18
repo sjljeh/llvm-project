@@ -2298,6 +2298,33 @@ Value *CodeGenFunction::EmitX86BuiltinExpr(unsigned BuiltinID,
     return Builder.CreateBitCast(Res, Ops[0]->getType());
   }
 
+  case X86::BI__builtin_ia32_sqrtps:
+  case X86::BI__builtin_ia32_sqrtpd:
+    if (Builder.getIsFPConstrained()) {
+      CodeGenFunction::CGFPOptionsRAII FPOptsRAII(*this, E);
+      Function *F = CGM.getIntrinsic(Intrinsic::experimental_constrained_sqrt,
+                                     Ops[0]->getType());
+      return Builder.CreateConstrainedFPCall(F, Ops[0]);
+    } else {
+      Function *F = CGM.getIntrinsic(Intrinsic::sqrt, Ops[0]->getType());
+      return Builder.CreateCall(F, Ops[0]);
+    }
+
+  case X86::BI__builtin_ia32_sqrtss:
+  case X86::BI__builtin_ia32_sqrtsd: {
+    Value *A = Builder.CreateExtractElement(Ops[0], (uint64_t)0);
+    if (Builder.getIsFPConstrained()) {
+      CodeGenFunction::CGFPOptionsRAII FPOptsRAII(*this, E);
+      Function *F = CGM.getIntrinsic(Intrinsic::experimental_constrained_sqrt,
+                                     A->getType());
+      A = Builder.CreateConstrainedFPCall(F, A);
+    } else {
+      Function *F = CGM.getIntrinsic(Intrinsic::sqrt, A->getType());
+      A = Builder.CreateCall(F, A);
+    }
+    return Builder.CreateInsertElement(Ops[0], A, (uint64_t)0);
+  }
+
   case X86::BI__builtin_ia32_sqrtsh_round_mask:
   case X86::BI__builtin_ia32_sqrtsd_round_mask:
   case X86::BI__builtin_ia32_sqrtss_round_mask: {

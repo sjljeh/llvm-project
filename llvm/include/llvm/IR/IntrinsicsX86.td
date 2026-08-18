@@ -222,11 +222,11 @@ let TargetPrefix = "x86" in {  // All intrinsics start with "llvm.x86.".
   def int_x86_sse_cvttss2si64 : ClangBuiltin<"__builtin_ia32_cvttss2si64">,
       DefaultAttrsIntrinsic<[llvm_i64_ty], [llvm_v4f32_ty], [IntrNoMem]>;
 
-  def int_x86_sse_cvtps2pi :
+  def int_x86_sse_cvtps2pi : ClangBuiltin<"__builtin_ia32_cvtps2pi">,
       DefaultAttrsIntrinsic<[llvm_x86mmx_ty], [llvm_v4f32_ty], [IntrNoMem]>;
-  def int_x86_sse_cvttps2pi:
+  def int_x86_sse_cvttps2pi: ClangBuiltin<"__builtin_ia32_cvttps2pi">,
       DefaultAttrsIntrinsic<[llvm_x86mmx_ty], [llvm_v4f32_ty], [IntrNoMem]>;
-  def int_x86_sse_cvtpi2ps :
+  def int_x86_sse_cvtpi2ps : ClangBuiltin<"__builtin_ia32_cvtpi2ps">,
       DefaultAttrsIntrinsic<[llvm_v4f32_ty], [llvm_v4f32_ty,
                              llvm_x86mmx_ty], [IntrNoMem]>;
 }
@@ -2357,18 +2357,18 @@ let TargetPrefix = "x86" in {  // All intrinsics start with "llvm.x86.".
                             [IntrNoMem, Commutative]>;
 
   // Maximum
-  def int_x86_mmx_pmaxu_b :
+  def int_x86_mmx_pmaxu_b : ClangBuiltin<"__builtin_ia32_pmaxub">,
       DefaultAttrsIntrinsic<[llvm_x86mmx_ty], [llvm_x86mmx_ty, llvm_x86mmx_ty],
                             [IntrNoMem, Commutative]>;
-  def int_x86_mmx_pmaxs_w :
+  def int_x86_mmx_pmaxs_w : ClangBuiltin<"__builtin_ia32_pmaxsw">,
       DefaultAttrsIntrinsic<[llvm_x86mmx_ty], [llvm_x86mmx_ty, llvm_x86mmx_ty],
                             [IntrNoMem, Commutative]>;
 
   // Minimum
-  def int_x86_mmx_pminu_b :
+  def int_x86_mmx_pminu_b : ClangBuiltin<"__builtin_ia32_pminub">,
       DefaultAttrsIntrinsic<[llvm_x86mmx_ty], [llvm_x86mmx_ty, llvm_x86mmx_ty],
                             [IntrNoMem, Commutative]>;
-  def int_x86_mmx_pmins_w :
+  def int_x86_mmx_pmins_w : ClangBuiltin<"__builtin_ia32_pminsw">,
       DefaultAttrsIntrinsic<[llvm_x86mmx_ty], [llvm_x86mmx_ty, llvm_x86mmx_ty],
                             [IntrNoMem, Commutative]>;
 
@@ -2541,7 +2541,7 @@ let TargetPrefix = "x86" in {  // All intrinsics start with "llvm.x86.".
   def int_x86_mmx_pmovmskb :
       DefaultAttrsIntrinsic<[llvm_i32_ty], [llvm_x86mmx_ty], [IntrNoMem]>;
 
-  def int_x86_mmx_movnt_dq :
+  def int_x86_mmx_movnt_dq : ClangBuiltin<"__builtin_ia32_movntq">,
               Intrinsic<[], [llvm_ptr_ty, llvm_x86mmx_ty], []>;
 
   def int_x86_mmx_palignr_b :
