@@ -11592,6 +11592,8 @@ def err_x86_builtin_invalid_rounding : Error<
   "invalid rounding argument">;
 def err_x86_builtin_invalid_scale : Error<
   "scale argument must be 1, 2, 4, or 8">;
+def err_x86_builtin_invalid_debug_register : Error<
+  "debug register argument must be between 0 and 7">;
 def err_x86_builtin_tile_arg_duplicate : Error<
   "tile arguments must refer to different tiles">;
 

@@ -714,6 +714,8 @@ bool SemaX86::isMSVCVectorIntrinsicRedeclaration(const FunctionDecl *FD,
   return Matches;
 }
 
+static bool isValidX86DebugRegister(unsigned Reg) { return Reg <= 7; }
+
 bool SemaX86::CheckBuiltinFunctionCall(const TargetInfo &TI, unsigned BuiltinID,
                                        CallExpr *TheCall) {
   // Check for 32-bit only builtins on a 64-bit target.
@@ -733,6 +735,15 @@ bool SemaX86::CheckBuiltinFunctionCall(const TargetInfo &TI, unsigned BuiltinID,
   // If the intrinsic has a tile arguments, make sure they are valid.
   if (CheckBuiltinTileArguments(BuiltinID, TheCall))
     return true;
+
+  if (BuiltinID == X86::BI__readdr || BuiltinID == X86::BI__writedr) {
+    llvm::APSInt Reg;
+    if (SemaRef.BuiltinConstantArg(TheCall, 0, Reg))
+      return true;
+    if (!isValidX86DebugRegister(Reg.getZExtValue()))
+      return Diag(TheCall->getArg(0)->getBeginLoc(),
+                  diag::err_x86_builtin_invalid_debug_register);
+  }
 
   // For intrinsics which take an immediate value as part of the instruction,
   // range check them here.

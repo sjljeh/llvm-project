@@ -25,7 +25,12 @@ let Header = "intrin.h", Languages = "ALL_MS_LANGUAGES", Attributes = [NoThrow, 
 }
 
 let Header = "intrin.h", Languages = "ALL_MS_LANGUAGES", Attributes = [NoThrow, RequireDeclaration] in {
+  def __addgsdword : X86LibBuiltin<"void(msuint32_t, msuint32_t)">;
   def __faststorefence : X86LibBuiltin<"void()">;
+  def __readcr8 : X86LibBuiltin<"unsigned long long int()">;
+  def __movsq : X86LibBuiltin<"void(unsigned long long int *, unsigned long long int const *, size_t)">;
+  def __stosq : X86LibBuiltin<"void(unsigned long long int *, unsigned long long int, size_t)">;
+  def __writecr8 : X86LibBuiltin<"void(unsigned long long int)">;
 }
 
 let Header = "intrin.h", Languages = "ALL_MS_LANGUAGES", Attributes = [NoThrow, Const, RequireDeclaration] in {

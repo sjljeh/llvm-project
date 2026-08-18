@@ -4228,18 +4228,62 @@ let Header = "intrin.h", Languages = "ALL_MS_LANGUAGES", Attributes = [NoThrow, 
   def _ReadWriteBarrier : X86LibBuiltin<"void()">;
   def _ReadBarrier : X86LibBuiltin<"void()">;
   def _WriteBarrier : X86LibBuiltin<"void()">;
+  def _disable : X86LibBuiltin<"void()">;
+  def _enable : X86LibBuiltin<"void()">;
+  def __halt : X86LibBuiltin<"void()">;
   def __cpuid : X86LibBuiltin<"void(int *, int)">;
   def __cpuidex : X86LibBuiltin<"void(int *, int, int)">;
+  def __wbinvd : X86LibBuiltin<"void()">;
 }
 
 let Header = "intrin.h", Languages = "ALL_MS_LANGUAGES", Attributes = [NoThrow, Const, RequireDeclaration] in {
   def __emul : X86LibBuiltin<"long long int(int, int)">;
   def __emulu : X86LibBuiltin<"unsigned long long int(unsigned int, unsigned int)">;
+  def __ll_lshift : X86LibBuiltin<"unsigned long long int(unsigned long long int, int)">;
+  def __ll_rshift : X86LibBuiltin<"long long int(long long int, int)">;
+  def __ull_rshift : X86LibBuiltin<"unsigned long long int(unsigned long long int, int)">;
+}
+
+let Header = "intrin.h", Languages = "ALL_MS_LANGUAGES", Attributes = [NoThrow, RequireDeclaration] in {
+  def __invlpg : X86LibBuiltin<"void(void *)">;
+  def __lidt : X86LibBuiltin<"void(void *)">;
+  def __readcr0 : X86LibBuiltin<"lptrint_t()">;
+  def __readcr2 : X86LibBuiltin<"lptrint_t()">;
+  def __readcr3 : X86LibBuiltin<"lptrint_t()">;
+  def __readcr4 : X86LibBuiltin<"lptrint_t()">;
+  def __readdr : X86LibBuiltin<"size_t(_Constant unsigned int)">;
+  def __readeflags : X86LibBuiltin<"size_t()">;
+  def __readmsr : X86LibBuiltin<"unsigned long long int(msuint32_t)">;
+  def __sidt : X86LibBuiltin<"void(void *)">;
+  def __writecr0 : X86LibBuiltin<"void(size_t)">;
+  def __writecr2 : X86LibBuiltin<"void(size_t)">;
+  def __writecr3 : X86LibBuiltin<"void(size_t)">;
+  def __writecr4 : X86LibBuiltin<"void(size_t)">;
+  def __writedr : X86LibBuiltin<"void(_Constant unsigned int, size_t)">;
+  def __writeeflags : X86LibBuiltin<"void(size_t)">;
+  def __writemsr : X86LibBuiltin<"void(msuint32_t, unsigned long long int)">;
+  def __inbyte : X86LibBuiltin<"unsigned char(unsigned short)">;
+  def __inword : X86LibBuiltin<"unsigned short(unsigned short)">;
+  def __indword : X86LibBuiltin<"msuint32_t(unsigned short)">;
+  def __inbytestring : X86LibBuiltin<"void(unsigned short, unsigned char *, msuint32_t)">;
+  def __inwordstring : X86LibBuiltin<"void(unsigned short, unsigned short *, msuint32_t)">;
+  def __indwordstring : X86LibBuiltin<"void(unsigned short, msuint32_t *, msuint32_t)">;
+  def __outbyte : X86LibBuiltin<"void(unsigned short, unsigned char)">;
+  def __outword : X86LibBuiltin<"void(unsigned short, unsigned short)">;
+  def __outdword : X86LibBuiltin<"void(unsigned short, msuint32_t)">;
+  def __outbytestring : X86LibBuiltin<"void(unsigned short, unsigned char *, msuint32_t)">;
+  def __outwordstring : X86LibBuiltin<"void(unsigned short, unsigned short *, msuint32_t)">;
+  def __outdwordstring : X86LibBuiltin<"void(unsigned short, msuint32_t *, msuint32_t)">;
 }
 
 let Header = "intrin.h", Languages = "ALL_MS_LANGUAGES", Attributes = [NoThrow, RequireDeclaration] in {
   def _AddressOfReturnAddress : X86LibBuiltin<"void *()">;
+  def __movsb : X86LibBuiltin<"void(unsigned char *, unsigned char const *, size_t)">;
+  def __movsw : X86LibBuiltin<"void(unsigned short *, unsigned short const *, size_t)">;
+  def __movsd : X86LibBuiltin<"void(msuint32_t *, msuint32_t const *, size_t)">;
   def __stosb : X86LibBuiltin<"void(unsigned char *, unsigned char, size_t)">;
+  def __stosw : X86LibBuiltin<"void(unsigned short *, unsigned short, size_t)">;
+  def __stosd : X86LibBuiltin<"void(msuint32_t *, msuint32_t, size_t)">;
 }
 
 let Header = "intrin.h", Languages = "ALL_MS_LANGUAGES", Attributes = [NoThrow, RequireDeclaration, NoReturn] in {

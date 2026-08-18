@@ -12910,6 +12910,12 @@ static QualType DecodeTypeFromStr(const char *&Str, const ASTContext &Context,
       Type = Context.HLSLResourceTy;
       break;
     }
+    case 'p': {
+      Type = Context.getTargetInfo().getPointerWidth(LangAS::Default) == 64
+                 ? Context.UnsignedLongLongTy
+                 : Context.UnsignedLongTy;
+      break;
+    }
     default:
       llvm_unreachable("Unexpected target builtin type");
     }
