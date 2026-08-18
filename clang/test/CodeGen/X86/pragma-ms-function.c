@@ -28,3 +28,9 @@ void function_after_pragma(void) {
 
 // CHECK-LABEL: define dso_local void @function_after_pragma()
 // CHECK: call void @_enable()
+
+void __cdecl _disable(void) {}
+
+// CHECK-LABEL: define dso_local void @_disable()
+// CHECK-NEXT: entry:
+// CHECK-NEXT: ret void
