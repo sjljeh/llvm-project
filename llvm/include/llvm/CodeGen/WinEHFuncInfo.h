@@ -38,9 +38,24 @@ class MCSymbol;
 using MBBOrBasicBlock = PointerUnion<const BasicBlock *, MachineBasicBlock *>;
 
 struct CxxUnwindMapEntry {
+  enum class ActionType : uint8_t {
+    NoUW,
+    DtorWithObj,
+    DtorWithPtrToObj,
+    Cleanup,
+  } Type = ActionType::NoUW;
+
   int ToState;
   MBBOrBasicBlock Cleanup;
   const FuncletPadInst *Owner = nullptr;
+
+  /// Direct FH4 destructor action and its parent-frame object slot. Cleanup is
+  /// retained until machine lowering so FrameHandler3 can keep using funclets.
+  const Function *Action = nullptr;
+  union {
+    const AllocaInst *Alloca;
+    int FrameIndex;
+  } Object = {};
 };
 
 /// Similar to CxxUnwindMapEntry, but supports SEH filters.
