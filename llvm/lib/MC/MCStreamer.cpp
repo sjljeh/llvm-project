@@ -30,6 +30,7 @@
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/MC/MCWin64EH.h"
 #include "llvm/MC/MCWinEH.h"
+#include "llvm/MC/MCWinEH4.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/LEB128.h"
@@ -171,6 +172,27 @@ unsigned MCStreamer::emitSLEB128IntValue(int64_t Value) {
   encodeSLEB128(Value, OSE);
   emitBytes(OSE.str());
   return Tmp.size();
+}
+
+unsigned MCStreamer::emitWinEH4IntValue(uint32_t Value) {
+  uint8_t Buffer[5];
+  unsigned Size = encodeWinEH4Unsigned(Value, Buffer);
+  emitBytes(StringRef(reinterpret_cast<const char *>(Buffer), Size));
+  return Size;
+}
+
+void MCStreamer::emitWinEH4Value(const MCExpr *Value) {
+  int64_t IntValue;
+  if (Value->evaluateAsAbsolute(IntValue) && IntValue >= 0 &&
+      uint64_t(IntValue) <= UINT32_MAX) {
+    emitWinEH4IntValue(uint32_t(IntValue));
+    return;
+  }
+
+  // Textual assembly has no directive for this encoding. Use its always-valid
+  // five-byte form; the object streamer overrides this with layout relaxation.
+  emitInt8(0x0f);
+  emitValue(Value, 4);
 }
 
 void MCStreamer::emitValue(const MCExpr *Value, unsigned Size, SMLoc Loc) {

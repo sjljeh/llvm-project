@@ -26,6 +26,7 @@
 #include "llvm/MC/MCSection.h"
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/MC/MCValue.h"
+#include "llvm/MC/MCWinEH4.h"
 #include "llvm/Support/Alignment.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
@@ -212,6 +213,7 @@ uint64_t MCAssembler::computeFragmentSize(const MCFragment &F) const {
   case MCFragment::FT_Relaxable:
   case MCFragment::FT_Align:
   case MCFragment::FT_LEB:
+  case MCFragment::FT_WinEH4:
   case MCFragment::FT_Dwarf:
   case MCFragment::FT_DwarfFrame:
   case MCFragment::FT_SFrame:
@@ -437,6 +439,7 @@ static void writeFragment(raw_ostream &OS, const MCAssembler &Asm,
   case MCFragment::FT_Data:
   case MCFragment::FT_Relaxable:
   case MCFragment::FT_LEB:
+  case MCFragment::FT_WinEH4:
   case MCFragment::FT_Dwarf:
   case MCFragment::FT_DwarfFrame:
   case MCFragment::FT_SFrame:
@@ -943,6 +946,24 @@ void MCAssembler::relaxLEB(MCFragment &F) {
   F.setVarContents({reinterpret_cast<char *>(Data), Size});
 }
 
+void MCAssembler::relaxWinEH4(MCFragment &F) {
+  int64_t Value;
+  F.clearVarFixups();
+  if (!F.getWinEH4Value().evaluateAsAbsolute(Value, *this) || Value < 0 ||
+      uint64_t(Value) > UINT32_MAX) {
+    reportError(F.getWinEH4Value().getLoc(),
+                "FH4 compressed expression is not a 32-bit unsigned "
+                "absolute value");
+    F.setWinEH4Value(MCConstantExpr::create(0, Context));
+    Value = 0;
+  }
+
+  uint8_t Buffer[5];
+  unsigned Size = encodeWinEH4Unsigned(uint32_t(Value), Buffer);
+  F.setVarContents(
+      {reinterpret_cast<const char *>(Buffer), static_cast<size_t>(Size)});
+}
+
 /// Check if the branch crosses the boundary.
 ///
 /// \param StartAddr start address of the fused/unfused branch.
@@ -1091,6 +1112,9 @@ void MCAssembler::relaxFragment(MCFragment &F) {
     break;
   case MCFragment::FT_LEB:
     relaxLEB(F);
+    break;
+  case MCFragment::FT_WinEH4:
+    relaxWinEH4(F);
     break;
   case MCFragment::FT_Dwarf:
     relaxDwarfLineAddr(F);

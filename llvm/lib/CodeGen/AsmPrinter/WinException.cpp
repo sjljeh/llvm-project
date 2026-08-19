@@ -730,46 +730,6 @@ void WinException::emitSEHActionsForRange(const WinEHFuncInfo &FuncInfo,
   }
 }
 
-static unsigned getEncodedFH4UnsignedSize(uint32_t Value) {
-  if (Value < 1u << 7)
-    return 1;
-  if (Value < 1u << 14)
-    return 2;
-  if (Value < 1u << 21)
-    return 3;
-  if (Value < 1u << 28)
-    return 4;
-  return 5;
-}
-
-static void emitEncodedFH4Unsigned(MCStreamer &OS, uint32_t Value) {
-  if (Value < 1u << 7) {
-    OS.emitInt8(Value << 1);
-  } else if (Value < 1u << 14) {
-    OS.emitInt8((Value << 2) | 1);
-    OS.emitInt8(Value >> 6);
-  } else if (Value < 1u << 21) {
-    OS.emitInt8((Value << 3) | 3);
-    OS.emitInt8(Value >> 5);
-    OS.emitInt8(Value >> 13);
-  } else if (Value < 1u << 28) {
-    OS.emitInt8((Value << 4) | 7);
-    OS.emitInt8(Value >> 4);
-    OS.emitInt8(Value >> 12);
-    OS.emitInt8(Value >> 20);
-  } else {
-    OS.emitInt8(15);
-    OS.emitInt32(Value);
-  }
-}
-
-static void emitEncodedFH4Unsigned(MCStreamer &OS, const MCExpr *Value) {
-  // Symbol differences are not known until MC layout. The five-byte form can
-  // represent every value without requiring a target-specific relaxable fixup.
-  OS.emitInt8(15);
-  OS.emitValue(Value, 4);
-}
-
 void WinException::emitCXXFrameHandler4Table(const MachineFunction *MF) {
   if (Asm->TM.getTargetTriple().getArch() != Triple::x86_64)
     report_fatal_error("__CxxFrameHandler4 is only supported on x86_64");
@@ -898,11 +858,11 @@ void WinException::emitCXXFrameHandler4Table(const MachineFunction *MF) {
       OS.emitValue(create32bitRef(TryBlockMapXData), 4);
     OS.emitValue(create32bitRef(IPToStateXData), 4);
     if (FI.Owner)
-      emitEncodedFH4Unsigned(OS, TFI->getWinEHParentFrameOffset(*MF));
+      OS.emitWinEH4IntValue(TFI->getWinEHParentFrameOffset(*MF));
 
     if (UnwindMapXData) {
       OS.emitLabel(UnwindMapXData);
-      emitEncodedFH4Unsigned(OS, FI.States.size());
+      OS.emitWinEH4IntValue(FI.States.size());
 
       SmallVector<unsigned, 4> EntryOffsets;
       unsigned EntryOffset = 0;
@@ -923,8 +883,7 @@ void WinException::emitCXXFrameHandler4Table(const MachineFunction *MF) {
             Asm, dyn_cast_if_present<MachineBasicBlock *>(UME.Cleanup));
         uint32_t Type = CleanupSym ? 3 : 0;
         uint32_t Encoded = (NextOffset << 2) | Type;
-        emitEncodedFH4Unsigned(OS, Encoded);
-        EntryOffset += getEncodedFH4UnsignedSize(Encoded);
+        EntryOffset += OS.emitWinEH4IntValue(Encoded);
         if (CleanupSym) {
           OS.emitValue(create32bitRef(CleanupSym), 4);
           EntryOffset += 4;
@@ -935,7 +894,7 @@ void WinException::emitCXXFrameHandler4Table(const MachineFunction *MF) {
     SmallVector<MCSymbol *, 2> HandlerMaps;
     if (TryBlockMapXData) {
       OS.emitLabel(TryBlockMapXData);
-      emitEncodedFH4Unsigned(OS, FI.TryBlocks.size());
+      OS.emitWinEH4IntValue(FI.TryBlocks.size());
       for (unsigned I = 0; I != FI.TryBlocks.size(); ++I) {
         const WinEHTryBlockMapEntry &TBME = *FI.TryBlocks[I];
         MCSymbol *HandlerMapXData = Asm->OutContext.getOrCreateSymbol(
@@ -961,16 +920,16 @@ void WinException::emitCXXFrameHandler4Table(const MachineFunction *MF) {
                "missing FH4 catch state");
         int CatchState = CatchStateIt->second;
 
-        emitEncodedFH4Unsigned(OS, Localize(TBME.TryLow));
-        emitEncodedFH4Unsigned(OS, Localize(TBME.TryHigh));
-        emitEncodedFH4Unsigned(OS, Localize(CatchState));
+        OS.emitWinEH4IntValue(Localize(TBME.TryLow));
+        OS.emitWinEH4IntValue(Localize(TBME.TryHigh));
+        OS.emitWinEH4IntValue(Localize(CatchState));
         OS.emitValue(create32bitRef(HandlerMapXData), 4);
       }
 
       for (unsigned I = 0; I != FI.TryBlocks.size(); ++I) {
         const WinEHTryBlockMapEntry &TBME = *FI.TryBlocks[I];
         OS.emitLabel(HandlerMaps[I]);
-        emitEncodedFH4Unsigned(OS, TBME.HandlerArray.size());
+        OS.emitWinEH4IntValue(TBME.HandlerArray.size());
         for (const WinEHHandlerType &HT : TBME.HandlerArray) {
           int CatchObjOffset = 0;
           if (HT.CatchObj.FrameIndex != INT_MAX) {
@@ -989,11 +948,11 @@ void WinException::emitCXXFrameHandler4Table(const MachineFunction *MF) {
             HandlerHeader |= 1 << 2;
           OS.emitInt8(HandlerHeader);
           if (HT.Adjectives)
-            emitEncodedFH4Unsigned(OS, HT.Adjectives);
+            OS.emitWinEH4IntValue(HT.Adjectives);
           if (HT.TypeDescriptor)
             OS.emitValue(create32bitRef(HT.TypeDescriptor), 4);
           if (CatchObjOffset)
-            emitEncodedFH4Unsigned(OS, CatchObjOffset);
+            OS.emitWinEH4IntValue(CatchObjOffset);
 
           MCSymbol *HandlerSym = getMCSymbolForMBB(
               Asm, dyn_cast_if_present<MachineBasicBlock *>(HT.Handler));
@@ -1003,10 +962,10 @@ void WinException::emitCXXFrameHandler4Table(const MachineFunction *MF) {
     }
 
     OS.emitLabel(IPToStateXData);
-    emitEncodedFH4Unsigned(OS, IPToStateTable.size());
+    OS.emitWinEH4IntValue(IPToStateTable.size());
     for (const auto &[IP, State] : IPToStateTable) {
-      emitEncodedFH4Unsigned(OS, IP);
-      emitEncodedFH4Unsigned(OS, State + 1);
+      OS.emitWinEH4Value(IP);
+      OS.emitWinEH4IntValue(State + 1);
     }
   }
 }

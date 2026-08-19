@@ -780,6 +780,13 @@ public:
 
   virtual void emitSLEB128Value(const MCExpr *Value);
 
+  /// Emit an unsigned integer using the compact encoding consumed by
+  /// __CxxFrameHandler4. Symbol differences are relaxed after layout.
+  virtual void emitWinEH4Value(const MCExpr *Value);
+
+  /// Emit a constant in the compact EH4 encoding and return its encoded size.
+  unsigned emitWinEH4IntValue(uint32_t Value);
+
   /// Special case of EmitULEB128Value that avoids the client having to
   /// pass in a MCExpr for constant integers.
   unsigned emitULEB128IntValue(uint64_t Value, unsigned PadTo = 0);

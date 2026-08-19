@@ -55,6 +55,7 @@ LLVM_DUMP_METHOD void MCFragment::dump() const {
   case MCFragment::FT_DwarfFrame:    OS << "DwarfCallFrame"; break;
   case MCFragment::FT_SFrame:        OS << "SFrame"; break;
   case MCFragment::FT_LEB:           OS << "LEB"; break;
+  case MCFragment::FT_WinEH4:        OS << "WinEH4"; break;
   case MCFragment::FT_BoundaryAlign: OS << "BoundaryAlign"; break;
   case MCFragment::FT_PrefAlign:     OS << "PrefAlign"; break;
   case MCFragment::FT_SymbolId:      OS << "SymbolId"; break;
@@ -80,6 +81,7 @@ LLVM_DUMP_METHOD void MCFragment::dump() const {
   case MCFragment::FT_Relaxable:
   case MCFragment::FT_Align:
   case MCFragment::FT_LEB:
+  case MCFragment::FT_WinEH4:
   case MCFragment::FT_Dwarf:
   case MCFragment::FT_DwarfFrame:
   case MCFragment::FT_SFrame: {
@@ -126,6 +128,10 @@ LLVM_DUMP_METHOD void MCFragment::dump() const {
       OS << " Signed:" << isLEBSigned();
       break;
     }
+    case MCFragment::FT_WinEH4:
+      OS << " Value:";
+      getWinEH4Value().print(OS, nullptr);
+      break;
     case MCFragment::FT_Dwarf:
       OS << " AddrDelta:";
       getDwarfAddrDelta().print(OS, nullptr);
