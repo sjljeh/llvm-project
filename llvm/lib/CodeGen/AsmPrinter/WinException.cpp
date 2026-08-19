@@ -879,14 +879,23 @@ void WinException::emitCXXFrameHandler4Table(const MachineFunction *MF) {
 
         int TargetOffset = ToState == NullState ? -1 : EntryOffsets[ToState];
         unsigned NextOffset = EntryOffset - TargetOffset;
-        MCSymbol *CleanupSym = getMCSymbolForMBB(
-            Asm, dyn_cast_if_present<MachineBasicBlock *>(UME.Cleanup));
-        uint32_t Type = CleanupSym ? 3 : 0;
+        uint32_t Type = unsigned(UME.Type);
         uint32_t Encoded = (NextOffset << 2) | Type;
         EntryOffset += OS.emitWinEH4IntValue(Encoded);
-        if (CleanupSym) {
+        if (UME.Type == CxxUnwindMapEntry::ActionType::Cleanup) {
+          MCSymbol *CleanupSym = getMCSymbolForMBB(
+              Asm, dyn_cast_if_present<MachineBasicBlock *>(UME.Cleanup));
+          assert(CleanupSym && "FH4 cleanup action has no funclet");
           OS.emitValue(create32bitRef(CleanupSym), 4);
           EntryOffset += 4;
+        } else if (UME.Type != CxxUnwindMapEntry::ActionType::NoUW) {
+          assert(UME.Action && "FH4 direct action has no destructor");
+          OS.emitValue(create32bitRef(UME.Action), 4);
+          EntryOffset += 4;
+          int ObjectOffset =
+              getFrameIndexOffset(UME.Object.FrameIndex, FuncInfo);
+          assert(ObjectOffset >= 0 && "negative FH4 destructor object offset");
+          EntryOffset += OS.emitWinEH4IntValue(ObjectOffset);
         }
       }
     }
