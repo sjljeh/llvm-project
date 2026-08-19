@@ -940,6 +940,16 @@ void WinException::emitCXXFrameHandler4Table(const MachineFunction *MF) {
         OS.emitLabel(HandlerMaps[I]);
         OS.emitWinEH4IntValue(TBME.HandlerArray.size());
         for (const WinEHHandlerType &HT : TBME.HandlerArray) {
+          bool EncodeContinuations = HT.Continuations.size() <= 2;
+          bool ContinuationsAreRVA =
+              EncodeContinuations &&
+              llvm::any_of(
+                  HT.Continuations, [&](const MBBOrBasicBlock &Continuation) {
+                    return cast<MachineBasicBlock *>(Continuation)
+                               ->getSectionID() != FI.Entry->getSectionID();
+                  });
+          unsigned ContinuationCount =
+              EncodeContinuations ? HT.Continuations.size() : 0;
           int CatchObjOffset = 0;
           if (HT.CatchObj.FrameIndex != INT_MAX) {
             CatchObjOffset =
@@ -955,6 +965,9 @@ void WinException::emitCXXFrameHandler4Table(const MachineFunction *MF) {
             HandlerHeader |= 1 << 1;
           if (CatchObjOffset)
             HandlerHeader |= 1 << 2;
+          if (ContinuationsAreRVA)
+            HandlerHeader |= 1 << 3;
+          HandlerHeader |= ContinuationCount << 4;
           OS.emitInt8(HandlerHeader);
           if (HT.Adjectives)
             OS.emitWinEH4IntValue(HT.Adjectives);
@@ -966,6 +979,18 @@ void WinException::emitCXXFrameHandler4Table(const MachineFunction *MF) {
           MCSymbol *HandlerSym = getMCSymbolForMBB(
               Asm, dyn_cast_if_present<MachineBasicBlock *>(HT.Handler));
           OS.emitValue(create32bitRef(HandlerSym), 4);
+          const MCSymbol *RecordStart =
+              FI.Owner ? FuncletSym : Asm->getFunctionBegin();
+          for (const MBBOrBasicBlock &Continuation :
+               ArrayRef(HT.Continuations).take_front(ContinuationCount)) {
+            const MachineBasicBlock *ContinuationMBB =
+                cast<MachineBasicBlock *>(Continuation);
+            if (ContinuationsAreRVA)
+              OS.emitValue(create32bitRef(ContinuationMBB->getSymbol()), 4);
+            else
+              OS.emitWinEH4Value(
+                  getOffset(ContinuationMBB->getSymbol(), RecordStart));
+          }
         }
       }
     }
