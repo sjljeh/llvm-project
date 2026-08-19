@@ -245,7 +245,7 @@ return.one:
   ret i32 1
 }
 
-define void @cannot_throw() nounwind personality ptr @__CxxFrameHandler4 {
+define void @cannot_throw() #0 personality ptr @__CxxFrameHandler4 {
 entry:
   invoke void @f(i32 11)
           to label %return unwind label %terminate.pad
@@ -257,6 +257,18 @@ terminate.pad:
   %cleanup = cleanuppad within none []
   call void @terminate() [ "funclet"(token %cleanup) ]
   unreachable
+}
+
+define void @pure_noexcept() #0 personality ptr @__CxxFrameHandler4 {
+entry:
+  call void @f(i32 12)
+  ret void
+}
+
+define void @generic_nounwind() nounwind uwtable personality ptr @__CxxFrameHandler4 {
+entry:
+  call void @f(i32 13)
+  ret void
 }
 
 ; CHECK-LABEL: try_in_catch:
@@ -412,3 +424,18 @@ terminate.pad:
 ; CHECK-NEXT:  .byte 104
 ; CHECK-NEXT:  .long $stateUnwindMap$cannot_throw@IMGREL
 ; CHECK-NEXT:  .long $ip2state$cannot_throw@IMGREL
+
+; A source-level noexcept function with a surviving call needs an FH4 handler
+; even without an invoke or funclet.
+; CHECK-LABEL: pure_noexcept:
+; CHECK:       .seh_handler __CxxFrameHandler4, @unwind, @except
+; CHECK:       $cppxdata$pure_noexcept:
+; CHECK-NEXT:  .byte 96
+
+; Generic nounwind, including optimizer-inferred nounwind, is not a language
+; noexcept contract and must not acquire an FH4 handler or NoExcept bit.
+; CHECK-LABEL: generic_nounwind:
+; CHECK-NOT:   .seh_handler
+; CHECK:       retq
+
+attributes #0 = { nounwind uwtable "msvc-cxx-eh4-noexcept" }

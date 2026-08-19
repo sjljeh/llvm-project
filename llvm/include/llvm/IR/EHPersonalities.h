@@ -10,6 +10,7 @@
 #define LLVM_IR_EHPERSONALITIES_H
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/TinyPtrVector.h"
 #include "llvm/Support/Compiler.h"
 
@@ -18,6 +19,11 @@ class BasicBlock;
 class Function;
 class Triple;
 class Value;
+
+/// Marks a function whose noexcept contract is enforced by
+/// __CxxFrameHandler4 metadata. This is distinct from generic nounwind, which
+/// optimizations can infer.
+inline constexpr StringLiteral MSVCXXEH4NoexceptAttr = "msvc-cxx-eh4-noexcept";
 
 enum class EHPersonality {
   Unknown,
