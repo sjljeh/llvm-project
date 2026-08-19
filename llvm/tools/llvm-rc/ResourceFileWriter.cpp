@@ -63,25 +63,6 @@ static Error checkNumberFits(uint32_t Number, const Twine &FieldName) {
   return checkNumberFits(Number, sizeof(FitType) * 8, FieldName);
 }
 
-// A similar function for signed integers.
-template <typename FitType>
-static Error checkSignedNumberFits(uint32_t Number, const Twine &FieldName,
-                                   bool CanBeNegative) {
-  int32_t SignedNum = Number;
-  if (SignedNum < std::numeric_limits<FitType>::min() ||
-      SignedNum > std::numeric_limits<FitType>::max())
-    return createError(FieldName + " (" + Twine(SignedNum) +
-                           ") does not fit in " + Twine(sizeof(FitType) * 8) +
-                           "-bit signed integer type.",
-                       std::errc::value_too_large);
-
-  if (!CanBeNegative && SignedNum < 0)
-    return createError(FieldName + " (" + Twine(SignedNum) +
-                       ") cannot be negative.");
-
-  return Error::success();
-}
-
 static Error checkRCInt(RCInt Number, const Twine &FieldName) {
   if (Number.isLong())
     return Error::success();
@@ -145,7 +126,7 @@ enum class NullHandlingMethod {
 // For identifiers, this is no-op.
 static Error processString(StringRef Str, NullHandlingMethod NullHandler,
                            bool &IsLongString, SmallVectorImpl<UTF16> &Result,
-                           int CodePage) {
+                           int CodePage, bool UseCodePageForEscapes) {
   bool IsString = stripQuotes(Str, IsLongString);
   SmallVector<UTF16, 128> Chars;
 
@@ -191,20 +172,21 @@ static Error processString(StringRef Str, NullHandlingMethod NullHandler,
     Result.push_back(Char);
     return Error::success();
   };
-  auto AddEscapedChar = [AddRes, IsLongString, CodePage](UTF16 Char) -> Error {
+  auto AddEscapedChar = [AddRes, IsLongString, CodePage,
+                         UseCodePageForEscapes](UTF16 Char) -> Error {
     if (!IsLongString) {
-      // Escaped chars in narrow strings have to be interpreted according to
-      // the chosen code page.
       if (Char > 0xFF)
         return createError("Non-8-bit escaped char (" + Twine(Char) +
                            ") can't occur in narrow string");
-      if (CodePage == CpUtf8) {
-        if (Char >= 0x80)
-          return createError("Unable to interpret single byte (" + Twine(Char) +
-                             ") as UTF-8");
+      if (!UseCodePageForEscapes)
+        return AddRes(Char);
+
+      // Command-line code pages also apply to narrow escaped characters.
+      if (CodePage == CpUtf8 && Char > 0x7F) {
+        Char = UNI_REPLACEMENT_CHAR;
       } else if (CodePage == CpWin1252) {
         Char = cp1252ToUnicode(Char);
-      } else {
+      } else if (CodePage != CpUtf8) {
         // Unknown/unsupported codepage, only allow ASCII input.
         if (Char > 0x7F)
           return createError("Non-ASCII 8-bit codepoint (" + Twine(Char) +
@@ -370,8 +352,8 @@ Error ResourceFileWriter::writeCString(StringRef Str, bool WriteTerminator) {
   SmallVector<UTF16, 128> ProcessedString;
   bool IsLongString;
   RETURN_IF_ERROR(processString(Str, NullHandlingMethod::CutAtNull,
-                                IsLongString, ProcessedString,
-                                Params.CodePage));
+                                IsLongString, ProcessedString, Params.CodePage,
+                                Params.UseCodePageForEscapes));
   for (auto Ch : ProcessedString)
     writeInt<uint16_t>(Ch);
   if (WriteTerminator)
@@ -1017,15 +999,7 @@ Error ResourceFileWriter::writeSingleDialogControl(const Control &Ctl,
     writeObject(Prefix);
   }
 
-  // Common fixed-length part.
-  RETURN_IF_ERROR(checkSignedNumberFits<int16_t>(
-      Ctl.X, "Dialog control x-coordinate", true));
-  RETURN_IF_ERROR(checkSignedNumberFits<int16_t>(
-      Ctl.Y, "Dialog control y-coordinate", true));
-  RETURN_IF_ERROR(
-      checkSignedNumberFits<int16_t>(Ctl.Width, "Dialog control width", false));
-  RETURN_IF_ERROR(checkSignedNumberFits<int16_t>(
-      Ctl.Height, "Dialog control height", false));
+  // Common fixed-length part. rc.exe truncates these values to 16 bits.
   struct {
     ulittle16_t X;
     ulittle16_t Y;
@@ -1118,14 +1092,7 @@ Error ResourceFileWriter::writeDialogBody(const RCResource *Base) {
   // Now, a common part. First, fixed-length fields.
   RETURN_IF_ERROR(checkNumberFits<uint16_t>(Res->Controls.size(),
                                             "Number of dialog controls"));
-  RETURN_IF_ERROR(
-      checkSignedNumberFits<int16_t>(Res->X, "Dialog x-coordinate", true));
-  RETURN_IF_ERROR(
-      checkSignedNumberFits<int16_t>(Res->Y, "Dialog y-coordinate", true));
-  RETURN_IF_ERROR(
-      checkSignedNumberFits<int16_t>(Res->Width, "Dialog width", false));
-  RETURN_IF_ERROR(
-      checkSignedNumberFits<int16_t>(Res->Height, "Dialog height", false));
+  // rc.exe truncates coordinates and dimensions to 16 bits.
   struct {
     ulittle16_t Count;
     ulittle16_t PosX;
@@ -1330,7 +1297,8 @@ Error ResourceFileWriter::writeStringTableBundleBody(const RCResource *Base) {
       bool IsLongString;
       for (StringRef S : *Res->Bundle.Data[ID])
         RETURN_IF_ERROR(processString(S, NullHandlingMethod::CutAtDoubleNull,
-                                      IsLongString, Data, Params.CodePage));
+                                      IsLongString, Data, Params.CodePage,
+                                      Params.UseCodePageForEscapes));
       if (AppendNull)
         Data.push_back('\0');
     }
@@ -1378,9 +1346,9 @@ Error ResourceFileWriter::writeUserDefinedBody(const RCResource *Base) {
 
     SmallVector<UTF16, 128> ProcessedString;
     bool IsLongString;
-    RETURN_IF_ERROR(
-        processString(Elem.getString(), NullHandlingMethod::UserResource,
-                      IsLongString, ProcessedString, Params.CodePage));
+    RETURN_IF_ERROR(processString(
+        Elem.getString(), NullHandlingMethod::UserResource, IsLongString,
+        ProcessedString, Params.CodePage, Params.UseCodePageForEscapes));
 
     for (auto Ch : ProcessedString) {
       if (IsLongString) {
@@ -1532,16 +1500,16 @@ Error ResourceFileWriter::writeVersionInfoBody(const RCResource *Base) {
   };
 
   auto FileVer = GetField(VersionInfoFixed::FtFileVersion);
-  RETURN_IF_ERROR(checkNumberFits<uint16_t>(*llvm::max_element(FileVer),
-                                            "FILEVERSION fields"));
-  FixedInfo.FileVersionMS = (FileVer[0] << 16) | FileVer[1];
-  FixedInfo.FileVersionLS = (FileVer[2] << 16) | FileVer[3];
+  FixedInfo.FileVersionMS =
+      ((FileVer[0] & 0xffff) << 16) | (FileVer[1] & 0xffff);
+  FixedInfo.FileVersionLS =
+      ((FileVer[2] & 0xffff) << 16) | (FileVer[3] & 0xffff);
 
   auto ProdVer = GetField(VersionInfoFixed::FtProductVersion);
-  RETURN_IF_ERROR(checkNumberFits<uint16_t>(*llvm::max_element(ProdVer),
-                                            "PRODUCTVERSION fields"));
-  FixedInfo.ProductVersionMS = (ProdVer[0] << 16) | ProdVer[1];
-  FixedInfo.ProductVersionLS = (ProdVer[2] << 16) | ProdVer[3];
+  FixedInfo.ProductVersionMS =
+      ((ProdVer[0] & 0xffff) << 16) | (ProdVer[1] & 0xffff);
+  FixedInfo.ProductVersionLS =
+      ((ProdVer[2] & 0xffff) << 16) | (ProdVer[3] & 0xffff);
 
   FixedInfo.FileFlagsMask = GetField(VersionInfoFixed::FtFileFlagsMask)[0];
   FixedInfo.FileFlags = GetField(VersionInfoFixed::FtFileFlags)[0];

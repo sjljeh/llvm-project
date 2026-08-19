@@ -1,5 +1,4 @@
 STRINGTABLE {
-  // One can't pass UTF-8 sequences via multiple escaped chars - in narrow
-  // strings in UTF-8 mode, only ASCII chars can be entered via escapes.
+  // Escaped bytes are decoded individually and cannot form a UTF-8 sequence.
   1 "åäö \xc3\xa5"
 }

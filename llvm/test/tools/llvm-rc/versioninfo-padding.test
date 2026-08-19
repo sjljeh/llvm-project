@@ -31,3 +31,17 @@
 ; CHECK-NEXT:   0110: 35000000 12000300 01006100 00000000  |5.........a.....|
 ; CHECK-NEXT:   0120: 62006300 0000                        |b.c...|
 ; CHECK-NEXT: )
+
+; RUN: llvm-rc -no-preprocess /FO %t.large -- %p/Inputs/versioninfo-large-fixed.rc
+; RUN: llvm-readobj %t.large | FileCheck %s --check-prefix=LARGE
+
+; LARGE:      Resource type (int): VERSIONINFO (ID 16)
+; LARGE:      Data size: 92
+; LARGE-NEXT: Data: (
+; LARGE-NEXT:   0000: 5C003400 00005600 53005F00 56004500  |\.4...V.S._.V.E.|
+; LARGE-NEXT:   0010: 52005300 49004F00 4E005F00 49004E00  |R.S.I.O.N._.I.N.|
+; LARGE-NEXT:   0020: 46004F00 00000000 BD04EFFE 00000100  |F.O.............|
+; LARGE-NEXT:   0030: 00000600 73987117 02007011 04000300  |....s.q...p.....|
+; LARGE-NEXT:   0040: 00000000 00000000 00000000 00000000  |................|
+; LARGE-NEXT:   0050: 00000000 00000000 00000000           |............|
+; LARGE-NEXT: )

@@ -227,6 +227,7 @@ struct RcOptions {
   bool IsWindres = false;
   bool BeVerbose = false;
   WriterParams Params;
+  bool CodePageSpecified = false;
   bool AppendNull = false;
   bool IsDryRun = false;
   // Set the default language; choose en-US arbitrarily.
@@ -486,6 +487,7 @@ RcOptions parseWindresOptions(ArrayRef<const char *> ArgsArr,
 
   Opts.Params.CodePage = CpWin1252; // Different default
   if (InputArgs.hasArg(WINDRES_codepage)) {
+    Opts.CodePageSpecified = true;
     if (InputArgs.getLastArgValue(WINDRES_codepage)
             .getAsInteger(0, Opts.Params.CodePage))
       fatalError("Invalid code page: " +
@@ -556,6 +558,7 @@ RcOptions parseRcOptions(ArrayRef<const char *> ArgsArr,
 #endif
   }
   if (InputArgs.hasArg(OPT_codepage)) {
+    Opts.CodePageSpecified = true;
     if (InputArgs.getLastArgValue(OPT_codepage)
             .getAsInteger(10, Opts.Params.CodePage))
       fatalError("Invalid code page: " +
@@ -618,7 +621,8 @@ void doRc(std::string Src, std::string Dest, RcOptions &Opts,
   std::unique_ptr<MemoryBuffer> FileContents = std::move(*File);
   StringRef Contents = FileContents->getBuffer();
 
-  std::string FilteredContents = filterCppOutput(Contents);
+  std::optional<unsigned> PragmaCodePage;
+  std::string FilteredContents = filterCppOutput(Contents, PragmaCodePage);
   std::vector<RCToken> Tokens =
       ExitOnErr(tokenizeRC(FilteredContents, Opts.IsWindres));
 
@@ -640,6 +644,11 @@ void doRc(std::string Src, std::string Dest, RcOptions &Opts,
   }
 
   WriterParams &Params = Opts.Params;
+  if (PragmaCodePage) {
+    Params.CodePage = *PragmaCodePage;
+    if (!Opts.CodePageSpecified)
+      Params.UseCodePageForEscapes = false;
+  }
   SmallString<128> InputFile(Src);
   llvm::sys::fs::make_absolute(InputFile);
   Params.InputFilePath = InputFile;
