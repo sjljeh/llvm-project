@@ -372,6 +372,11 @@
 // RUN: %clang_cl -c -### /std:c17 -- %s 2>&1 | FileCheck -check-prefix CHECK-C17 %s
 // CHECK-C17: -std=c17
 
+// RUN: %clang_cl /c /d2FH4 -### -- %s 2>&1 | FileCheck -check-prefix=FH4 %s
+// RUN: %clang_cl /c /d2FH4- -### -- %s 2>&1 | FileCheck -check-prefix=NO-FH4 %s
+// FH4: "-fms-cxx-eh4"
+// NO-FH4: "-fno-ms-cxx-eh4"
+
 // RUN: %clang_cl -c -### /std:clatest -- %s 2>&1 | FileCheck -check-prefix CHECK-CLATEST %s
 // CHECK-CLATEST: -std=c23
 
@@ -391,7 +396,6 @@
 // RUN:    /cgthreads4 \
 // RUN:    /cgthreads8 \
 // RUN:    /d2FastFail \
-// RUN:    /d2FH4- \
 // RUN:    /d2Zi+ \
 // RUN:    /errorReport:foo \
 // RUN:    /execution-charset:utf-8 \
@@ -450,7 +454,6 @@
 // RUN:     /clr:pure \
 // RUN:     /d1import_no_registry \
 // RUN:     /d1nodatetime \
-// RUN:     /d2FH4 \
 // RUN:     /d2TrimInlines \
 // RUN:     /docname \
 // RUN:     /dynamicdeopt \

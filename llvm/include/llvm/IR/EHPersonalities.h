@@ -42,6 +42,9 @@ enum class EHPersonality {
 /// Unknown.
 LLVM_ABI EHPersonality classifyEHPersonality(const Value *Pers);
 
+/// Returns true if \p Pers is the compact x64 Microsoft C++ personality.
+LLVM_ABI bool isMSVCXXFrameHandler4(const Value *Pers);
+
 LLVM_ABI StringRef getEHPersonalityName(EHPersonality Pers);
 
 LLVM_ABI EHPersonality getDefaultEHPersonality(const Triple &T);

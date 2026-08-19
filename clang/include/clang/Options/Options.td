@@ -3612,6 +3612,12 @@ def fms_compatibility_version
       HelpText<"Dot-separated value representing the Microsoft compiler "
                "version number to report in _MSC_VER (0 = don't define it "
                "(default))">;
+def fms_cxx_eh4 : Flag<["-"], "fms-cxx-eh4">, Group<f_Group>,
+  Visibility<[ClangOption, CC1Option]>,
+  HelpText<"Use the compact Microsoft C++ exception handling metadata">;
+def fno_ms_cxx_eh4 : Flag<["-"], "fno-ms-cxx-eh4">, Group<f_Group>,
+  Visibility<[ClangOption, CC1Option]>,
+  HelpText<"Use legacy Microsoft C++ exception handling metadata">;
 def fms_runtime_lib_EQ : Joined<["-"], "fms-runtime-lib=">, Group<f_Group>,
   Flags<[]>, Visibility<[ClangOption, CLOption, FlangOption]>,
   Values<"static,static_dbg,dll,dll_dbg">,
@@ -9390,6 +9396,8 @@ def _SLASH_help : CLFlag<"help", [CLOption, DXCOption]>, Alias<help>,
 def _SLASH_HELP : CLFlag<"HELP">, Alias<help>;
 def _SLASH_hotpatch : CLFlag<"hotpatch">, Alias<fms_hotpatch>,
   HelpText<"Create hotpatchable image">;
+def _SLASH_d2FH4 : CLFlag<"d2FH4">, Alias<fms_cxx_eh4>;
+def _SLASH_d2FH4_ : CLFlag<"d2FH4-">, Alias<fno_ms_cxx_eh4>;
 def _SLASH_I : CLJoinedOrSeparate<"I", [CLOption, DXCOption]>,
   HelpText<"Add directory to include search path">, MetaVarName<"<dir>">,
   Alias<I>;
@@ -9763,7 +9771,6 @@ def _SLASH_analyze_ : CLIgnoredFlag<"analyze-">;
 def _SLASH_bigobj : CLIgnoredFlag<"bigobj">;
 def _SLASH_cgthreads : CLIgnoredJoined<"cgthreads">;
 def _SLASH_d2FastFail : CLIgnoredFlag<"d2FastFail">;
-def _SLASH_d2FH4_ : CLIgnoredFlag<"d2FH4-">;
 def _SLASH_d2Zi_PLUS : CLIgnoredFlag<"d2Zi+">;
 def _SLASH_errorReport : CLIgnoredJoined<"errorReport">;
 def _SLASH_FC : CLIgnoredFlag<"FC">;

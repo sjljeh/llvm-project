@@ -47,6 +47,8 @@ CODEGENOPT(Backchain         , 1, 0, Benign) ///< -mbackchain
 CODEGENOPT(ControlFlowGuardNoChecks  , 1, 0, Benign) ///< -cfguard-no-checks
 CODEGENOPT(ControlFlowGuard  , 1, 0, Benign) ///< -cfguard
 CODEGENOPT(EHContGuard       , 1, 0, Benign) ///< -ehcontguard
+CODEGENOPT(MSVCCXXEH4        , 1, 0, Benign) ///< Use __CxxFrameHandler4.
+CODEGENOPT(MSVCCXXEH4Specified, 1, 0, Benign) ///< Whether FH4 was overridden.
 CODEGENOPT(CXAAtExit         , 1, 1, Benign) ///< Use __cxa_atexit for calling destructors.
 CODEGENOPT(RegisterGlobalDtorsWithAtExit, 1, 1, Benign) ///< Use atexit or __cxa_atexit to register global destructors.
 CODEGENOPT(CXXCtorDtorAliases, 1, 0, Benign) ///< Emit complete ctors/dtors as linker

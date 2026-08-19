@@ -4428,16 +4428,15 @@ void X86FrameLowering::processFunctionBeforeFrameFinalized(
   if (STI.is64Bit() && MF.hasEHFunclets() &&
       classifyEHPersonality(MF.getFunction().getPersonalityFn()) ==
           EHPersonality::MSVC_CXX) {
-    adjustFrameForMsvcCxxEh(MF);
+    adjustFrameForMsvcCxxEh(
+        MF, !isMSVCXXFrameHandler4(MF.getFunction().getPersonalityFn()));
   }
 }
 
-void X86FrameLowering::adjustFrameForMsvcCxxEh(MachineFunction &MF) const {
-  // Win64 C++ EH needs to allocate the UnwindHelp object at some fixed offset
-  // relative to RSP after the prologue.  Find the offset of the last fixed
-  // object, so that we can allocate a slot immediately following it. If there
-  // were no fixed objects, use offset -SlotSize, which is immediately after the
-  // return address. Fixed objects have negative frame indices.
+void X86FrameLowering::adjustFrameForMsvcCxxEh(MachineFunction &MF,
+                                               bool NeedsUnwindHelp) const {
+  // Catch objects need fixed offsets. FrameHandler3 also needs an UnwindHelp
+  // object at a fixed offset relative to RSP after the prologue.
   MachineFrameInfo &MFI = MF.getFrameInfo();
   WinEHFuncInfo &EHInfo = *MF.getWinEHFuncInfo();
   int64_t MinFixedObjOffset = -SlotSize;
@@ -4456,6 +4455,9 @@ void X86FrameLowering::adjustFrameForMsvcCxxEh(MachineFunction &MF) const {
       }
     }
   }
+
+  if (!NeedsUnwindHelp)
+    return;
 
   // Ensure alignment.
   MinFixedObjOffset -= std::abs(MinFixedObjOffset) % 8;

@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "WinException.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/BinaryFormat/COFF.h"
 #include "llvm/BinaryFormat/Dwarf.h"
@@ -28,6 +29,7 @@
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCStreamer.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Target/TargetLoweringObjectFile.h"
 #include "llvm/Target/TargetMachine.h"
 using namespace llvm;
@@ -63,6 +65,7 @@ void WinException::endModule() {
 
 void WinException::beginFunction(const MachineFunction *MF) {
   shouldEmitMoves = shouldEmitPersonality = shouldEmitLSDA = false;
+  CurrentFuncletUsesPersonality = false;
 
   // If any landing pads survive, we need an EH table.
   bool hasLandingPads = !MF->getLandingPads().empty();
@@ -155,9 +158,12 @@ void WinException::endFunction(const MachineFunction *MF) {
       emitCSpecificHandlerTable(MF);
     else if (Per == EHPersonality::MSVC_X86SEH)
       emitExceptHandlerTable(MF);
-    else if (Per == EHPersonality::MSVC_CXX)
-      emitCXXFrameHandler3Table(MF);
-    else if (Per == EHPersonality::CoreCLR)
+    else if (Per == EHPersonality::MSVC_CXX) {
+      if (isMSVCXXFrameHandler4(F.getPersonalityFn()))
+        emitCXXFrameHandler4Table(MF);
+      else
+        emitCXXFrameHandler3Table(MF);
+    } else if (Per == EHPersonality::CoreCLR)
       emitCLRExceptionTable(MF);
     else
       emitExceptionTable();
@@ -191,8 +197,47 @@ static MCSymbol *getMCSymbolForMBB(AsmPrinter *Asm,
                                FuncLinkageName + "@4HA");
 }
 
-void WinException::beginFunclet(const MachineBasicBlock &MBB,
-                                MCSymbol *Sym) {
+static const FuncletPadInst *getFuncletPad(const MachineBasicBlock &MBB) {
+  if (!MBB.isEHFuncletEntry() || !MBB.getBasicBlock())
+    return nullptr;
+  return dyn_cast<FuncletPadInst>(MBB.getBasicBlock()->getFirstNonPHIIt());
+}
+
+bool WinException::funcletNeedsCXXFrameHandler4Personality(
+    const MachineBasicBlock &MBB) const {
+  const FuncletPadInst *Owner = getFuncletPad(MBB);
+  if (!Owner)
+    return !MBB.isEHFuncletEntry();
+  if (!isa<CatchPadInst>(Owner))
+    return false;
+
+  const WinEHFuncInfo &FuncInfo = *Asm->MF->getWinEHFuncInfo();
+  return llvm::any_of(FuncInfo.CxxUnwindMap,
+                      [Owner](const CxxUnwindMapEntry &Entry) {
+                        return Entry.Owner == Owner;
+                      }) ||
+         llvm::any_of(FuncInfo.TryBlockMap,
+                      [Owner](const WinEHTryBlockMapEntry &Entry) {
+                        return Entry.Owner == Owner;
+                      });
+}
+
+MCSymbol *WinException::getCXXFrameHandler4FuncInfoSymbol(
+    const MachineBasicBlock &MBB) const {
+  const Function &F = Asm->MF->getFunction();
+  if (!MBB.isEHFuncletEntry()) {
+    StringRef FuncLinkageName =
+        GlobalValue::dropLLVMManglingEscape(F.getName());
+    return Asm->OutContext.getOrCreateSymbol(
+        Twine("$cppxdata$", FuncLinkageName));
+  }
+
+  MCSymbol *FuncletSym = getMCSymbolForMBB(Asm, &MBB);
+  return Asm->OutContext.getOrCreateSymbol(
+      Twine("$cppxdata$", FuncletSym->getName()));
+}
+
+void WinException::beginFunclet(const MachineBasicBlock &MBB, MCSymbol *Sym) {
   CurrentFuncletEntry = &MBB;
 
   const Function &F = Asm->MF->getFunction();
@@ -222,7 +267,13 @@ void WinException::beginFunclet(const MachineBasicBlock &MBB,
     Asm->OutStreamer->emitWinCFIStartProc(Sym);
   }
 
-  if (shouldEmitPersonality) {
+  CurrentFuncletUsesPersonality = shouldEmitPersonality;
+  if (CurrentFuncletUsesPersonality &&
+      isMSVCXXFrameHandler4(F.getPersonalityFn()))
+    CurrentFuncletUsesPersonality =
+        funcletNeedsCXXFrameHandler4Personality(MBB);
+
+  if (CurrentFuncletUsesPersonality) {
     const TargetLoweringObjectFile &TLOF = Asm->getObjFileLowering();
     const Function *PerFn = nullptr;
 
@@ -263,16 +314,22 @@ void WinException::endFuncletImpl() {
     if (F.hasPersonalityFn())
       Per = classifyEHPersonality(F.getPersonalityFn()->stripPointerCasts());
 
-    if (Per == EHPersonality::MSVC_CXX && shouldEmitPersonality &&
+    if (Per == EHPersonality::MSVC_CXX && CurrentFuncletUsesPersonality &&
         !CurrentFuncletEntry->isCleanupFuncletEntry()) {
       // Emit an UNWIND_INFO struct describing the prologue.
       Asm->OutStreamer->emitWinEHHandlerData();
 
       // If this is a C++ catch funclet (or the parent function),
       // emit a reference to the LSDA for the parent function.
-      StringRef FuncLinkageName = GlobalValue::dropLLVMManglingEscape(F.getName());
-      MCSymbol *FuncInfoXData = Asm->OutContext.getOrCreateSymbol(
-          Twine("$cppxdata$", FuncLinkageName));
+      MCSymbol *FuncInfoXData;
+      if (isMSVCXXFrameHandler4(F.getPersonalityFn())) {
+        FuncInfoXData = getCXXFrameHandler4FuncInfoSymbol(*CurrentFuncletEntry);
+      } else {
+        StringRef FuncLinkageName =
+            GlobalValue::dropLLVMManglingEscape(F.getName());
+        FuncInfoXData = Asm->OutContext.getOrCreateSymbol(
+            Twine("$cppxdata$", FuncLinkageName));
+      }
       Asm->OutStreamer->emitValue(create32bitRef(FuncInfoXData), 4);
     } else if (Per == EHPersonality::MSVC_TableSEH && MF->hasEHFunclets() &&
                !CurrentFuncletEntry->isEHFuncletEntry()) {
@@ -308,6 +365,7 @@ void WinException::endFuncletImpl() {
 
   // Let's make sure we don't try to end the same funclet twice.
   CurrentFuncletEntry = nullptr;
+  CurrentFuncletUsesPersonality = false;
 }
 
 const MCExpr *WinException::create32bitRef(const MCSymbol *Value) {
@@ -663,6 +721,287 @@ void WinException::emitSEHActionsForRange(const WinEHFuncInfo &FuncInfo,
 
     assert(UME.ToState < State && "states should decrease");
     State = UME.ToState;
+  }
+}
+
+static unsigned getEncodedFH4UnsignedSize(uint32_t Value) {
+  if (Value < 1u << 7)
+    return 1;
+  if (Value < 1u << 14)
+    return 2;
+  if (Value < 1u << 21)
+    return 3;
+  if (Value < 1u << 28)
+    return 4;
+  return 5;
+}
+
+static void emitEncodedFH4Unsigned(MCStreamer &OS, uint32_t Value) {
+  if (Value < 1u << 7) {
+    OS.emitInt8(Value << 1);
+  } else if (Value < 1u << 14) {
+    OS.emitInt8((Value << 2) | 1);
+    OS.emitInt8(Value >> 6);
+  } else if (Value < 1u << 21) {
+    OS.emitInt8((Value << 3) | 3);
+    OS.emitInt8(Value >> 5);
+    OS.emitInt8(Value >> 13);
+  } else if (Value < 1u << 28) {
+    OS.emitInt8((Value << 4) | 7);
+    OS.emitInt8(Value >> 4);
+    OS.emitInt8(Value >> 12);
+    OS.emitInt8(Value >> 20);
+  } else {
+    OS.emitInt8(15);
+    OS.emitInt32(Value);
+  }
+}
+
+static void emitEncodedFH4Unsigned(MCStreamer &OS, const MCExpr *Value) {
+  // Symbol differences are not known until MC layout. The five-byte form can
+  // represent every value without requiring a target-specific relaxable fixup.
+  OS.emitInt8(15);
+  OS.emitValue(Value, 4);
+}
+
+void WinException::emitCXXFrameHandler4Table(const MachineFunction *MF) {
+  if (Asm->TM.getTargetTriple().getArch() != Triple::x86_64)
+    report_fatal_error("__CxxFrameHandler4 is only supported on x86_64");
+
+  const Function &F = MF->getFunction();
+  MCStreamer &OS = *Asm->OutStreamer;
+  const WinEHFuncInfo &FuncInfo = *MF->getWinEHFuncInfo();
+
+  struct FuncletInfo {
+    const FuncletPadInst *Owner = nullptr;
+    const MachineBasicBlock *Entry = nullptr;
+    SmallVector<int, 4> States;
+    DenseMap<int, unsigned> LocalState;
+    SmallVector<const WinEHTryBlockMapEntry *, 2> TryBlocks;
+  };
+
+  SmallVector<FuncletInfo, 2> Funclets;
+  Funclets.emplace_back();
+  Funclets.back().Entry = &MF->front();
+  for (const MachineBasicBlock &MBB : *MF) {
+    const FuncletPadInst *Owner = getFuncletPad(MBB);
+    if (!Owner || !isa<CatchPadInst>(Owner) ||
+        !funcletNeedsCXXFrameHandler4Personality(MBB))
+      continue;
+    Funclets.emplace_back();
+    Funclets.back().Owner = Owner;
+    Funclets.back().Entry = &MBB;
+  }
+
+  for (FuncletInfo &FI : Funclets) {
+    if (FI.Owner) {
+      auto It = FuncInfo.FuncletBaseStateMap.find(FI.Owner);
+      assert(It != FuncInfo.FuncletBaseStateMap.end() &&
+             "missing catch funclet base state");
+      FI.States.push_back(It->second);
+    }
+    for (unsigned State = 0; State != FuncInfo.CxxUnwindMap.size(); ++State)
+      if (FuncInfo.CxxUnwindMap[State].Owner == FI.Owner)
+        FI.States.push_back(State);
+    for (const WinEHTryBlockMapEntry &TryBlock : FuncInfo.TryBlockMap)
+      if (TryBlock.Owner == FI.Owner)
+        FI.TryBlocks.push_back(&TryBlock);
+    for (unsigned State = 0; State != FI.States.size(); ++State)
+      FI.LocalState[FI.States[State]] = State;
+  }
+
+  const bool IsEHa = MMI->getModule()->getModuleFlag("eh-asynch");
+  const bool IsNoExcept = F.doesNotThrow();
+  const TargetFrameLowering *TFI = MF->getSubtarget().getFrameLowering();
+
+  for (const FuncletInfo &FI : Funclets) {
+    MCSymbol *FuncInfoXData = getCXXFrameHandler4FuncInfoSymbol(*FI.Entry);
+    MCSymbol *FuncletSym =
+        FI.Owner ? getMCSymbolForMBB(Asm, FI.Entry) : nullptr;
+    StringRef FuncLinkageName =
+        GlobalValue::dropLLVMManglingEscape(F.getName());
+    StringRef Suffix = FI.Owner ? FuncletSym->getName() : FuncLinkageName;
+
+    MCSymbol *UnwindMapXData = nullptr;
+    MCSymbol *TryBlockMapXData = nullptr;
+    if (!FI.States.empty())
+      UnwindMapXData =
+          Asm->OutContext.getOrCreateSymbol(Twine("$stateUnwindMap$", Suffix));
+    if (!FI.TryBlocks.empty())
+      TryBlockMapXData =
+          Asm->OutContext.getOrCreateSymbol(Twine("$tryMap$", Suffix));
+    MCSymbol *IPToStateXData =
+        Asm->OutContext.getOrCreateSymbol(Twine("$ip2state$", Suffix));
+
+    SmallVector<std::pair<const MCExpr *, int>, 4> IPToStateTable;
+    for (MachineFunction::const_iterator FuncletStart = MF->begin(),
+                                         FuncletEnd = MF->begin(),
+                                         End = MF->end();
+         FuncletStart != End; FuncletStart = FuncletEnd) {
+      while (++FuncletEnd != End && !FuncletEnd->isEHFuncletEntry())
+        ;
+
+      const FuncletPadInst *ThisOwner = getFuncletPad(*FuncletStart);
+      if (ThisOwner != FI.Owner)
+        continue;
+
+      int BaseState = NullState;
+      const MCSymbol *PreviousLabel = Asm->getFunctionBegin();
+      if (FI.Owner) {
+        BaseState = FuncInfo.FuncletBaseStateMap.find(FI.Owner)->second;
+        PreviousLabel = getMCSymbolForMBB(Asm, &*FuncletStart);
+      }
+
+      for (const InvokeStateChange &StateChange :
+           InvokeStateChangeIterator::range(FuncInfo, FuncletStart, FuncletEnd,
+                                            BaseState)) {
+        const MCSymbol *ChangeLabel = StateChange.NewStartLabel;
+        if (!ChangeLabel)
+          ChangeLabel = StateChange.PreviousEndLabel;
+        assert(ChangeLabel && "FH4 state change has no location");
+
+        int LocalState = NullState;
+        if (auto It = FI.LocalState.find(StateChange.NewState);
+            It != FI.LocalState.end())
+          LocalState = It->second;
+        IPToStateTable.emplace_back(getOffset(ChangeLabel, PreviousLabel),
+                                    LocalState);
+        PreviousLabel = ChangeLabel;
+      }
+      break;
+    }
+
+    uint8_t Header = 0;
+    if (FI.Owner)
+      Header |= 1 << 0;
+    if (UnwindMapXData)
+      Header |= 1 << 3;
+    if (TryBlockMapXData)
+      Header |= 1 << 4;
+    if (!IsEHa)
+      Header |= 1 << 5;
+    if (IsNoExcept)
+      Header |= 1 << 6;
+
+    OS.emitValueToAlignment(Align(4));
+    OS.emitLabel(FuncInfoXData);
+    OS.emitInt8(Header);
+    if (UnwindMapXData)
+      OS.emitValue(create32bitRef(UnwindMapXData), 4);
+    if (TryBlockMapXData)
+      OS.emitValue(create32bitRef(TryBlockMapXData), 4);
+    OS.emitValue(create32bitRef(IPToStateXData), 4);
+    if (FI.Owner)
+      emitEncodedFH4Unsigned(OS, TFI->getWinEHParentFrameOffset(*MF));
+
+    if (UnwindMapXData) {
+      OS.emitLabel(UnwindMapXData);
+      emitEncodedFH4Unsigned(OS, FI.States.size());
+
+      SmallVector<unsigned, 4> EntryOffsets;
+      unsigned EntryOffset = 0;
+      for (int GlobalState : FI.States) {
+        EntryOffsets.push_back(EntryOffset);
+        const CxxUnwindMapEntry &UME = FuncInfo.CxxUnwindMap[GlobalState];
+
+        int ToState = NullState;
+        if (auto It = FI.LocalState.find(UME.ToState);
+            It != FI.LocalState.end())
+          ToState = It->second;
+        assert(ToState < int(EntryOffsets.size()) - 1 &&
+               "FH4 unwind states must point backwards");
+
+        int TargetOffset = ToState == NullState ? -1 : EntryOffsets[ToState];
+        unsigned NextOffset = EntryOffset - TargetOffset;
+        MCSymbol *CleanupSym = getMCSymbolForMBB(
+            Asm, dyn_cast_if_present<MachineBasicBlock *>(UME.Cleanup));
+        uint32_t Type = CleanupSym ? 3 : 0;
+        uint32_t Encoded = (NextOffset << 2) | Type;
+        emitEncodedFH4Unsigned(OS, Encoded);
+        EntryOffset += getEncodedFH4UnsignedSize(Encoded);
+        if (CleanupSym) {
+          OS.emitValue(create32bitRef(CleanupSym), 4);
+          EntryOffset += 4;
+        }
+      }
+    }
+
+    SmallVector<MCSymbol *, 2> HandlerMaps;
+    if (TryBlockMapXData) {
+      OS.emitLabel(TryBlockMapXData);
+      emitEncodedFH4Unsigned(OS, FI.TryBlocks.size());
+      for (unsigned I = 0; I != FI.TryBlocks.size(); ++I) {
+        const WinEHTryBlockMapEntry &TBME = *FI.TryBlocks[I];
+        MCSymbol *HandlerMapXData = Asm->OutContext.getOrCreateSymbol(
+            Twine("$handlerMap$") + Twine(I) + "$" + Suffix);
+        HandlerMaps.push_back(HandlerMapXData);
+
+        auto Localize = [&](int State) {
+          auto It = FI.LocalState.find(State);
+          assert(It != FI.LocalState.end() && "FH4 state has wrong owner");
+          return It->second;
+        };
+        assert(!TBME.HandlerArray.empty() && "try block has no handlers");
+        const WinEHHandlerType &FirstHandler = TBME.HandlerArray.front();
+        const BasicBlock *HandlerBB;
+        if (auto *HandlerMBB =
+                dyn_cast<MachineBasicBlock *>(FirstHandler.Handler))
+          HandlerBB = HandlerMBB->getBasicBlock();
+        else
+          HandlerBB = cast<const BasicBlock *>(FirstHandler.Handler);
+        auto *CatchPad = cast<CatchPadInst>(HandlerBB->getFirstNonPHIIt());
+        auto CatchStateIt = FuncInfo.FuncletBaseStateMap.find(CatchPad);
+        assert(CatchStateIt != FuncInfo.FuncletBaseStateMap.end() &&
+               "missing FH4 catch state");
+        int CatchState = CatchStateIt->second;
+
+        emitEncodedFH4Unsigned(OS, Localize(TBME.TryLow));
+        emitEncodedFH4Unsigned(OS, Localize(TBME.TryHigh));
+        emitEncodedFH4Unsigned(OS, Localize(CatchState));
+        OS.emitValue(create32bitRef(HandlerMapXData), 4);
+      }
+
+      for (unsigned I = 0; I != FI.TryBlocks.size(); ++I) {
+        const WinEHTryBlockMapEntry &TBME = *FI.TryBlocks[I];
+        OS.emitLabel(HandlerMaps[I]);
+        emitEncodedFH4Unsigned(OS, TBME.HandlerArray.size());
+        for (const WinEHHandlerType &HT : TBME.HandlerArray) {
+          int CatchObjOffset = 0;
+          if (HT.CatchObj.FrameIndex != INT_MAX) {
+            CatchObjOffset =
+                getFrameIndexOffset(HT.CatchObj.FrameIndex, FuncInfo);
+            assert(CatchObjOffset != 0 && "illegal FH4 catch object offset");
+          }
+          assert(CatchObjOffset >= 0 && "negative FH4 catch object offset");
+
+          uint8_t HandlerHeader = 0;
+          if (HT.Adjectives)
+            HandlerHeader |= 1 << 0;
+          if (HT.TypeDescriptor)
+            HandlerHeader |= 1 << 1;
+          if (CatchObjOffset)
+            HandlerHeader |= 1 << 2;
+          OS.emitInt8(HandlerHeader);
+          if (HT.Adjectives)
+            emitEncodedFH4Unsigned(OS, HT.Adjectives);
+          if (HT.TypeDescriptor)
+            OS.emitValue(create32bitRef(HT.TypeDescriptor), 4);
+          if (CatchObjOffset)
+            emitEncodedFH4Unsigned(OS, CatchObjOffset);
+
+          MCSymbol *HandlerSym = getMCSymbolForMBB(
+              Asm, dyn_cast_if_present<MachineBasicBlock *>(HT.Handler));
+          OS.emitValue(create32bitRef(HandlerSym), 4);
+        }
+      }
+    }
+
+    OS.emitLabel(IPToStateXData);
+    emitEncodedFH4Unsigned(OS, IPToStateTable.size());
+    for (const auto &[IP, State] : IPToStateTable) {
+      emitEncodedFH4Unsigned(OS, IP);
+      emitEncodedFH4Unsigned(OS, State + 1);
+    }
   }
 }
 

@@ -1555,6 +1555,10 @@ void CompilerInvocationBase::GenerateCodeGenArgs(const CodeGenOptions &Opts,
 #include "clang/Options/Options.inc"
 #undef CODEGEN_OPTION_WITH_MARSHALLING
 
+  if (Opts.MSVCCXXEH4Specified)
+    GenerateArg(Consumer,
+                Opts.MSVCCXXEH4 ? OPT_fms_cxx_eh4 : OPT_fno_ms_cxx_eh4);
+
   if (Opts.OptimizationLevel > 0) {
     if (Opts.Inlining == CodeGenOptions::NormalInlining)
       GenerateArg(Consumer, OPT_finline_functions);
@@ -1852,6 +1856,11 @@ bool CompilerInvocation::ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args,
   PARSE_OPTION_WITH_MARSHALLING(Args, Diags, __VA_ARGS__)
 #include "clang/Options/Options.inc"
 #undef CODEGEN_OPTION_WITH_MARSHALLING
+
+  if (const Arg *A = Args.getLastArg(OPT_fms_cxx_eh4, OPT_fno_ms_cxx_eh4)) {
+    Opts.MSVCCXXEH4Specified = true;
+    Opts.MSVCCXXEH4 = A->getOption().matches(OPT_fms_cxx_eh4);
+  }
 
   // At O0 we want to fully disable inlining outside of cases marked with
   // 'alwaysinline' that are required for correctness.

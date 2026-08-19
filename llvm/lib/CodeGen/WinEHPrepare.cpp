@@ -144,21 +144,25 @@ bool WinEHPrepareImpl::runOnFunction(Function &Fn) {
 }
 
 static int addUnwindMapEntry(WinEHFuncInfo &FuncInfo, int ToState,
-                             const BasicBlock *BB) {
+                             const BasicBlock *BB,
+                             const FuncletPadInst *Owner) {
   CxxUnwindMapEntry UME;
   UME.ToState = ToState;
   UME.Cleanup = BB;
+  UME.Owner = Owner;
   FuncInfo.CxxUnwindMap.push_back(UME);
   return FuncInfo.getLastStateNumber();
 }
 
 static void addTryBlockMapEntry(WinEHFuncInfo &FuncInfo, int TryLow,
                                 int TryHigh, int CatchHigh,
-                                ArrayRef<const CatchPadInst *> Handlers) {
+                                ArrayRef<const CatchPadInst *> Handlers,
+                                const FuncletPadInst *Owner) {
   WinEHTryBlockMapEntry TBME;
   TBME.TryLow = TryLow;
   TBME.TryHigh = TryHigh;
   TBME.CatchHigh = CatchHigh;
+  TBME.Owner = Owner;
   assert(TBME.TryLow <= TBME.TryHigh);
   for (const CatchPadInst *CPI : Handlers) {
     WinEHHandlerType HT;
@@ -377,7 +381,8 @@ static const BasicBlock *getEHPadFromPredecessor(const BasicBlock *BB,
 //      FuncInfo.EHPadStateMap[] and FuncInfo.CxxUnwindMap[]
 static void calculateCXXStateNumbers(WinEHFuncInfo &FuncInfo,
                                      const Instruction *FirstNonPHI,
-                                     int ParentState) {
+                                     int ParentState,
+                                     const FuncletPadInst *Owner) {
   const BasicBlock *BB = FirstNonPHI->getParent();
   assert(BB->isEHPad() && "not a funclet!");
 
@@ -390,14 +395,14 @@ static void calculateCXXStateNumbers(WinEHFuncInfo &FuncInfo,
       auto *CatchPad = cast<CatchPadInst>(CatchPadBB->getFirstNonPHIIt());
       Handlers.push_back(CatchPad);
     }
-    int TryLow = addUnwindMapEntry(FuncInfo, ParentState, nullptr);
+    int TryLow = addUnwindMapEntry(FuncInfo, ParentState, nullptr, Owner);
     FuncInfo.EHPadStateMap[CatchSwitch] = TryLow;
     for (const BasicBlock *PredBlock : predecessors(BB))
       if ((PredBlock = getEHPadFromPredecessor(PredBlock,
                                                CatchSwitch->getParentPad())))
         calculateCXXStateNumbers(FuncInfo, &*PredBlock->getFirstNonPHIIt(),
-                                 TryLow);
-    int CatchLow = addUnwindMapEntry(FuncInfo, ParentState, nullptr);
+                                 TryLow, Owner);
+    int CatchLow = addUnwindMapEntry(FuncInfo, ParentState, nullptr, Owner);
 
     // catchpads are separate funclets in C++ EH due to the way rethrow works.
     int TryHigh = CatchLow - 1;
@@ -408,7 +413,7 @@ static void calculateCXXStateNumbers(WinEHFuncInfo &FuncInfo,
     const Module *Mod = BB->getParent()->getParent();
     bool IsPreOrder = Mod->getTargetTriple().isArch64Bit();
     if (IsPreOrder)
-      addTryBlockMapEntry(FuncInfo, TryLow, TryHigh, CatchLow, Handlers);
+      addTryBlockMapEntry(FuncInfo, TryLow, TryHigh, CatchLow, Handlers, Owner);
     unsigned TBMEIdx = FuncInfo.TryBlockMap.size() - 1;
 
     for (const auto *CatchPad : Handlers) {
@@ -419,7 +424,7 @@ static void calculateCXXStateNumbers(WinEHFuncInfo &FuncInfo,
         if (auto *InnerCatchSwitch = dyn_cast<CatchSwitchInst>(UserI)) {
           BasicBlock *UnwindDest = InnerCatchSwitch->getUnwindDest();
           if (!UnwindDest || UnwindDest == CatchSwitch->getUnwindDest())
-            calculateCXXStateNumbers(FuncInfo, UserI, CatchLow);
+            calculateCXXStateNumbers(FuncInfo, UserI, CatchLow, CatchPad);
         }
         if (auto *InnerCleanupPad = dyn_cast<CleanupPadInst>(UserI)) {
           BasicBlock *UnwindDest = getCleanupRetUnwindDest(InnerCleanupPad);
@@ -427,7 +432,7 @@ static void calculateCXXStateNumbers(WinEHFuncInfo &FuncInfo,
           // enclosing catch pad doesn't it must be post-dominated by an
           // unreachable instruction.
           if (!UnwindDest || UnwindDest == CatchSwitch->getUnwindDest())
-            calculateCXXStateNumbers(FuncInfo, UserI, CatchLow);
+            calculateCXXStateNumbers(FuncInfo, UserI, CatchLow, CatchPad);
         }
       }
     }
@@ -436,7 +441,8 @@ static void calculateCXXStateNumbers(WinEHFuncInfo &FuncInfo,
     if (IsPreOrder)
       FuncInfo.TryBlockMap[TBMEIdx].CatchHigh = CatchHigh;
     else // PostOrder
-      addTryBlockMapEntry(FuncInfo, TryLow, TryHigh, CatchHigh, Handlers);
+      addTryBlockMapEntry(FuncInfo, TryLow, TryHigh, CatchHigh, Handlers,
+                          Owner);
 
     LLVM_DEBUG(dbgs() << "TryLow[" << BB->getName() << "]: " << TryLow << '\n');
     LLVM_DEBUG(dbgs() << "TryHigh[" << BB->getName() << "]: " << TryHigh
@@ -452,7 +458,7 @@ static void calculateCXXStateNumbers(WinEHFuncInfo &FuncInfo,
     if (!Inserted)
       return;
 
-    int CleanupState = addUnwindMapEntry(FuncInfo, ParentState, BB);
+    int CleanupState = addUnwindMapEntry(FuncInfo, ParentState, BB, Owner);
     It->second = CleanupState;
     LLVM_DEBUG(dbgs() << "Assigning state #" << CleanupState << " to BB "
                       << BB->getName() << '\n');
@@ -460,7 +466,7 @@ static void calculateCXXStateNumbers(WinEHFuncInfo &FuncInfo,
       if ((PredBlock = getEHPadFromPredecessor(PredBlock,
                                                CleanupPad->getParentPad()))) {
         calculateCXXStateNumbers(FuncInfo, &*PredBlock->getFirstNonPHIIt(),
-                                 CleanupState);
+                                 CleanupState, Owner);
       }
     }
     for (const User *U : CleanupPad->users()) {
@@ -625,7 +631,7 @@ void llvm::calculateWinCXXEHStateNumbers(const Function *Fn,
     const Instruction *FirstNonPHI = &*BB.getFirstNonPHIIt();
     if (!isTopLevelPadForMSVC(FirstNonPHI))
       continue;
-    calculateCXXStateNumbers(FuncInfo, FirstNonPHI, -1);
+    calculateCXXStateNumbers(FuncInfo, FirstNonPHI, -1, nullptr);
   }
 
   calculateStateNumbersForInvokes(Fn, FuncInfo);

@@ -50,6 +50,8 @@ const EHPersonality EHPersonality::MSVC_C_specific_handler = {
     "__C_specific_handler", nullptr};
 const EHPersonality EHPersonality::MSVC_CxxFrameHandler3 = {
     "__CxxFrameHandler3", nullptr};
+const EHPersonality EHPersonality::MSVC_CxxFrameHandler4 = {
+    "__CxxFrameHandler4", nullptr};
 const EHPersonality EHPersonality::GNU_Wasm_CPlusPlus = {
     "__gxx_wasm_personality_v0", nullptr};
 const EHPersonality EHPersonality::XL_CPlusPlus = {"__xlcxx_personality_v1",
@@ -58,10 +60,17 @@ const EHPersonality EHPersonality::ZOS_CPlusPlus = {"__zos_cxx_personality_v2",
                                                     nullptr};
 
 static const EHPersonality &getCPersonality(const TargetInfo &target,
+                                            const LangOptions &langOpts,
                                             const CodeGenOptions &cgOpts) {
   const llvm::Triple &triple = target.getTriple();
-  if (triple.isWindowsMSVCEnvironment())
+  if (triple.isWindowsMSVCEnvironment()) {
+    bool useFH4 = cgOpts.MSVCCXXEH4Specified
+                      ? cgOpts.MSVCCXXEH4
+                      : langOpts.isCompatibleWithMSVC(LangOptions::MSVC2019_3);
+    if (triple.getArch() == llvm::Triple::x86_64 && useFH4)
+      return EHPersonality::MSVC_CxxFrameHandler4;
     return EHPersonality::MSVC_CxxFrameHandler3;
+  }
   if (cgOpts.hasSjLjExceptions())
     return EHPersonality::GNU_C_SJLJ;
   if (cgOpts.hasDWARFExceptions())
@@ -76,11 +85,11 @@ static const EHPersonality &getObjCPersonality(const TargetInfo &target,
                                                const CodeGenOptions &cgOpts) {
   const llvm::Triple &triple = target.getTriple();
   if (triple.isWindowsMSVCEnvironment())
-    return EHPersonality::MSVC_CxxFrameHandler3;
+    return getCPersonality(target, langOpts, cgOpts);
 
   switch (langOpts.ObjCRuntime.getKind()) {
   case ObjCRuntime::FragileMacOSX:
-    return getCPersonality(target, cgOpts);
+    return getCPersonality(target, langOpts, cgOpts);
   case ObjCRuntime::MacOSX:
   case ObjCRuntime::iOS:
   case ObjCRuntime::WatchOS:
@@ -101,10 +110,11 @@ static const EHPersonality &getObjCPersonality(const TargetInfo &target,
 }
 
 static const EHPersonality &getCXXPersonality(const TargetInfo &target,
+                                              const LangOptions &langOpts,
                                               const CodeGenOptions &cgOpts) {
   const llvm::Triple &triple = target.getTriple();
   if (triple.isWindowsMSVCEnvironment())
-    return EHPersonality::MSVC_CxxFrameHandler3;
+    return getCPersonality(target, langOpts, cgOpts);
   if (triple.isOSAIX())
     return EHPersonality::XL_CPlusPlus;
   if (cgOpts.hasSjLjExceptions())
@@ -124,13 +134,13 @@ static const EHPersonality &getObjCXXPersonality(const TargetInfo &target,
                                                  const LangOptions &langOpts,
                                                  const CodeGenOptions &cgOpts) {
   if (target.getTriple().isWindowsMSVCEnvironment())
-    return EHPersonality::MSVC_CxxFrameHandler3;
+    return getCPersonality(target, langOpts, cgOpts);
 
   switch (langOpts.ObjCRuntime.getKind()) {
   // In the fragile ABI, just use C++ exception handling and hope
   // they're not doing crazy exception mixing.
   case ObjCRuntime::FragileMacOSX:
-    return getCXXPersonality(target, cgOpts);
+    return getCXXPersonality(target, langOpts, cgOpts);
 
   // The ObjC personality defers to the C++ personality for non-ObjC
   // handlers.  Unlike the C++ case, we use the same personality
@@ -173,8 +183,8 @@ const EHPersonality &EHPersonality::get(CIRGenModule &cgm,
     return langOpts.CPlusPlus ? getObjCXXPersonality(target, langOpts, cgOpts)
                               : getObjCPersonality(target, langOpts, cgOpts);
   }
-  return langOpts.CPlusPlus ? getCXXPersonality(target, cgOpts)
-                            : getCPersonality(target, cgOpts);
+  return langOpts.CPlusPlus ? getCXXPersonality(target, langOpts, cgOpts)
+                            : getCPersonality(target, langOpts, cgOpts);
 }
 
 const EHPersonality &EHPersonality::get(CIRGenFunction &cgf) {

@@ -46,6 +46,7 @@ EHPersonality llvm::classifyEHPersonality(const Value *Pers) {
       .Case("_except_handler4", EHPersonality::MSVC_X86SEH)
       .Case("__C_specific_handler", EHPersonality::MSVC_TableSEH)
       .Case("__CxxFrameHandler3", EHPersonality::MSVC_CXX)
+      .Case("__CxxFrameHandler4", EHPersonality::MSVC_CXX)
       .Case("ProcessCLRException", EHPersonality::CoreCLR)
       // Rust mangles its personality function, so we can't test exact equality.
       .EndsWith("rust_eh_personality", EHPersonality::Rust)
@@ -53,6 +54,18 @@ EHPersonality llvm::classifyEHPersonality(const Value *Pers) {
       .Case("__xlcxx_personality_v1", EHPersonality::XL_CXX)
       .Case("__zos_cxx_personality_v2", EHPersonality::ZOS_CXX)
       .Default(EHPersonality::Unknown);
+}
+
+bool llvm::isMSVCXXFrameHandler4(const Value *Pers) {
+  const GlobalValue *F =
+      Pers ? dyn_cast<GlobalValue>(Pers->stripPointerCasts()) : nullptr;
+  if (!F || !F->getValueType() || !F->getValueType()->isFunctionTy())
+    return false;
+
+  StringRef Name = F->getName();
+  if (F->getParent()->getTargetTriple().isWindowsArm64EC())
+    Name.consume_front("#");
+  return Name == "__CxxFrameHandler4";
 }
 
 StringRef llvm::getEHPersonalityName(EHPersonality Pers) {
