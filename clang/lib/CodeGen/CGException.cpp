@@ -22,6 +22,7 @@
 #include "clang/AST/StmtObjC.h"
 #include "clang/AST/StmtVisitor.h"
 #include "clang/Basic/DiagnosticSema.h"
+#include "llvm/IR/EHPersonalities.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/IntrinsicsWebAssembly.h"
@@ -252,6 +253,31 @@ static llvm::Constant *getOpaquePersonalityFn(CodeGenModule &CGM,
   return cast<llvm::Constant>(Fn.getCallee());
 }
 
+static bool useMSVCXXEH4NoexceptMetadata(CodeGenFunction &CGF) {
+  return !CGF.getLangOpts().EHAsynch &&
+         &getEHPersonality(CGF) == &EHPersonality::MSVC_CxxFrameHandler4;
+}
+
+static void beginNoexceptScope(CodeGenFunction &CGF,
+                               bool IsDeclspecNothrow = false) {
+  if (IsDeclspecNothrow || !useMSVCXXEH4NoexceptMetadata(CGF)) {
+    CGF.EHStack.pushTerminate();
+    return;
+  }
+  CGF.MSVCXXEH4Noexcept = true;
+}
+
+void CodeGenFunction::activateMSVCXXEH4Noexcept() {
+  assert(MSVCXXEH4Noexcept && "activating an inactive FH4 noexcept scope");
+  // FH4 enforces noexcept directly from FuncInfo4. Install the personality only
+  // when an operation can throw, so true leaf functions remain handler-free.
+  if (!CurFn->hasPersonalityFn()) {
+    const EHPersonality &Personality = getEHPersonality(*this);
+    CurFn->setPersonalityFn(getOpaquePersonalityFn(CGM, Personality));
+  }
+  CurFn->addFnAttr(llvm::MSVCXXEH4NoexceptAttr);
+}
+
 /// Check whether a landingpad instruction only uses C++ features.
 static bool LandingPadHasOnlyCXXUses(llvm::LandingPadInst *LPI) {
   for (unsigned I = 0, E = LPI->getNumClauses(); I != E; ++I) {
@@ -459,7 +485,7 @@ void CodeGenFunction::EmitStartEHSpec(const Decl *D) {
     // Check if CapturedDecl is nothrow and create terminate scope for it.
     if (const CapturedDecl* CD = dyn_cast_or_null<CapturedDecl>(D)) {
       if (CD->isNothrow())
-        EHStack.pushTerminate();
+        beginNoexceptScope(*this);
     }
     return;
   }
@@ -517,7 +543,7 @@ void CodeGenFunction::EmitStartEHSpec(const Decl *D) {
   } else if (Proto->canThrow() == CT_Cannot) {
     // noexcept functions are simple terminate scopes.
     if (!getLangOpts().EHAsynch) // -EHa: HW exception still can occur
-      EHStack.pushTerminate();
+      beginNoexceptScope(*this, EST == EST_NoThrow);
   }
 }
 
@@ -567,8 +593,12 @@ void CodeGenFunction::EmitEndEHSpec(const Decl *D) {
   if (!FD) {
     // Check if CapturedDecl is nothrow and pop terminate scope for it.
     if (const CapturedDecl* CD = dyn_cast_or_null<CapturedDecl>(D)) {
-      if (CD->isNothrow() && !EHStack.empty())
-        EHStack.popTerminate();
+      if (CD->isNothrow()) {
+        if (useMSVCXXEH4NoexceptMetadata(*this))
+          MSVCXXEH4Noexcept = false;
+        else if (!EHStack.empty())
+          EHStack.popTerminate();
+      }
     }
     return;
   }
@@ -594,10 +624,12 @@ void CodeGenFunction::EmitEndEHSpec(const Decl *D) {
     EHFilterScope &filterScope = cast<EHFilterScope>(*EHStack.begin());
     emitFilterDispatchBlock(*this, filterScope);
     EHStack.popFilter();
-  } else if (Proto->canThrow() == CT_Cannot &&
-              /* possible empty when under async exceptions */
-             !EHStack.empty()) {
-    EHStack.popTerminate();
+  } else if (Proto->canThrow() == CT_Cannot) {
+    if (EST != EST_NoThrow && useMSVCXXEH4NoexceptMetadata(*this))
+      MSVCXXEH4Noexcept = false;
+    else if (!EHStack.empty())
+      // The stack can be empty under asynchronous exceptions.
+      EHStack.popTerminate();
   }
 }
 
