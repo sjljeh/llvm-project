@@ -1,4 +1,6 @@
 ; RUN: llc -verify-machineinstrs -mtriple=x86_64-pc-windows-msvc < %s | FileCheck %s
+; RUN: llc -verify-machineinstrs -mtriple=x86_64-pc-windows-msvc -filetype=obj < %s -o %t
+; RUN: llvm-readobj --symbols %t | FileCheck %s --check-prefix=OBJ
 
 declare void @f(i32)
 declare void @destroy(ptr) nounwind
@@ -101,6 +103,13 @@ terminate.pad:
 ; CHECK-NEXT:  .byte 8
 ; CHECK-NEXT:  .byte 8
 ; CHECK-NEXT:  .byte 16
+
+; Object emission relaxes both IP deltas to one byte. Together with the count
+; and state bytes, the following catch FuncInfo starts five bytes after the map.
+; OBJ:      Name: $cppxdata$?catch$[[OBJ_OUTER:[0-9]+]]@?0?try_in_catch@4HA
+; OBJ-NEXT: Value: [[#%u,CATCH_INFO:]]
+; OBJ:      Name: $ip2state$try_in_catch
+; OBJ-NEXT: Value: [[#CATCH_INFO-5]]
 
 ; CHECK-LABEL: cleanup:
 ; CHECK:       .seh_handler __CxxFrameHandler4, @unwind{{[[:space:]]*$}}
