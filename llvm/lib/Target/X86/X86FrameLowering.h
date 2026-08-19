@@ -283,7 +283,7 @@ private:
   void emitZeroCallUsedRegs(BitVector RegsToZero, MachineBasicBlock &MBB,
                             RegScavenger *RS) const override;
 
-  void adjustFrameForMsvcCxxEh(MachineFunction &MF) const;
+  void adjustFrameForMsvcCxxEh(MachineFunction &MF, bool NeedsUnwindHelp) const;
 
   /// Aligns the stack pointer by ANDing it with -MaxAlign.
   void BuildStackAlignAND(MachineBasicBlock &MBB,

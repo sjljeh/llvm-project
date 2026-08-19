@@ -39,6 +39,8 @@ const EHPersonality EHPersonality::MSVC_C_specific_handler = {
     "__C_specific_handler", nullptr};
 const EHPersonality EHPersonality::MSVC_CxxFrameHandler3 = {
     "__CxxFrameHandler3", nullptr};
+const EHPersonality EHPersonality::MSVC_CxxFrameHandler4 = {
+    "__CxxFrameHandler4", nullptr};
 const EHPersonality EHPersonality::GNU_Wasm_CPlusPlus = {
     "__gxx_wasm_personality_v0", nullptr};
 const EHPersonality EHPersonality::XL_CPlusPlus = {"__xlcxx_personality_v1",

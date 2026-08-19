@@ -83,10 +83,17 @@ static llvm::FunctionCallee getCatchallRethrowFn(CodeGenModule &CGM,
 }
 
 static const EHPersonality &getCPersonality(const TargetInfo &Target,
-                                            const CodeGenOptions &CGOpts) {
+                                            const CodeGenOptions &CGOpts,
+                                            const LangOptions &L) {
   const llvm::Triple &T = Target.getTriple();
-  if (T.isWindowsMSVCEnvironment())
+  if (T.isWindowsMSVCEnvironment()) {
+    bool UseFH4 = CGOpts.MSVCCXXEH4Specified
+                      ? CGOpts.MSVCCXXEH4
+                      : L.isCompatibleWithMSVC(LangOptions::MSVC2019_3);
+    if (T.getArch() == llvm::Triple::x86_64 && UseFH4)
+      return EHPersonality::MSVC_CxxFrameHandler4;
     return EHPersonality::MSVC_CxxFrameHandler3;
+  }
   if (CGOpts.hasSjLjExceptions())
     return EHPersonality::GNU_C_SJLJ;
   if (CGOpts.hasDWARFExceptions())
@@ -101,13 +108,13 @@ static const EHPersonality &getObjCPersonality(const TargetInfo &Target,
                                                const LangOptions &L) {
   const llvm::Triple &T = Target.getTriple();
   if (T.isWindowsMSVCEnvironment())
-    return EHPersonality::MSVC_CxxFrameHandler3;
+    return getCPersonality(Target, CGOpts, L);
   if (T.isWasm())
     return EHPersonality::GNU_Wasm_CPlusPlus;
 
   switch (L.ObjCRuntime.getKind()) {
   case ObjCRuntime::FragileMacOSX:
-    return getCPersonality(Target, CGOpts);
+    return getCPersonality(Target, CGOpts, L);
   case ObjCRuntime::MacOSX:
   case ObjCRuntime::iOS:
   case ObjCRuntime::WatchOS:
@@ -130,10 +137,11 @@ static const EHPersonality &getObjCPersonality(const TargetInfo &Target,
 }
 
 static const EHPersonality &getCXXPersonality(const TargetInfo &Target,
-                                              const CodeGenOptions &CGOpts) {
+                                              const CodeGenOptions &CGOpts,
+                                              const LangOptions &L) {
   const llvm::Triple &T = Target.getTriple();
   if (T.isWindowsMSVCEnvironment())
-    return EHPersonality::MSVC_CxxFrameHandler3;
+    return getCPersonality(Target, CGOpts, L);
   if (T.isOSAIX())
     return EHPersonality::XL_CPlusPlus;
   if (CGOpts.hasSjLjExceptions())
@@ -156,7 +164,7 @@ static const EHPersonality &getObjCXXPersonality(const TargetInfo &Target,
                                                  const LangOptions &L) {
   auto Triple = Target.getTriple();
   if (Triple.isWindowsMSVCEnvironment())
-    return EHPersonality::MSVC_CxxFrameHandler3;
+    return getCPersonality(Target, CGOpts, L);
   if (Triple.isWasm())
     return EHPersonality::GNU_Wasm_CPlusPlus;
 
@@ -164,7 +172,7 @@ static const EHPersonality &getObjCXXPersonality(const TargetInfo &Target,
   // In the fragile ABI, just use C++ exception handling and hope
   // they're not doing crazy exception mixing.
   case ObjCRuntime::FragileMacOSX:
-    return getCXXPersonality(Target, CGOpts);
+    return getCXXPersonality(Target, CGOpts, L);
 
   // The ObjC personality defers to the C++ personality for non-ObjC
   // handlers.  Unlike the C++ case, we use the same personality
@@ -210,8 +218,8 @@ const EHPersonality &getEHPersonality(CodeGenModule &CGM,
   if (L.ObjC)
     return L.CPlusPlus ? getObjCXXPersonality(Target, CGOpts, L)
                        : getObjCPersonality(Target, CGOpts, L);
-  return L.CPlusPlus ? getCXXPersonality(Target, CGOpts)
-                     : getCPersonality(Target, CGOpts);
+  return L.CPlusPlus ? getCXXPersonality(Target, CGOpts, L)
+                     : getCPersonality(Target, CGOpts, L);
 }
 
 const EHPersonality &getEHPersonality(CodeGenFunction &CGF) {
@@ -315,7 +323,8 @@ void CodeGenModule::SimplifyPersonality() {
     return;
 
   const EHPersonality &ObjCXX = getEHPersonality(*this, /*FD=*/nullptr);
-  const EHPersonality &CXX = getCXXPersonality(getTarget(), CodeGenOpts);
+  const EHPersonality &CXX =
+      getCXXPersonality(getTarget(), CodeGenOpts, LangOpts);
   if (&ObjCXX == &CXX)
     return;
 
