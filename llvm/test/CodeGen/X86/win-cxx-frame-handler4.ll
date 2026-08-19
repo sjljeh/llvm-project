@@ -103,7 +103,7 @@ terminate.pad:
 ; CHECK-NEXT:  .byte 16
 
 ; CHECK-LABEL: cleanup:
-; CHECK:       .seh_handler __CxxFrameHandler4, @unwind, @except
+; CHECK:       .seh_handler __CxxFrameHandler4, @unwind{{[[:space:]]*$}}
 ; CHECK-NOT:   movq $-2
 ; CHECK:       $cppxdata$cleanup:
 ; CHECK-NEXT:  .byte 40
