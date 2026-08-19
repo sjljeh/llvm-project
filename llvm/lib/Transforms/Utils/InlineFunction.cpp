@@ -2648,6 +2648,12 @@ llvm::InlineResult llvm::CanInlineCallSite(const CallBase &CB,
       return InlineResult::failure("incompatible GC");
   }
 
+  // FH4 represents noexcept as a function-wide flag. It cannot be preserved
+  // when a marked callee is inlined into an unmarked caller.
+  if (CalledFunc->hasFnAttribute(MSVCXXEH4NoexceptAttr) &&
+      !Caller->hasFnAttribute(MSVCXXEH4NoexceptAttr))
+    return InlineResult::failure("incompatible Microsoft C++ EH4 noexcept");
+
   // Get the personality function from the callee if it contains a landing pad.
   Constant *CalledPersonality =
       CalledFunc->hasPersonalityFn()
@@ -2684,6 +2690,33 @@ llvm::InlineResult llvm::CanInlineCallSite(const CallBase &CB,
 
       if (IFI.CallSiteEHPad) {
         if (Personality == EHPersonality::MSVC_CXX) {
+          // An unwind escaping an FH4 noexcept cleanup is semantically
+          // reachable because the frame handler turns it into termination. The
+          // generic inliner would replace it with unreachable at a call site in
+          // a locally-unwinding funclet, so preserve the FH4 frame there.
+          if (CalledFunc->hasFnAttribute(MSVCXXEH4NoexceptAttr) &&
+              isa<CallInst>(CB)) {
+            bool HasEscapingCleanup = false;
+            for (const BasicBlock &CalledBB : *CalledFunc) {
+              const auto *CleanupRet =
+                  dyn_cast<CleanupReturnInst>(CalledBB.getTerminator());
+              if (CleanupRet && CleanupRet->unwindsToCaller()) {
+                HasEscapingCleanup = true;
+                break;
+              }
+            }
+
+            if (HasEscapingCleanup) {
+              UnwindDestMemoTy FuncletUnwindMap;
+              Value *UnwindDest =
+                  getUnwindDestToken(IFI.CallSiteEHPad, FuncletUnwindMap);
+              if (UnwindDest && !isa<ConstantTokenNone>(UnwindDest))
+                return InlineResult::failure(
+                    "Microsoft C++ EH4 noexcept cleanup in local-unwind "
+                    "funclet");
+            }
+          }
+
           // The MSVC personality cannot tolerate catches getting inlined into
           // cleanup funclets.
           if (isa<CleanupPadInst>(IFI.CallSiteEHPad)) {

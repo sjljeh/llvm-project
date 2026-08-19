@@ -671,6 +671,9 @@ public:
   llvm::DenseMap<const VarDecl *, llvm::Value *> NRVOFlags;
 
   EHScopeStack EHStack;
+  /// A function-level noexcept specification enforced by FH4 metadata. The
+  /// personality is installed lazily when a potentially throwing call appears.
+  bool MSVCXXEH4Noexcept = false;
   llvm::SmallVector<char, 256> LifetimeExtendedCleanupStack;
 
   // A stack of cleanups which were added to EHStack but have to be deactivated
@@ -792,6 +795,8 @@ public:
   llvm::BasicBlock *EmitLandingPad();
 
   llvm::BasicBlock *getInvokeDestImpl();
+
+  void activateMSVCXXEH4Noexcept();
 
   /// Parent loop-based directive for scan directive.
   const OMPExecutableDirective *OMPParentLoopDirectiveForScan = nullptr;
@@ -2229,6 +2234,8 @@ public:
   }
 
   llvm::BasicBlock *getInvokeDest() {
+    if (MSVCXXEH4Noexcept)
+      activateMSVCXXEH4Noexcept();
     if (!EHStack.requiresLandingPad())
       return nullptr;
     return getInvokeDestImpl();
