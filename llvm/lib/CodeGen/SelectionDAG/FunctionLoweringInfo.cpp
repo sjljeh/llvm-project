@@ -103,6 +103,7 @@ void FunctionLoweringInfo::set(const Function &fn, MachineFunction &mf,
 
   // If this personality uses funclets, we need to do a bit more work.
   DenseMap<const AllocaInst *, TinyPtrVector<int *>> CatchObjects;
+  DenseMap<const AllocaInst *, TinyPtrVector<int *>> FH4UnwindObjects;
   EHPersonality Personality = classifyEHPersonality(
       Fn->hasPersonalityFn() ? Fn->getPersonalityFn() : nullptr);
   if (isFuncletEHPersonality(Personality)) {
@@ -124,6 +125,10 @@ void FunctionLoweringInfo::set(const Function &fn, MachineFunction &mf,
           H.CatchObj.FrameIndex = INT_MAX;
       }
     }
+    for (CxxUnwindMapEntry &UME : EHInfo.CxxUnwindMap)
+      if (UME.Type == CxxUnwindMapEntry::ActionType::DtorWithObj ||
+          UME.Type == CxxUnwindMapEntry::ActionType::DtorWithPtrToObj)
+        FH4UnwindObjects[UME.Object.Alloca].push_back(&UME.Object.FrameIndex);
   }
 
   // Initialize the mapping of values to registers.  This is only set up for
@@ -169,6 +174,10 @@ void FunctionLoweringInfo::set(const Function &fn, MachineFunction &mf,
             for (int *CatchObjPtr : Iter->second)
               *CatchObjPtr = FrameIndex;
           }
+          if (auto UnwindIter = FH4UnwindObjects.find(AI);
+              UnwindIter != FH4UnwindObjects.end())
+            for (int *UnwindObjPtr : UnwindIter->second)
+              *UnwindObjPtr = FrameIndex;
         } else {
           // FIXME: Overaligned static allocas should be grouped into
           // a single dynamic allocation instead of using a separate

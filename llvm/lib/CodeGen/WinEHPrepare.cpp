@@ -25,6 +25,7 @@
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/EHPersonalities.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/InitializePasses.h"
@@ -150,8 +151,71 @@ static int addUnwindMapEntry(WinEHFuncInfo &FuncInfo, int ToState,
   UME.ToState = ToState;
   UME.Cleanup = BB;
   UME.Owner = Owner;
+  UME.Type = BB ? CxxUnwindMapEntry::ActionType::Cleanup
+                : CxxUnwindMapEntry::ActionType::NoUW;
   FuncInfo.CxxUnwindMap.push_back(UME);
   return FuncInfo.getLastStateNumber();
+}
+
+static void recognizeFH4DirectCleanup(const CleanupPadInst *CleanupPad,
+                                      CxxUnwindMapEntry &UME) {
+  const BasicBlock *BB = CleanupPad->getParent();
+  const auto *CleanupRet = dyn_cast<CleanupReturnInst>(BB->getTerminator());
+  if (!CleanupRet || CleanupRet->getCleanupPad() != CleanupPad)
+    return;
+
+  const CallBase *ActionCall = nullptr;
+  SmallVector<const LoadInst *, 1> Loads;
+  for (const Instruction &I : *BB) {
+    if (&I == CleanupPad || &I == CleanupRet || isa<DbgInfoIntrinsic>(I))
+      continue;
+    if (const auto *II = dyn_cast<IntrinsicInst>(&I)) {
+      if (II->getIntrinsicID() == Intrinsic::lifetime_end)
+        continue;
+      return;
+    }
+    if (const auto *LI = dyn_cast<LoadInst>(&I)) {
+      if (!LI->isSimple())
+        return;
+      Loads.push_back(LI);
+      continue;
+    }
+    const auto *CB = dyn_cast<CallBase>(&I);
+    if (!CB || ActionCall || CB->arg_size() != 1 || !CB->doesNotThrow())
+      return;
+    const Function *Callee = CB->getCalledFunction();
+    if (!Callee || Callee->isVarArg() || Callee->arg_size() != 1 ||
+        !Callee->getReturnType()->isVoidTy() ||
+        !Callee->getArg(0)->getType()->isPointerTy() ||
+        CB->getCallingConv() != CallingConv::C)
+      return;
+    ActionCall = CB;
+  }
+  if (!ActionCall)
+    return;
+
+  const AllocaInst *Object = nullptr;
+  CxxUnwindMapEntry::ActionType Type;
+  Value *This = ActionCall->getArgOperand(0)->stripPointerCasts();
+  if (const auto *AI = dyn_cast<AllocaInst>(This)) {
+    if (!AI->isStaticAlloca() || !Loads.empty())
+      return;
+    Object = AI;
+    Type = CxxUnwindMapEntry::ActionType::DtorWithObj;
+  } else if (const auto *LI = dyn_cast<LoadInst>(This)) {
+    if (Loads.size() != 1 || Loads.front() != LI)
+      return;
+    Object = dyn_cast<AllocaInst>(LI->getPointerOperand()->stripPointerCasts());
+    if (!Object || !Object->isStaticAlloca())
+      return;
+    Type = CxxUnwindMapEntry::ActionType::DtorWithPtrToObj;
+  } else {
+    return;
+  }
+
+  UME.Type = Type;
+  UME.Action = ActionCall->getCalledFunction();
+  UME.Object.Alloca = Object;
 }
 
 static void addTryBlockMapEntry(WinEHFuncInfo &FuncInfo, int TryLow,
@@ -459,6 +523,9 @@ static void calculateCXXStateNumbers(WinEHFuncInfo &FuncInfo,
       return;
 
     int CleanupState = addUnwindMapEntry(FuncInfo, ParentState, BB, Owner);
+    if (isMSVCXXFrameHandler4(BB->getParent()->getPersonalityFn()))
+      recognizeFH4DirectCleanup(CleanupPad,
+                                FuncInfo.CxxUnwindMap[CleanupState]);
     It->second = CleanupState;
     LLVM_DEBUG(dbgs() << "Assigning state #" << CleanupState << " to BB "
                       << BB->getName() << '\n');

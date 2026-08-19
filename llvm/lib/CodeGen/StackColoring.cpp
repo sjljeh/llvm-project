@@ -709,6 +709,16 @@ unsigned StackColoring::collectMarkers(unsigned NumSlot) {
       ConservativeSlots.set(slot);
   }
 
+  // Direct FH4 actions access their object slots outside the instruction
+  // stream, so first-use analysis cannot see their true first access.
+  if (WinEHFuncInfo *EHInfo = MF->getWinEHFuncInfo())
+    for (const CxxUnwindMapEntry &UME : EHInfo->CxxUnwindMap)
+      if ((UME.Type == CxxUnwindMapEntry::ActionType::DtorWithObj ||
+           UME.Type == CxxUnwindMapEntry::ActionType::DtorWithPtrToObj) &&
+          UME.Object.FrameIndex != std::numeric_limits<int>::max() &&
+          UME.Object.FrameIndex >= 0)
+        ConservativeSlots.set(UME.Object.FrameIndex);
+
   // The write to the catch object by the personality function is not propely
   // modeled in IR: It happens before any cleanuppads are executed, even if the
   // first mention of the catch object is in a catchpad. As such, mark catch
@@ -1111,6 +1121,14 @@ void StackColoring::remapInstructions(DenseMap<int, int> &SlotRemap) {
     }
 
   // Update the location of C++ catch objects for the MSVC personality routine.
+  if (WinEHFuncInfo *EHInfo = MF->getWinEHFuncInfo())
+    for (CxxUnwindMapEntry &UME : EHInfo->CxxUnwindMap)
+      if (UME.Type == CxxUnwindMapEntry::ActionType::DtorWithObj ||
+          UME.Type == CxxUnwindMapEntry::ActionType::DtorWithPtrToObj)
+        if (auto It = SlotRemap.find(UME.Object.FrameIndex);
+            It != SlotRemap.end())
+          UME.Object.FrameIndex = It->second;
+
   if (WinEHFuncInfo *EHInfo = MF->getWinEHFuncInfo())
     for (WinEHTryBlockMapEntry &TBME : EHInfo->TryBlockMap)
       for (WinEHHandlerType &H : TBME.HandlerArray)
