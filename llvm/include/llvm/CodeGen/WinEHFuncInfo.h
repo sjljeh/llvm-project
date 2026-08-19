@@ -83,6 +83,9 @@ struct WinEHHandlerType {
   } CatchObj = {};
   GlobalVariable *TypeDescriptor;
   MBBOrBasicBlock Handler;
+  /// FH4 continuation targets. Records with at most two targets use their
+  /// indices; larger records retain the address-return convention.
+  SmallVector<MBBOrBasicBlock, 2> Continuations;
 };
 
 struct WinEHTryBlockMapEntry {
@@ -110,6 +113,7 @@ struct WinEHFuncInfo {
   DenseMap<const InvokeInst *, int> InvokeStateMap;
   DenseMap<MCSymbol *, std::pair<int, MCSymbol *>> LabelToStateMap;
   DenseMap<const BasicBlock *, int> BlockToStateMap; // for AsynchEH
+  DenseMap<const MachineBasicBlock *, int> EHScopeMembership;
   SmallVector<CxxUnwindMapEntry, 4> CxxUnwindMap;
   SmallVector<WinEHTryBlockMapEntry, 4> TryBlockMap;
   SmallVector<SEHUnwindMapEntry, 4> SEHUnwindMap;
