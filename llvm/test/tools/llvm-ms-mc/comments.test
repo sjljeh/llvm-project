@@ -1,0 +1,57 @@
+# RUN: rm -rf %t && split-file %s %t
+# RUN: %python -c "import pathlib; p=pathlib.Path(r'%t/comments.mc'); p.write_bytes(p.read_text(encoding='utf-8').encode('utf-16le'))"
+# RUN: llvm-ms-mc -u -A -h %t -r %t %t/comments.mc
+# RUN: FileCheck %s --check-prefix=HEADER --input-file=%t/comments.h
+# RUN: %python -c "import pathlib; print(pathlib.Path(r'%t/MSG00001.bin').read_bytes().hex())" | FileCheck %s --check-prefix=BIN
+
+# HEADER:      leading comment
+# HEADER-NEXT: ; doubled leading comment
+# HEADER-NEXT:  truncated  following comment
+# HEADER:      definition comment
+# HEADER:      //  Values are 32 bit values laid out as follows:
+# HEADER:      // MessageId: MSG_ONE
+# HEADER:      #define MSG_ONE
+# HEADER-NEXT: {{^$}}
+# HEADER-NEXT:  message-property comment
+# HEADER-NEXT:  between-message comment
+# HEADER:      // MessageId: MSG_TWO
+# HEADER:      #define MSG_TWO
+# HEADER-NEXT: {{^$}}
+# HEADER-NEXT:  trailing comment
+# HEADER-NEXT: //
+# HEADER-NEXT: // MessageId: 0x00000003L (No symbolic name defined)
+# HEADER:      // unnamed lea
+
+# BIN: 010000000100000003000000100000000c00000066697273740d0a00100000007365636f6e640d0a0000000014000000756e6e616d6564206c65610d0a000000
+
+#--- comments.mc
+; leading comment
+;; doubled leading comment
+; truncated Ș suffix
+; following comment
+
+SeverityNames=(Success=0x0:STATUS_SEVERITY_SUCCESS)
+
+; definition comment
+
+MessageId=1
+; message-property comment
+SymbolicName=MSG_ONE
+Language=English
+first
+.
+
+; between-message comment
+
+MessageId=2
+SymbolicName=MSG_TWO
+Language=English
+second
+.
+
+; trailing comment
+
+MessageId=3
+Language=English
+unnamed łęă
+.

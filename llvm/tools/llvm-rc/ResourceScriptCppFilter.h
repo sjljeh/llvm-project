@@ -23,11 +23,12 @@
 
 #include "llvm/ADT/StringRef.h"
 
+#include <optional>
 #include <string>
 
 namespace llvm {
 
-std::string filterCppOutput(StringRef Input);
+std::string filterCppOutput(StringRef Input, std::optional<unsigned> &CodePage);
 
 } // namespace llvm
 

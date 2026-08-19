@@ -1,0 +1,21 @@
+# RUN: rm -rf %t && split-file %s %t
+# RUN: %python -c "import pathlib; p=pathlib.Path(r'%t/unicode.mc'); p.write_bytes(p.read_text(encoding='utf-8').encode('utf-16le'))"
+# RUN: llvm-ms-mc -u -U -b -h %t -r %t %t/unicode.mc
+# RUN: FileCheck %s --check-prefix=HEADER --input-file=%t/unicode.h
+# RUN: FileCheck %s --check-prefix=RC --input-file=%t/unicode.rc
+# RUN: %python -c "import pathlib; print(pathlib.Path(r'%t/unicode_MSG00001.bin').read_bytes().hex())" | FileCheck %s --check-prefix=BIN
+
+# HEADER: // MessageId: MSG_UNICODE
+# HEADER: #define MSG_UNICODE                      0x00000001L
+
+# RC: LANGUAGE 0x9,0x1
+# RC-NEXT: 1 11 "unicode_MSG00001.bin"
+
+# BIN: 0100000001000000010000001000000014000100630061006600e9000d000a0000000000
+
+#--- unicode.mc
+MessageId=1
+SymbolicName=MSG_UNICODE
+Language=English
+café
+.

@@ -42,6 +42,7 @@ struct WriterParams {
   StringRef InputFilePath;            // The full path of the input file.
   int CodePage = CpAcp;               // The codepage for interpreting characters.
   bool ShowIncludes = false;          // Report resource-file dependencies.
+  bool UseCodePageForEscapes = true;  // Interpret narrow escapes in CodePage.
 };
 
 class ResourceFileWriter : public Visitor {
