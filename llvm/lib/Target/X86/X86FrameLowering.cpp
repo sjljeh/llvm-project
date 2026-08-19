@@ -18,7 +18,9 @@
 #include "X86MachineFunctionInfo.h"
 #include "X86Subtarget.h"
 #include "X86TargetMachine.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/CodeGen/Analysis.h"
 #include "llvm/CodeGen/LivePhysRegs.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
@@ -3285,6 +3287,44 @@ void X86FrameLowering::emitCatchRetReturnValue(MachineBasicBlock &MBB,
   const DebugLoc &DL = CatchRet->getDebugLoc();
   MachineBasicBlock *CatchRetTarget = CatchRet->getOperand(0).getMBB();
 
+  const Function &F = MBB.getParent()->getFunction();
+  if (isMSVCXXFrameHandler4(F.getPersonalityFn())) {
+    const WinEHFuncInfo *EHInfo = MBB.getParent()->getWinEHFuncInfo();
+    auto ScopeIt = EHInfo->EHScopeMembership.find(&MBB);
+    assert(ScopeIt != EHInfo->EHScopeMembership.end() &&
+           "FrameHandler4 catchret is not in an EH scope");
+    const WinEHHandlerType *OwningHandler = nullptr;
+    for (const WinEHTryBlockMapEntry &TBME : EHInfo->TryBlockMap) {
+      for (const WinEHHandlerType &Handler : TBME.HandlerArray) {
+        if (cast<MachineBasicBlock *>(Handler.Handler)->getNumber() !=
+            ScopeIt->second)
+          continue;
+        OwningHandler = &Handler;
+        break;
+      }
+      if (OwningHandler)
+        break;
+    }
+    assert(OwningHandler && "FrameHandler4 catchret has no handler entry");
+
+    if (OwningHandler->Continuations.size() <= 2) {
+      auto It = llvm::find(OwningHandler->Continuations, CatchRetTarget);
+      assert(It != OwningHandler->Continuations.end() &&
+             "FrameHandler4 catchret has no continuation entry");
+      unsigned ContinuationIndex = It - OwningHandler->Continuations.begin();
+      if (ContinuationIndex == 0)
+        BuildMI(MBB, MBBI, DL, TII.get(X86::XOR32rr), X86::EAX)
+            .addReg(X86::EAX, RegState::Undef)
+            .addReg(X86::EAX, RegState::Undef);
+      else
+        BuildMI(MBB, MBBI, DL, TII.get(X86::MOV32ri), X86::EAX)
+            .addImm(ContinuationIndex);
+
+      CatchRetTarget->setMachineBlockAddressTaken();
+      return;
+    }
+  }
+
   // Fill EAX/RAX with the address of the target block.
   if (STI.is64Bit()) {
     // LEA64r CatchRetTarget(%rip), %rax
@@ -4430,6 +4470,8 @@ void X86FrameLowering::processFunctionBeforeFrameFinalized(
           EHPersonality::MSVC_CXX) {
     adjustFrameForMsvcCxxEh(
         MF, !isMSVCXXFrameHandler4(MF.getFunction().getPersonalityFn()));
+    if (isMSVCXXFrameHandler4(MF.getFunction().getPersonalityFn()))
+      MF.getWinEHFuncInfo()->EHScopeMembership = getEHScopeMembership(MF);
   }
 }
 

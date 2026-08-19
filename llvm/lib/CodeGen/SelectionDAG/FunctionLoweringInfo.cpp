@@ -331,6 +331,8 @@ void FunctionLoweringInfo::set(const Function &fn, MachineFunction &mf,
       for (WinEHHandlerType &H : TBME.HandlerArray) {
         if (H.Handler)
           H.Handler = getMBB(cast<const BasicBlock *>(H.Handler));
+        for (MBBOrBasicBlock &Continuation : H.Continuations)
+          Continuation = getMBB(cast<const BasicBlock *>(Continuation));
       }
     }
     for (CxxUnwindMapEntry &UME : EHInfo.CxxUnwindMap)

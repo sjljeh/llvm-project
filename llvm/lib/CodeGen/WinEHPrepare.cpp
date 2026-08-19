@@ -242,6 +242,16 @@ static void addTryBlockMapEntry(WinEHFuncInfo &FuncInfo, int TryLow,
       HT.CatchObj.Alloca = AI;
     else
       HT.CatchObj.Alloca = nullptr;
+    if (isMSVCXXFrameHandler4(CPI->getFunction()->getPersonalityFn())) {
+      for (const User *U : CPI->users()) {
+        const auto *CatchRet = dyn_cast<CatchReturnInst>(U);
+        if (!CatchRet)
+          continue;
+        const BasicBlock *Continuation = CatchRet->getSuccessor();
+        if (!llvm::is_contained(HT.Continuations, Continuation))
+          HT.Continuations.push_back(Continuation);
+      }
+    }
     TBME.HandlerArray.push_back(HT);
   }
   FuncInfo.TryBlockMap.push_back(TBME);
