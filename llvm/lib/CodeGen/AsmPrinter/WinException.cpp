@@ -85,9 +85,22 @@ void WinException::beginFunction(const MachineFunction *MF) {
     Per = classifyEHPersonality(PerFn);
   }
 
+  // Calls can acquire nounwind during optimization even though FH4 is what
+  // enforces the source contract. Test for a surviving non-intrinsic call
+  // rather than Instruction::mayThrow().
+  bool IsFH4Noexcept =
+      F.hasPersonalityFn() && F.hasFnAttribute(MSVCXXEH4NoexceptAttr) &&
+      isMSVCXXFrameHandler4(F.getPersonalityFn()) &&
+      llvm::any_of(F, [](const BasicBlock &BB) {
+        return llvm::any_of(BB, [](const Instruction &I) {
+          const auto *CB = dyn_cast<CallBase>(&I);
+          const Function *Callee = CB ? CB->getCalledFunction() : nullptr;
+          return CB && (!Callee || !Callee->isIntrinsic());
+        });
+      });
   bool forceEmitPersonality = F.hasPersonalityFn() &&
-                              !isNoOpWithoutInvoke(Per) &&
-                              F.needsUnwindTableEntry();
+                              F.needsUnwindTableEntry() &&
+                              (!isNoOpWithoutInvoke(Per) || IsFH4Noexcept);
 
   // A personality that is not a function, such as a null pointer, leaves PerFn
   // empty. Nothing downstream can emit a symbol for it, so gate both cases on
@@ -275,7 +288,7 @@ void WinException::beginFunclet(const MachineBasicBlock &MBB, MCSymbol *Sym) {
         funcletNeedsCXXFrameHandler4Personality(MBB);
     if (CurrentFuncletUsesPersonality && !MBB.isEHFuncletEntry()) {
       const WinEHFuncInfo &FuncInfo = *Asm->MF->getWinEHFuncInfo();
-      IsExceptionHandler = F.doesNotThrow() ||
+      IsExceptionHandler = F.hasFnAttribute(MSVCXXEH4NoexceptAttr) ||
                            llvm::any_of(FuncInfo.TryBlockMap,
                                         [](const WinEHTryBlockMapEntry &Entry) {
                                           return Entry.Owner == nullptr;
@@ -777,7 +790,7 @@ void WinException::emitCXXFrameHandler4Table(const MachineFunction *MF) {
   }
 
   const bool IsEHa = MMI->getModule()->getModuleFlag("eh-asynch");
-  const bool IsNoExcept = F.doesNotThrow();
+  const bool IsNoExcept = F.hasFnAttribute(MSVCXXEH4NoexceptAttr);
   const TargetFrameLowering *TFI = MF->getSubtarget().getFrameLowering();
 
   for (const FuncletInfo &FI : Funclets) {
