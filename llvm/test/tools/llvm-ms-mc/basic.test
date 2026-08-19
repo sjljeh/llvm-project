@@ -1,0 +1,61 @@
+# RUN: rm -rf %t && split-file %s %t
+# RUN: llvm-ms-mc -A -b -h %t -r %t %t/basic.mc
+# RUN: FileCheck %s --check-prefix=HEADER --input-file=%t/basic.h
+# RUN: FileCheck %s --check-prefix=RC --input-file=%t/basic.rc
+# RUN: %python -c "import pathlib; print(pathlib.Path(r'%t/basic_MSG00409.bin').read_bytes().hex())" | FileCheck %s --check-prefix=ENGLISH
+# RUN: %python -c "import pathlib; print(pathlib.Path(r'%t/basic_MSG00407.bin').read_bytes().hex())" | FileCheck %s --check-prefix=GERMAN
+
+# HEADER: #define FACILITY_SYSTEM                  0x0
+# HEADER: #define FACILITY_TEST                    0xFFF
+# HEADER: #define STATUS_SEVERITY_SUCCESS          0x0
+# HEADER: #define STATUS_SEVERITY_INFORMATIONAL    0x1
+# HEADER: // MessageId: MSG_FIRST
+# HEADER: // first line
+# HEADER: // second line
+# HEADER: #define MSG_FIRST                       ((ULONG)0x00000001L)
+# HEADER: // MessageId: MSG_THIRD
+# HEADER: // third
+# HEADER: #define MSG_THIRD                       ((ULONG)0x4FFF0003L)
+
+# RC: LANGUAGE 0x9,0x1
+# RC-NEXT: 1 11 "basic_MSG00409.bin"
+# RC-NEXT: LANGUAGE 0x7,0x1
+# RC-NEXT: 1 11 "basic_MSG00407.bin"
+
+# ENGLISH: 0200000001000000010000001c0000000300ff4f0300ff4f3c000000200000006669727374206c696e650d0a7365636f6e64206c696e650d0a0000000c00000074686972640d0a00
+# GERMAN: 0200000001000000010000001c0000000300ff4f0300ff4f280000000c00000065727374650d0a00100000006472697474650d0a00000000
+
+#--- basic.mc
+MessageIdTypedef=ULONG
+
+SeverityNames=(Success=0x0:STATUS_SEVERITY_SUCCESS
+               Informational=0x1:STATUS_SEVERITY_INFORMATIONAL)
+
+FacilityNames=(System=0x0:FACILITY_SYSTEM
+               Test=0xFFF:FACILITY_TEST)
+
+LanguageNames=(English=0x409:MSG00409
+               German=0x407:MSG00407)
+
+MessageId=1
+Severity=Success
+Facility=Application
+SymbolicName=MSG_FIRST
+Language=English
+first line
+second line
+.
+Language=German
+erste
+.
+
+MessageId=3
+Severity=Informational
+Facility=Test
+SymbolicName=MSG_THIRD
+Language=English
+third
+.
+Language=German
+dritte
+.

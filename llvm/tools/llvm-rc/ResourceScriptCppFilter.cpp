@@ -13,6 +13,7 @@
 #include "ResourceScriptCppFilter.h"
 #include "llvm/ADT/StringExtras.h"
 
+#include <optional>
 #include <vector>
 
 using namespace llvm;
@@ -24,6 +25,7 @@ public:
   explicit Filter(StringRef Input) : Data(Input), DataLength(Input.size()) {}
 
   std::string run();
+  std::optional<unsigned> getCodePage() const { return CodePage; }
 
 private:
   // Parse the line, returning whether the line should be included in
@@ -37,6 +39,7 @@ private:
 
   size_t Pos = 0;
   bool Outputting = true;
+  std::optional<unsigned> CodePage;
 };
 
 std::string Filter::run() {
@@ -65,6 +68,21 @@ bool Filter::parseLine(StringRef Line) {
 
   // Found a preprocessing directive line. From here on, we always return
   // false since the preprocessing directives should be filtered out.
+
+  StringRef Directive = Line.ltrim();
+  if (Outputting && Directive.consume_front_insensitive("pragma")) {
+    Directive = Directive.ltrim();
+    if (Directive.consume_front_insensitive("code_page")) {
+      Directive = Directive.ltrim();
+      if (Directive.consume_front("(")) {
+        Directive = Directive.ltrim();
+        unsigned Value;
+        if (!Directive.consumeInteger(10, Value))
+          CodePage = Value;
+      }
+    }
+    return false;
+  }
 
   Line.consume_front("line");
   if (!Line.starts_with(" "))
@@ -106,6 +124,12 @@ bool Filter::streamEof() const { return Pos == DataLength; }
 
 namespace llvm {
 
-std::string filterCppOutput(StringRef Input) { return Filter(Input).run(); }
+std::string filterCppOutput(StringRef Input,
+                            std::optional<unsigned> &CodePage) {
+  Filter F(Input);
+  std::string Output = F.run();
+  CodePage = F.getCodePage();
+  return Output;
+}
 
 } // namespace llvm

@@ -636,56 +636,36 @@
 ; HEADERS-NEXT: )
 
 
-; RUN: not llvm-rc -no-preprocess /FO %t -- %p/Inputs/tag-dialog-large-coord.rc 2>&1 | FileCheck %s --check-prefix COORD1
+; RUN: llvm-rc -no-preprocess /FO %t.coord -- %p/Inputs/tag-dialog-large-coord.rc
+; RUN: llvm-readobj %t.coord | FileCheck %s --check-prefix COORD1
 
-; COORD1: llvm-rc: Error in DIALOGEX statement (ID 1):
-; COORD1-NEXT: Dialog x-coordinate (50000) does not fit in 16-bit signed integer type.
-
-
-; RUN: not llvm-rc -no-preprocess /FO %t -- %p/Inputs/tag-dialog-large-coord-neg.rc 2>&1 | FileCheck %s --check-prefix COORD2
-
-; COORD2: llvm-rc: Error in DIALOG statement (ID 1):
-; COORD2-NEXT: Dialog y-coordinate (-40000) does not fit in 16-bit signed integer type.
-
-
-; RUN: not llvm-rc -no-preprocess /FO %t -- %p/Inputs/tag-dialog-large-size.rc 2>&1 | FileCheck %s --check-prefix COORD3
-
-; COORD3: llvm-rc: Error in DIALOGEX statement (ID 1):
-; COORD3-NEXT: Dialog height (32768) does not fit in 16-bit signed integer type.
+; COORD1:      Resource type (int): DIALOG (ID 5)
+; COORD1:      Data size: 32
+; COORD1-NEXT: Data: (
+; COORD1-NEXT:   0000: 0100FFFF 00000000 00000000 00008880  |................|
+; COORD1-NEXT:   0010: 000050C3 F1FB6400 64000000 00000000  |..P...d.d.......|
+; COORD1-NEXT: )
 
 
-; RUN: not llvm-rc -no-preprocess /FO %t -- %p/Inputs/tag-dialog-negative-size.rc 2>&1 | FileCheck %s --check-prefix COORD4
-
-; COORD4: llvm-rc: Error in DIALOGEX statement (ID 1):
-; COORD4-NEXT: Dialog width (-50) cannot be negative.
+; RUN: llvm-rc -no-preprocess /FO %t.coord-neg -- %p/Inputs/tag-dialog-large-coord-neg.rc
 
 
-; RUN: not llvm-rc -no-preprocess /FO %t -- %p/Inputs/tag-dialog-ctl-large-coord.rc 2>&1 | FileCheck %s --check-prefix CTL-COORD1
-
-; CTL-COORD1: llvm-rc: Error in DIALOGEX statement (ID 1):
-; CTL-COORD1-NEXT: Error in LTEXT control (ID 1):
-; CTL-COORD1-NEXT: Dialog control x-coordinate (44444) does not fit in 16-bit signed integer type.
+; RUN: llvm-rc -no-preprocess /FO %t.size -- %p/Inputs/tag-dialog-large-size.rc
 
 
-; RUN: not llvm-rc -no-preprocess /FO %t -- %p/Inputs/tag-dialog-ctl-large-coord-neg.rc 2>&1 | FileCheck %s --check-prefix CTL-COORD2
-
-; CTL-COORD2: llvm-rc: Error in DIALOG statement (ID 1):
-; CTL-COORD2-NEXT: Error in LTEXT control (ID 1):
-; CTL-COORD2-NEXT: Dialog control y-coordinate (-32769) does not fit in 16-bit signed integer type.
+; RUN: llvm-rc -no-preprocess /FO %t.negative-size -- %p/Inputs/tag-dialog-negative-size.rc
 
 
-; RUN: not llvm-rc -no-preprocess /FO %t -- %p/Inputs/tag-dialog-ctl-large-size.rc 2>&1 | FileCheck %s --check-prefix CTL-COORD3
-
-; CTL-COORD3: llvm-rc: Error in DIALOGEX statement (ID 1):
-; CTL-COORD3-NEXT: Error in LTEXT control (ID 1):
-; CTL-COORD3-NEXT: Dialog control width (40000) does not fit in 16-bit signed integer type.
+; RUN: llvm-rc -no-preprocess /FO %t.ctl-coord -- %p/Inputs/tag-dialog-ctl-large-coord.rc
 
 
-; RUN: not llvm-rc -no-preprocess /FO %t -- %p/Inputs/tag-dialog-ctl-negative-size.rc 2>&1 | FileCheck %s --check-prefix CTL-COORD4
+; RUN: llvm-rc -no-preprocess /FO %t.ctl-coord-neg -- %p/Inputs/tag-dialog-ctl-large-coord-neg.rc
 
-; CTL-COORD4: llvm-rc: Error in DIALOG statement (ID 1):
-; CTL-COORD4-NEXT: Error in LTEXT control (ID 1):
-; CTL-COORD4-NEXT: Dialog control height (-700) cannot be negative.
+
+; RUN: llvm-rc -no-preprocess /FO %t.ctl-size -- %p/Inputs/tag-dialog-ctl-large-size.rc
+
+
+; RUN: llvm-rc -no-preprocess /FO %t.ctl-negative-size -- %p/Inputs/tag-dialog-ctl-negative-size.rc
 
 
 ; RUN: not llvm-rc -no-preprocess /FO %t -- %p/Inputs/tag-dialog-ctl-large-id.rc 2>&1 | FileCheck %s --check-prefix CTL-ID
