@@ -140,6 +140,11 @@ void WinException::endFunction(const MachineFunction *MF) {
 
   endFuncletImpl();
 
+  if (!MF->getEHContTargets().empty()) {
+    // Copy the function's EH continuation targets to a module-level list.
+    llvm::append_range(EHContTargets, MF->getEHContTargets());
+  }
+
   // endFunclet will emit the necessary .xdata tables for table-based SEH.
   if (Per == EHPersonality::MSVC_TableSEH && MF->hasEHFunclets())
     return;
@@ -169,11 +174,6 @@ void WinException::endFunction(const MachineFunction *MF) {
       emitExceptionTable();
 
     Asm->OutStreamer->popSection();
-  }
-
-  if (!MF->getEHContTargets().empty()) {
-    // Copy the function's EH Continuation targets to a module-level list.
-    llvm::append_range(EHContTargets, MF->getEHContTargets());
   }
 }
 
@@ -268,10 +268,20 @@ void WinException::beginFunclet(const MachineBasicBlock &MBB, MCSymbol *Sym) {
   }
 
   CurrentFuncletUsesPersonality = shouldEmitPersonality;
+  bool IsExceptionHandler = true;
   if (CurrentFuncletUsesPersonality &&
-      isMSVCXXFrameHandler4(F.getPersonalityFn()))
+      isMSVCXXFrameHandler4(F.getPersonalityFn())) {
     CurrentFuncletUsesPersonality =
         funcletNeedsCXXFrameHandler4Personality(MBB);
+    if (CurrentFuncletUsesPersonality && !MBB.isEHFuncletEntry()) {
+      const WinEHFuncInfo &FuncInfo = *Asm->MF->getWinEHFuncInfo();
+      IsExceptionHandler = F.doesNotThrow() ||
+                           llvm::any_of(FuncInfo.TryBlockMap,
+                                        [](const WinEHTryBlockMapEntry &Entry) {
+                                          return Entry.Owner == nullptr;
+                                        });
+    }
+  }
 
   if (CurrentFuncletUsesPersonality) {
     const TargetLoweringObjectFile &TLOF = Asm->getObjFileLowering();
@@ -289,7 +299,8 @@ void WinException::beginFunclet(const MachineBasicBlock &MBB, MCSymbol *Sym) {
     // inliner doesn't allow inlining them, this isn't a major problem in
     // practice.
     if (!CurrentFuncletEntry->isCleanupFuncletEntry())
-      Asm->OutStreamer->emitWinEHHandler(PersHandlerSym, true, true);
+      Asm->OutStreamer->emitWinEHHandler(PersHandlerSym, true,
+                                         IsExceptionHandler);
   }
 }
 
@@ -349,11 +360,6 @@ void WinException::endFuncletImpl() {
       // No need to emit the EH handler data right here if nothing needs
       // writing to the .xdata section; it will be emitted for all
       // functions that need it in the end anyway.
-    }
-
-    if (!MF->getEHContTargets().empty()) {
-      // Copy the function's EH Continuation targets to a module-level list.
-      llvm::append_range(EHContTargets, MF->getEHContTargets());
     }
 
     // Switch back to the funclet start .text section now that we are done
