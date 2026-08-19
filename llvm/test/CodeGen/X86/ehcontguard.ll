@@ -5,6 +5,8 @@
 ; CHECK: @feat.00 = 16384
 
 ; CHECK: .section .gehcont$y
+; CHECK-COUNT-2: .symidx
+; CHECK-NOT: .symidx
 
 define dso_local void @"?func1@@YAXXZ"() #0 personality ptr @__CxxFrameHandler3 {
 entry:
@@ -25,6 +27,24 @@ invoke.cont:                                      ; preds = %entry
 
 declare dso_local void @"?func2@@YAXXZ"() #1
 declare dso_local i32 @__CxxFrameHandler3(...)
+declare dso_local i32 @__CxxFrameHandler4(...)
+
+define dso_local void @"?func4@@YAXXZ"() #0 personality ptr @__CxxFrameHandler4 {
+entry:
+  invoke void @"?func2@@YAXXZ"()
+          to label %invoke.cont unwind label %catch.dispatch
+catch.dispatch:
+  %0 = catchswitch within none [label %catch] unwind to caller
+catch:
+  %1 = catchpad within %0 [ptr null, i32 64, ptr null]
+  catchret from %1 to label %catchret.dest
+catchret.dest:
+  br label %try.cont
+try.cont:
+  ret void
+invoke.cont:
+  br label %try.cont
+}
 
 !llvm.module.flags = !{!0}
 !0 = !{i32 1, !"ehcontguard", i32 1}
