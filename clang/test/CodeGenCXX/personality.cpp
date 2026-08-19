@@ -4,6 +4,12 @@
 // RUN: %clang_cc1 -triple i686-unknown-linux-gnu -fexceptions -exception-model=sjlj -fcxx-exceptions -emit-llvm %s -o - | FileCheck %s -check-prefix CHECK-GNU-SJLJ
 
 // RUN: %clang_cc1 -triple i686-unknown-windows-msvc -fexceptions -fcxx-exceptions -emit-llvm %s -o - | FileCheck %s -check-prefix CHECK-WIN
+// RUN: %clang_cc1 -triple x86_64-unknown-windows-msvc -fms-compatibility-version=19.22 -fexceptions -fcxx-exceptions -emit-llvm %s -o - | FileCheck %s -check-prefix CHECK-WIN
+// RUN: %clang_cc1 -triple x86_64-unknown-windows-msvc -fms-compatibility-version=19.23 -fexceptions -fcxx-exceptions -emit-llvm %s -o - | FileCheck %s -check-prefix CHECK-WIN-FH4
+// RUN: %clang_cc1 -triple x86_64-unknown-windows-msvc -fms-compatibility-version=19.23 -fno-ms-cxx-eh4 -fexceptions -fcxx-exceptions -emit-llvm %s -o - | FileCheck %s -check-prefix CHECK-WIN
+// RUN: %clang_cc1 -triple x86_64-unknown-windows-msvc -fms-compatibility-version=19.22 -fms-cxx-eh4 -fexceptions -fcxx-exceptions -emit-llvm %s -o - | FileCheck %s -check-prefix CHECK-WIN-FH4
+// RUN: %clang_cc1 -triple i686-unknown-windows-msvc -fms-compatibility-version=19.23 -fms-cxx-eh4 -fexceptions -fcxx-exceptions -emit-llvm %s -o - | FileCheck %s -check-prefix CHECK-WIN
+// RUN: %clang_cc1 -triple aarch64-unknown-windows-msvc -fms-compatibility-version=19.23 -fms-cxx-eh4 -fexceptions -fcxx-exceptions -emit-llvm %s -o - | FileCheck %s -check-prefix CHECK-WIN
 // RUN: %clang_cc1 -triple i686-unknown-windows-msvc -D __SEH_EXCEPTIONS__ -fms-extensions -fexceptions -fcxx-exceptions -emit-llvm %s -o - | FileCheck %s -check-prefix CHECK-WIN-SEH-X86
 // RUN: %clang_cc1 -triple x86_64-unknown-windows-msvc -D __SEH_EXCEPTIONS__ -fms-extensions -fexceptions -fcxx-exceptions -emit-llvm %s -o - | FileCheck %s -check-prefix CHECK-WIN-SEH-X64
 
@@ -26,6 +32,7 @@ extern void g();
 // CHECK-GNU-SJLJ: personality ptr @__gxx_personality_sj0
 
 // CHECK-WIN: personality ptr @__CxxFrameHandler3
+// CHECK-WIN-FH4: personality ptr @__CxxFrameHandler4
 
 // CHECK-AIX: personality ptr @__xlcxx_personality_v1
 
@@ -49,4 +56,3 @@ void h(void) {
   }
 }
 #endif
-
