@@ -25,7 +25,7 @@ add_llvm_unittest(MCTests
   MCPseudoProbeTest.cpp
   StringTableBuilderTest.cpp
   TargetRegistry.cpp
+  WinEH4EncodingTest.cpp
   MCDisassemblerTest.cpp
   WODRoundTripTest.cpp
   )
-

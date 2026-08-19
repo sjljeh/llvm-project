@@ -56,6 +56,7 @@ public:
     FT_PrefAlign,
     FT_Fill,
     FT_LEB,
+    FT_WinEH4,
     FT_Nops,
     FT_Org,
     FT_Dwarf,
@@ -343,6 +344,21 @@ public:
   bool isLEBSigned() const {
     assert(Kind == FT_LEB);
     return u.leb.IsSigned;
+  }
+
+  //== FT_WinEH4 functions
+  void makeWinEH4(const MCExpr *Value) {
+    assert(Kind == FT_Data);
+    Kind = MCFragment::FT_WinEH4;
+    u.leb.Value = Value;
+  }
+  const MCExpr &getWinEH4Value() const {
+    assert(Kind == FT_WinEH4);
+    return *u.leb.Value;
+  }
+  void setWinEH4Value(const MCExpr *Expr) {
+    assert(Kind == FT_WinEH4);
+    u.leb.Value = Expr;
   }
 
   //== FT_DwarfFrame functions

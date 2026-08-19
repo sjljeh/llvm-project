@@ -317,6 +317,18 @@ void MCObjectStreamer::emitSLEB128Value(const MCExpr *Value) {
   newFragment();
 }
 
+void MCObjectStreamer::emitWinEH4Value(const MCExpr *Value) {
+  int64_t IntValue;
+  if (Value->evaluateAsAbsolute(IntValue, getAssembler()) && IntValue >= 0 &&
+      uint64_t(IntValue) <= UINT32_MAX) {
+    emitWinEH4IntValue(uint32_t(IntValue));
+    return;
+  }
+  auto *F = getCurrentFragment();
+  F->makeWinEH4(Value);
+  newFragment();
+}
+
 void MCObjectStreamer::emitWeakReference(MCSymbol *Alias,
                                          const MCSymbol *Target) {
   reportFatalUsageError("this file format doesn't support weak aliases");
