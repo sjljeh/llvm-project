@@ -47,6 +47,7 @@ struct EHPersonality {
   static const EHPersonality MSVC_except_handler;
   static const EHPersonality MSVC_C_specific_handler;
   static const EHPersonality MSVC_CxxFrameHandler3;
+  static const EHPersonality MSVC_CxxFrameHandler4;
   static const EHPersonality GNU_Wasm_CPlusPlus;
   static const EHPersonality XL_CPlusPlus;
   static const EHPersonality ZOS_CPlusPlus;
@@ -59,12 +60,14 @@ struct EHPersonality {
 
   bool isMSVCPersonality() const {
     return this == &MSVC_except_handler || this == &MSVC_C_specific_handler ||
-           this == &MSVC_CxxFrameHandler3;
+           this == &MSVC_CxxFrameHandler3 || this == &MSVC_CxxFrameHandler4;
   }
 
   bool isWasmPersonality() const { return this == &GNU_Wasm_CPlusPlus; }
 
-  bool isMSVCXXPersonality() const { return this == &MSVC_CxxFrameHandler3; }
+  bool isMSVCXXPersonality() const {
+    return this == &MSVC_CxxFrameHandler3 || this == &MSVC_CxxFrameHandler4;
+  }
 };
 
 /// Selects the personality function to use for \p FD, or for the translation
@@ -77,7 +80,8 @@ const EHPersonality &getEHPersonality(const TargetInfo &Target,
 /// Selects the personality function that plain C++ would use.  ObjC++ consults
 /// this to decide whether it can fall back on the C++ personality.
 const EHPersonality &getCXXEHPersonality(const TargetInfo &Target,
-                                         const CodeGenOptions &CGOpts);
+                                         const CodeGenOptions &CGOpts,
+                                         const LangOptions &L);
 
 } // namespace clang::CodeGenUtils
 

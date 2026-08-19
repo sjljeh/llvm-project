@@ -192,7 +192,7 @@ void CodeGenModule::SimplifyPersonality() {
 
   const EHPersonality &ObjCXX = getEHPersonality(*this, /*FD=*/nullptr);
   const EHPersonality &CXX =
-      CodeGenUtils::getCXXEHPersonality(getTarget(), CodeGenOpts);
+      CodeGenUtils::getCXXEHPersonality(getTarget(), CodeGenOpts, LangOpts);
   if (&ObjCXX == &CXX)
     return;
 

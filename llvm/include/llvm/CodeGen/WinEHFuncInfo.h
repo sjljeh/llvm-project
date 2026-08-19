@@ -40,6 +40,7 @@ using MBBOrBasicBlock = PointerUnion<const BasicBlock *, MachineBasicBlock *>;
 struct CxxUnwindMapEntry {
   int ToState;
   MBBOrBasicBlock Cleanup;
+  const FuncletPadInst *Owner = nullptr;
 };
 
 /// Similar to CxxUnwindMapEntry, but supports SEH filters.
@@ -74,6 +75,7 @@ struct WinEHTryBlockMapEntry {
   int TryHigh = -1;
   int CatchHigh = -1;
   SmallVector<WinEHHandlerType, 1> HandlerArray;
+  const FuncletPadInst *Owner = nullptr;
 };
 
 enum class ClrHandlerType { Catch, Finally, Fault, Filter };
