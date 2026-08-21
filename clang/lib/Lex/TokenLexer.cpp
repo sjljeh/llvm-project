@@ -416,6 +416,9 @@ void TokenLexer::ExpandFunctionArguments() {
     bool PasteBefore = I != 0 && Tokens[I-1].is(tok::hashhash);
     bool PasteAfter = I+1 != E && Tokens[I+1].is(tok::hashhash);
     bool RParenAfter = I+1 != E && Tokens[I+1].is(tok::r_paren);
+    bool MSVCPreexpandNumericPaste = PP.getLangOpts().MSVCCompat &&
+                                     PasteBefore && I >= 2 &&
+                                     Tokens[I - 2].is(tok::numeric_constant);
 
     assert((!NonEmptyPasteBefore || PasteBefore || VCtx.isInVAOpt()) &&
            "unexpected ## in ResultToks");
@@ -454,7 +457,7 @@ void TokenLexer::ExpandFunctionArguments() {
     // If it is not the LHS/RHS of a ## operator, we must pre-expand the
     // argument and substitute the expanded tokens into the result.  This is
     // C99 6.10.3.1p1.
-    if (!PasteBefore && !PasteAfter) {
+    if ((!PasteBefore && !PasteAfter) || MSVCPreexpandNumericPaste) {
       const Token *ResultArgToks;
 
       // Only preexpand the argument if it could possibly need it.  This
@@ -877,6 +880,15 @@ bool TokenLexer::pasteTokens(Token &LHSTok, ArrayRef<Token> TokenStream,
       // error.  This occurs with "x ## +"  and other stuff.  Return with LHSTok
       // unmodified and with RHS as the next token to lex.
       if (isInvalid) {
+        bool IsMSVCIgnoredPaste =
+            PP.getLangOpts().MSVCCompat &&
+            (((LHSTok.is(tok::period) || LHSTok.is(tok::arrow)) &&
+              RHS.isAnyIdentifier()) ||
+             ((LHSTok.isAnyIdentifier() || LHSTok.is(tok::kw___FUNCTION__)) &&
+              tok::isStringLiteral(RHS.getKind())) ||
+             (tok::isStringLiteral(LHSTok.getKind()) &&
+              tok::isStringLiteral(RHS.getKind())));
+
         // Explicitly convert the token location to have proper expansion
         // information so that the user knows where it came from.
         SourceManager &SM = PP.getSourceManager();
@@ -892,7 +904,7 @@ bool TokenLexer::pasteTokens(Token &LHSTok, ArrayRef<Token> TokenStream,
         }
 
         // Do not emit the error when preprocessing assembler code.
-        if (!PP.getLangOpts().AsmPreprocessor) {
+        if (!PP.getLangOpts().AsmPreprocessor && !IsMSVCIgnoredPaste) {
           // If we're in microsoft extensions mode, downgrade this from a hard
           // error to an extension that defaults to an error.  This allows
           // disabling it.
