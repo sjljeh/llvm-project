@@ -4,8 +4,13 @@
 // RUN: %clang_cc1 %s -triple i686-pc-windows-msvc -fms-extensions \
 // RUN:   -Wno-jump-seh-finally -emit-llvm -O1 -disable-llvm-passes -o - \
 // RUN:   | opt -passes=verify -disable-output
+// RUN: %clang_cc1 %s -triple i686-pc-windows-msvc -fms-extensions \
+// RUN:   -Wno-jump-seh-finally -emit-llvm -O1 -disable-llvm-passes -o - \
+// RUN:   | llc -mtriple=i686-pc-windows-msvc -o - \
+// RUN:   | FileCheck %s --check-prefix=X86-CODEGEN
 
 void use(int);
+void fail(void) __attribute__((noreturn));
 
 int break_from_finally(int value) {
   while (value > 0) {
@@ -20,7 +25,7 @@ int break_from_finally(int value) {
 }
 
 // CHECK-LABEL: define dso_local i32 @break_from_finally(
-// CHECK: call void @"?fin$0@0@break_from_finally@@"(
+// CHECK: invoke void @"?fin$0@0@break_from_finally@@"(
 // CHECK: %[[DEST:.+]] = load i32, ptr %{{.+}}
 // CHECK: switch i32 %[[DEST]], label %{{.+}} [
 // CHECK-NEXT: i32 1, label %[[BREAK:.+]]
@@ -47,7 +52,7 @@ int continue_from_finally(int value) {
 }
 
 // CHECK-LABEL: define dso_local i32 @continue_from_finally(
-// CHECK: call void @"?fin$0@0@continue_from_finally@@"(
+// CHECK: invoke void @"?fin$0@0@continue_from_finally@@"(
 // CHECK: switch i32 %{{.+}}, label %{{.+}} [
 // CHECK-NEXT: i32 1, label %[[CONTINUE:.+]]
 // CHECK: [[CONTINUE]]:
@@ -72,7 +77,7 @@ done:
 }
 
 // CHECK-LABEL: define dso_local i32 @goto_from_finally(
-// CHECK: call void @"?fin$0@0@goto_from_finally@@"(
+// CHECK: invoke void @"?fin$0@0@goto_from_finally@@"(
 // CHECK: switch i32 %{{.+}}, label %{{.+}} [
 // CHECK-NEXT: i32 1, label %[[GOTO:.+]]
 // CHECK: [[GOTO]]:
@@ -126,7 +131,7 @@ void nested_break_from_finally(int value) {
 
 // The inner helper propagates the same statement through the outer helper.
 // CHECK-LABEL: define internal void @"?fin$0@0@nested_break_from_finally@@"(
-// CHECK: call void @"?fin$1@0@nested_break_from_finally@@"(
+// CHECK: invoke void @"?fin$1@0@nested_break_from_finally@@"(
 // CHECK: store i32 1, ptr %{{.+}}
 // CHECK: ret void
 // CHECK-LABEL: define internal void @"?fin$1@0@nested_break_from_finally@@"(
@@ -144,11 +149,18 @@ int return_from_finally(int value) {
 }
 
 // CHECK-LABEL: define dso_local i32 @return_from_finally(
-// CHECK: call void @"?fin$0@0@return_from_finally@@"(
+// CHECK: invoke void @"?fin$0@0@return_from_finally@@"(
 // CHECK: switch i32 %{{.+}}, label %{{.+}} [
 // CHECK-NEXT: i32 1, label %[[RETURN:.+]]
 // CHECK: [[RETURN]]:
 // CHECK: br label %[[RETURN_BLOCK:.+]]
+// CHECK: invoke void @llvm.seh.localunwind()
+// CHECK: catchswitch within none [label %[[LOCAL_UNWIND:.+]]] unwind to caller
+// CHECK: [[LOCAL_UNWIND]]:
+// CHECK: catchpad within %{{.+}} [ptr @__IsLocalUnwind]
+// CHECK: catchret from %{{.+}} to label %[[LOCAL_UNWIND_RESUME:.+]]
+// CHECK: [[LOCAL_UNWIND_RESUME]]:
+// CHECK: switch i32
 // CHECK: [[RETURN_BLOCK]]:
 // CHECK: load i32, ptr %{{.+}}
 // CHECK-NEXT: ret i32
@@ -174,10 +186,32 @@ int nested_return_from_finally(int value) {
 
 // The return value and destination propagate through both helpers.
 // CHECK-LABEL: define internal void @"?fin$0@0@nested_return_from_finally@@"(
-// CHECK: call void @"?fin$1@0@nested_return_from_finally@@"(
+// CHECK: invoke void @"?fin$1@0@nested_return_from_finally@@"(
 // CHECK: store i32 1, ptr %{{.+}}
 // CHECK: ret void
 // CHECK-LABEL: define internal void @"?fin$1@0@nested_return_from_finally@@"(
 // CHECK: store i32 1, ptr %{{.+}}
 // CHECK: store i32 11, ptr %{{.+}}
 // CHECK: ret void
+
+// X86-CODEGEN-LABEL: "?fin$0@0@nested_return_from_finally@@":
+// X86-CODEGEN: movl %esp, [[NESTED_SP:-[0-9]+]](%ebp)
+// X86-CODEGEN: [[NESTED_DISPATCH:LBB[0-9]+_[0-9]+]]:{{.*}}# %seh.finally.bailout.dispatch
+// X86-CODEGEN: .def "?dtor$
+// X86-CODEGEN: movl [[NESTED_SP]](%ebp), %esp
+// X86-CODEGEN-NEXT: jmp [[NESTED_DISPATCH]]
+
+int return_from_noreturn_finally(void) {
+  __try {
+    fail();
+  } __finally {
+    return 9;
+  }
+}
+
+// X86-CODEGEN-LABEL: _return_from_noreturn_finally:
+// X86-CODEGEN: movl %esp, [[NORETURN_SP:-[0-9]+]](%ebp)
+// X86-CODEGEN: .def "?dtor$
+// X86-CODEGEN: movl [[NORETURN_SP]](%ebp), %esp
+// X86-CODEGEN-NEXT: jmp [[NORETURN_DISPATCH:LBB[0-9]+_[0-9]+]]
+// X86-CODEGEN: [[NORETURN_DISPATCH]]:{{.*}}# %seh.finally.bailout.dispatch
