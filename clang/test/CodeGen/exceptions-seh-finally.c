@@ -181,16 +181,12 @@ int nested___finally___finally(void) {
 
 // CHECK-LABEL: define dso_local {{.*}}i32 @nested___finally___finally
 // CHECK: invoke {{.*}}void @"?fin$1@0@nested___finally___finally@@"({{.*}})
-// CHECK:          to label %[[outercont:[^ ]*]] unwind label %[[lpad:[^ ]*]]
-//
-// CHECK: [[outercont]]
+// CHECK: switch i32 %{{.*}}, label %{{.*}} [
+// CHECK: i32 1, label %{{.*}}
 // CHECK: call {{.*}}void @"?fin$0@0@nested___finally___finally@@"({{.*}})
-// CHECK-NEXT: ret i32 0
-//
-// CHECK: [[lpad]]
-// CHECK-NEXT: %[[pad:[^ ]*]] = cleanuppad
-// CHECK: call {{.*}}void @"?fin$0@0@nested___finally___finally@@"({{.*}})
-// CHECK-NEXT: cleanupret from %[[pad]] unwind to caller
+// CHECK: i32 1, label %[[RETURN:[^ ]*]]
+// CHECK: [[RETURN]]:
+// CHECK: ret i32
 
 // CHECK-LABEL: define internal {{.*}}void @"?fin$0@0@nested___finally___finally@@"({{.*}})
 // CHECK-SAME: [[finally_attrs]]
@@ -198,9 +194,9 @@ int nested___finally___finally(void) {
 
 // CHECK-LABEL: define internal {{.*}}void @"?fin$1@0@nested___finally___finally@@"({{.*}})
 // CHECK-SAME: [[finally_attrs]]
-// CHECK: unreachable
-
-// FIXME: Our behavior seems suspiciously different.
+// CHECK: store i32 1, ptr %{{.*}}
+// CHECK: store i32 1, ptr %{{.*}}
+// CHECK: ret void
 
 int nested___finally___finally_with_eh_edge(void) {
   __try {
@@ -220,11 +216,10 @@ int nested___finally___finally_with_eh_edge(void) {
 //
 // [[invokecont]]
 // CHECK: invoke {{.*}}void @"?fin$1@0@nested___finally___finally_with_eh_edge@@"({{.*}})
-// CHECK-NEXT:       to label %[[outercont:[^ ]*]] unwind label %[[lpad2:[^ ]*]]
-//
-// CHECK: [[outercont]]
+// CHECK: switch i32 %{{.*}}, label %{{.*}} [
+// CHECK: i32 1, label %{{.*}}
 // CHECK: call {{.*}}void @"?fin$0@0@nested___finally___finally_with_eh_edge@@"({{.*}})
-// CHECK-NEXT: ret i32 912
+// CHECK: i32 1, label %[[RETURN:[^ ]*]]
 //
 // CHECK: [[lpad1]]
 // CHECK-NEXT: %[[innerpad:[^ ]*]] = cleanuppad
@@ -238,6 +233,8 @@ int nested___finally___finally_with_eh_edge(void) {
 // CHECK-NEXT: %[[outerpad:[^ ]*]] = cleanuppad
 // CHECK: call {{.*}}void @"?fin$0@0@nested___finally___finally_with_eh_edge@@"({{.*}})
 // CHECK-NEXT: cleanupret from %[[outerpad]] unwind to caller
+// CHECK: [[RETURN]]:
+// CHECK: ret i32
 
 // CHECK-LABEL: define internal {{.*}}void @"?fin$0@0@nested___finally___finally_with_eh_edge@@"({{.*}})
 // CHECK-SAME: [[finally_attrs]]
@@ -245,7 +242,9 @@ int nested___finally___finally_with_eh_edge(void) {
 
 // CHECK-LABEL: define internal {{.*}}void @"?fin$1@0@nested___finally___finally_with_eh_edge@@"({{.*}})
 // CHECK-SAME: [[finally_attrs]]
-// CHECK: unreachable
+// CHECK: store i32 1, ptr %{{.*}}
+// CHECK: store i32 899, ptr %{{.*}}
+// CHECK: ret void
 
 void finally_within_finally(void) {
   __try {
