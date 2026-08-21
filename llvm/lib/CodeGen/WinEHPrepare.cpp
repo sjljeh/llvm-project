@@ -405,7 +405,7 @@ void llvm::calculateSEHStateForAsynchEH(const BasicBlock *BB, int State,
       const Constant *FilterOrNull = cast<Constant>(
           cast<CatchPadInst>(It)->getArgOperand(0)->stripPointerCasts());
       const Function *Filter = dyn_cast<Function>(FilterOrNull);
-      if (!Filter || !Filter->getName().starts_with("__IsLocalUnwind"))
+      if (!Filter || Filter->getName() != "__IsLocalUnwind")
         State = EHInfo.SEHUnwindMap[State].ToState; // Retrive next State
     } else if ((isa<CleanupReturnInst>(TI) || isa<CatchReturnInst>(TI)) &&
                State > 0) {
@@ -604,6 +604,17 @@ static void calculateSEHStateNumbers(WinEHFuncInfo &FuncInfo,
     const Function *Filter = dyn_cast<Function>(FilterOrNull);
     assert((Filter || FilterOrNull->isNullValue()) &&
            "unexpected filter value");
+    bool IsLocalUnwind = Filter && Filter->getName() == "__IsLocalUnwind";
+    if (IsLocalUnwind) {
+      FuncInfo.EHPadStateMap[CatchSwitch] = ParentState;
+      FuncInfo.EHPadStateMap[CatchPad] = ParentState;
+      for (const BasicBlock *PredBlock : predecessors(BB))
+        if ((PredBlock = getEHPadFromPredecessor(PredBlock,
+                                                 CatchSwitch->getParentPad())))
+          calculateSEHStateNumbers(FuncInfo, &*PredBlock->getFirstNonPHIIt(),
+                                   ParentState);
+      return;
+    }
     int TryState = addSEHExcept(FuncInfo, ParentState, Filter, CatchPadBB);
 
     // Everything in the __try block uses TryState as its parent state.

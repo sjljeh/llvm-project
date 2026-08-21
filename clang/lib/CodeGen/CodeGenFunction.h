@@ -291,6 +291,7 @@ public:
   struct SEHFinallyBailoutInfo {
     Address DestinationSlot = Address::invalid();
     llvm::SmallVector<const Stmt *, 4> Statements;
+    llvm::BasicBlock *DispatchBlock = nullptr;
   };
 
   CodeGenModule &CGM; // Per-module state.
@@ -730,6 +731,8 @@ public:
   /// Outbound jumps in an outlined __finally helper are performed by its
   /// parent after the helper returns.
   llvm::DenseMap<llvm::Function *, SEHFinallyBailoutInfo> SEHFinallyBailouts;
+  llvm::DenseMap<const SEHTryStmt *, llvm::Function *>
+      SEHFinallyLocalUnwindScopes;
   Address SEHFinallyBailoutParentAlloca = Address::invalid();
   Address SEHFinallyBailoutParent = Address::invalid();
   llvm::DenseMap<const Stmt *, unsigned> SEHFinallyBailoutStmtToCode;
@@ -3755,6 +3758,8 @@ public:
 
   llvm::Function *GenerateSEHFinallyFunction(CodeGenFunction &ParentCGF,
                                              const SEHFinallyStmt &Finally);
+  llvm::Function *GenerateSEHLocalUnwindFunction();
+  void EmitSEHLocalUnwind();
 
   void EmitSEHExceptionCodeSave(CodeGenFunction &ParentCGF,
                                 llvm::Value *ParentFP, llvm::Value *EntryEBP);

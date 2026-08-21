@@ -5802,6 +5802,7 @@ void Verifier::visitInstruction(Instruction &I) {
                 F->getIntrinsicID() == Intrinsic::seh_try_end ||
                 F->getIntrinsicID() == Intrinsic::seh_scope_begin ||
                 F->getIntrinsicID() == Intrinsic::seh_scope_end ||
+                F->getIntrinsicID() == Intrinsic::seh_localunwind ||
                 F->getIntrinsicID() == Intrinsic::coro_resume ||
                 F->getIntrinsicID() == Intrinsic::coro_destroy ||
                 F->getIntrinsicID() == Intrinsic::coro_await_suspend_void ||
@@ -5816,8 +5817,8 @@ void Verifier::visitInstruction(Instruction &I) {
                 F->getIntrinsicID() == Intrinsic::wasm_rethrow ||
                 IsAttachedCallOperand(F, CBI, i),
             "Cannot invoke an intrinsic other than donothing, patchpoint, "
-            "statepoint, coro_resume, coro_destroy, clang.arc.attachedcall or "
-            "wasm.(re)throw",
+            "statepoint, SEH scope markers, seh.localunwind, coro_resume, "
+            "coro_destroy, clang.arc.attachedcall or wasm.(re)throw",
             &I);
       Check(F->getParent() == &M, "Referencing function in another module!", &I,
             &M, F, F->getParent());

@@ -3474,6 +3474,61 @@ void SelectionDAGBuilder::visitInvoke(const InvokeInst &I) {
           // so dtor-funclet not removed by opts
           EHPadMBB->setMachineBlockAddressTaken();
       break;
+    case Intrinsic::seh_localunwind: {
+      auto *CatchSwitch = dyn_cast<CatchSwitchInst>(EHPadBB->getTerminator());
+      if (!CatchSwitch || CatchSwitch->getNumHandlers() == 0)
+        report_fatal_error("local unwind must target a catchswitch");
+
+      const TargetLowering &TLI = DAG.getTargetLoweringInfo();
+      Type *PtrTy = PointerType::getUnqual(*DAG.getContext());
+      EVT PtrVT = TLI.getPointerTy(DAG.getDataLayout());
+
+      BasicBlock *HandlerBB =
+          const_cast<BasicBlock *>(*CatchSwitch->handler_begin());
+      if (DAG.getMachineFunction().getTarget().getTargetTriple().getArch() ==
+          Triple::x86) {
+        WinEHFuncInfo *EHInfo = DAG.getMachineFunction().getWinEHFuncInfo();
+        if (!EHInfo ||
+            EHInfo->EHRegNodeFrameIndex == std::numeric_limits<int>::max())
+          report_fatal_error("local unwind requires an SEH registration node");
+        SDValue RegNode = DAG.getFrameIndex(EHInfo->EHRegNodeFrameIndex, PtrVT);
+        SDValue SavedSP = DAG.getLoad(
+            PtrVT, getCurSDLoc(), getControlRoot(), RegNode,
+            MachinePointerInfo::getFixedStack(DAG.getMachineFunction(),
+                                              EHInfo->EHRegNodeFrameIndex),
+            Align(DAG.getDataLayout().getPointerSize()));
+        Register SP = TLI.getStackPointerRegisterToSaveRestore();
+        DAG.setRoot(
+            DAG.getCopyToReg(SavedSP.getValue(1), getCurSDLoc(), SP, SavedSP));
+
+        auto *CatchRet = dyn_cast<CatchReturnInst>(HandlerBB->getTerminator());
+        if (!CatchRet)
+          report_fatal_error("local unwind handler must end in catchret");
+        Return = FuncInfo.getMBB(CatchRet->getSuccessor());
+      } else {
+        MachineBasicBlock *HandlerMBB = FuncInfo.getMBB(HandlerBB);
+        HandlerMBB->setMachineBlockAddressTaken();
+        HandlerMBB->setAddressTakenIRBlock(HandlerBB);
+        SDValue Destination =
+            DAG.getBlockAddress(BlockAddress::get(HandlerBB), PtrVT);
+        SDValue Frame = DAG.getNode(ISD::FRAMEADDR, getCurSDLoc(), PtrVT,
+                                    DAG.getIntPtrConstant(0, getCurSDLoc()));
+
+        TargetLowering::ArgListTy Args;
+        Args.emplace_back(Frame, PtrTy);
+        Args.emplace_back(Destination, PtrTy);
+        SDValue Callee = DAG.getExternalSymbol("_local_unwind", PtrVT);
+        TargetLowering::CallLoweringInfo CLI(DAG);
+        CLI.setDebugLoc(getCurSDLoc())
+            .setChain(getControlRoot())
+            .setCallee(CallingConv::C, Type::getVoidTy(*DAG.getContext()),
+                       Callee, std::move(Args))
+            .setNoReturn();
+        CLI.CB = &I;
+        lowerInvokable(CLI, EHPadBB);
+      }
+      break;
+    }
     case Intrinsic::experimental_patchpoint_void:
     case Intrinsic::experimental_patchpoint:
       visitPatchpoint(I, EHPadBB);

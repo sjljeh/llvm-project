@@ -1023,6 +1023,9 @@ def int_seh_try_end : Intrinsic<[], [], [IntrWriteMem, IntrWillReturn]>;
 def int_seh_scope_begin : Intrinsic<[], [], [IntrNoMem]>;
 def int_seh_scope_end : Intrinsic<[], [], [IntrNoMem]>;
 
+// Unwind to a local SEH catchpad and continue execution in the current frame.
+def int_seh_localunwind : Intrinsic<[], [], [IntrNoReturn]>;
+
 // Note: we treat stacksave/stackrestore as writemem because we don't otherwise
 // model their dependencies on allocas.
 def int_stacksave     : DefaultAttrsIntrinsic<[llvm_anyptr_ty]>,
