@@ -10,7 +10,10 @@
 #define __VARARGS_H
 #if defined(__MVS__) && __has_include_next(<varargs.h>)
 #include_next <varargs.h>
+#elif defined(_MSC_VER) && defined(_WIN32) &&                              \
+    __has_include_next(<varargs.h>)
+#include_next <varargs.h>
 #else
 #error "Please use <stdarg.h> instead of <varargs.h>"
-#endif /* __MVS__ */
+#endif
 #endif
