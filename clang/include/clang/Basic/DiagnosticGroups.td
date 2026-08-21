@@ -1670,6 +1670,8 @@ def MicrosoftTemplateShadow : DiagGroup<"microsoft-template-shadow">;
 def MicrosoftTemplate : DiagGroup<"microsoft-template", [MicrosoftTemplateShadow]>;
 def MicrosoftInconsistentDllImport : DiagGroup<"inconsistent-dllimport">;
 def MicrosoftRedeclareStatic : DiagGroup<"microsoft-redeclare-static">;
+def MicrosoftIncompatibleFunctionRedeclaration :
+    DiagGroup<"microsoft-incompatible-function-redeclaration">;
 def MicrosoftEnumForwardReference :
     DiagGroup<"microsoft-enum-forward-reference">;
 def MicrosoftGoto : DiagGroup<"microsoft-goto">;
@@ -1702,7 +1704,8 @@ def Microsoft : DiagGroup<"microsoft",
      MicrosoftMutableReference, MicrosoftPureDefinition,
      MicrosoftUnionMemberReference, MicrosoftExplicitConstructorCall,
      MicrosoftEnumValue, MicrosoftDefaultArgRedefinition, MicrosoftTemplate,
-     MicrosoftRedeclareStatic, MicrosoftEnumForwardReference, MicrosoftGoto,
+     MicrosoftRedeclareStatic, MicrosoftIncompatibleFunctionRedeclaration,
+     MicrosoftEnumForwardReference, MicrosoftGoto,
      MicrosoftFlexibleArray, MicrosoftExtraQualification, MicrosoftCast,
      MicrosoftConstInit, MicrosoftVoidPseudoDtor, MicrosoftAnonTag,
      MicrosoftCommentPaste, MicrosoftEndOfFile,

@@ -6667,6 +6667,10 @@ def err_dependent_tag_decl : Error<
 def err_tag_definition_of_typedef : Error<
   "definition of type %0 conflicts with %select{typedef|type alias}1 of the same name">;
 def err_conflicting_types : Error<"conflicting types for %0">;
+def ext_ms_incompatible_function_redeclaration : ExtWarn<
+  "parameter %0 of %1 has a different pointer type in a redeclaration; "
+  "this is a Microsoft compatibility extension">,
+  InGroup<MicrosoftIncompatibleFunctionRedeclaration>;
 def err_different_pass_object_size_params : Error<
   "conflicting pass_object_size attributes on parameters">;
 def err_late_asm_label_name : Error<

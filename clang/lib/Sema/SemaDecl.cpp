@@ -3576,6 +3576,34 @@ struct GNUCompatibleParamWarning {
   QualType PromotedType;
 };
 
+static bool
+findMSVCCompatiblePointerParams(Sema &S, const FunctionDecl *New,
+                                const FunctionDecl *Old,
+                                SmallVectorImpl<unsigned> &MismatchedParams) {
+  if (S.getLangOpts().CPlusPlus || !S.getLangOpts().MSVCCompat)
+    return false;
+
+  const auto *NewType = New->getType()->getAs<FunctionProtoType>();
+  const auto *OldType = Old->getType()->getAs<FunctionProtoType>();
+  if (!NewType || !OldType ||
+      NewType->getNumParams() != OldType->getNumParams() ||
+      NewType->isVariadic() != OldType->isVariadic() ||
+      !S.Context.typesAreCompatible(NewType->getReturnType(),
+                                    OldType->getReturnType()))
+    return false;
+
+  for (unsigned I = 0, E = NewType->getNumParams(); I != E; ++I) {
+    QualType NewParam = NewType->getParamType(I).getUnqualifiedType();
+    QualType OldParam = OldType->getParamType(I).getUnqualifiedType();
+    if (S.Context.typesAreCompatible(NewParam, OldParam))
+      continue;
+    if (!NewParam->isPointerType() || !OldParam->isPointerType())
+      return false;
+    MismatchedParams.push_back(I);
+  }
+  return !MismatchedParams.empty();
+}
+
 } // end anonymous namespace
 
 // Determine whether the previous declaration was a definition, implicit
@@ -4514,6 +4542,16 @@ bool Sema::MergeFunctionDecl(FunctionDecl *New, NamedDecl *&OldD, Scope *S,
     }
 
     PrevDiag = diag::note_previous_builtin_declaration;
+  }
+
+  SmallVector<unsigned, 4> MismatchedParams;
+  if (findMSVCCompatiblePointerParams(*this, New, Old, MismatchedParams)) {
+    for (unsigned I : MismatchedParams)
+      Diag(New->getParamDecl(I)->getLocation(),
+           diag::ext_ms_incompatible_function_redeclaration)
+          << I + 1 << New;
+    Diag(OldLocation, PrevDiag) << Old << Old->getType();
+    return MergeCompatibleFunctionDecls(New, Old, S, MergeTypeWithOld);
   }
 
   Diag(New->getLocation(), diag::err_conflicting_types) << New->getDeclName();
