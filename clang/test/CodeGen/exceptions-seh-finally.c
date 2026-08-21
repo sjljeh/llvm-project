@@ -1,7 +1,7 @@
-// RUN: %clang_cc1 %s -triple x86_64-pc-win32 -fms-extensions -emit-llvm -O1 -disable-llvm-passes -o - | FileCheck %s
-// RUN: %clang_cc1 %s -triple i686-pc-win32 -fms-extensions -emit-llvm -O1 -disable-llvm-passes -o - | FileCheck %s
-// RUN: %clang_cc1 %s -triple aarch64-windows -fms-extensions -emit-llvm -O1 -disable-llvm-passes -o - | FileCheck %s
-// RUN: %clang_cc1 %s -triple thumbv7-windows -fms-extensions -emit-llvm -O1 -disable-llvm-passes -o - | FileCheck %s
+// RUN: %clang_cc1 %s -triple x86_64-pc-win32 -fms-extensions -emit-llvm -O1 -disable-llvm-passes -o - | FileCheck %s --check-prefixes=CHECK,NESTED64
+// RUN: %clang_cc1 %s -triple i686-pc-win32 -fms-extensions -emit-llvm -O1 -disable-llvm-passes -o - | FileCheck %s --check-prefixes=CHECK,NESTED32
+// RUN: %clang_cc1 %s -triple aarch64-windows -fms-extensions -emit-llvm -O1 -disable-llvm-passes -o - | FileCheck %s --check-prefixes=CHECK,NESTED64
+// RUN: %clang_cc1 %s -triple thumbv7-windows -fms-extensions -emit-llvm -O1 -disable-llvm-passes -o - | FileCheck %s --check-prefixes=CHECK,NESTED64
 // NOTE: we're passing "-O1 -disable-llvm-passes" to avoid adding optnone and noinline everywhere.
 
 void abort(void) __attribute__((noreturn));
@@ -180,13 +180,20 @@ int nested___finally___finally(void) {
 }
 
 // CHECK-LABEL: define dso_local {{.*}}i32 @nested___finally___finally
-// CHECK: invoke {{.*}}void @"?fin$1@0@nested___finally___finally@@"({{.*}})
-// CHECK: switch i32 %{{.*}}, label %{{.*}} [
-// CHECK: i32 1, label %{{.*}}
-// CHECK: call {{.*}}void @"?fin$0@0@nested___finally___finally@@"({{.*}})
-// CHECK: i32 1, label %[[RETURN:[^ ]*]]
-// CHECK: [[RETURN]]:
-// CHECK: ret i32
+// NESTED64: invoke {{.*}}void @"?fin$1@0@nested___finally___finally@@"({{.*}})
+// NESTED64: switch i32 %{{.*}}, label %{{.*}} [
+// NESTED64: i32 1, label %{{.*}}
+// NESTED64: call {{.*}}void @"?fin$0@0@nested___finally___finally@@"({{.*}})
+// NESTED64: i32 1, label %[[RETURN64:[^ ]*]]
+// NESTED64: [[RETURN64]]:
+// NESTED64: ret i32
+// NESTED32: invoke {{.*}}void @"?fin$1@0@nested___finally___finally@@"({{.*}})
+// NESTED32: catchret from %{{.*}} to label %[[DISPATCH32:[^ ]*]]
+// NESTED32: call {{.*}}void @"?fin$0@0@nested___finally___finally@@"({{.*}})
+// NESTED32: i32 1, label %[[RETURN32:[^ ]*]]
+// NESTED32: [[DISPATCH32]]:
+// NESTED32: [[RETURN32]]:
+// NESTED32: ret i32
 
 // CHECK-LABEL: define internal {{.*}}void @"?fin$0@0@nested___finally___finally@@"({{.*}})
 // CHECK-SAME: [[finally_attrs]]
@@ -218,18 +225,22 @@ int nested___finally___finally_with_eh_edge(void) {
 // CHECK: invoke {{.*}}void @"?fin$1@0@nested___finally___finally_with_eh_edge@@"({{.*}})
 // CHECK: switch i32 %{{.*}}, label %{{.*}} [
 // CHECK: i32 1, label %{{.*}}
+//
+// CHECK: [[lpad1]]:
+// CHECK-NEXT: %[[innerpad:[^ ]*]] = cleanuppad
+// CHECK: invoke {{.*}}void @"?fin$1@0@nested___finally___finally_with_eh_edge@@"({{.*}})
+// CHECK-NEXT:    label %[[innercleanupretbb:[^ ]*]] unwind label %[[localcatch:[^ ]*]]
+//
+// CHECK: [[innercleanupretbb]]:
+// CHECK: invoke {{.*}}void @llvm.seh.localunwind()
+//
+// CHECK: [[localcatch]]:
+// CHECK-NEXT: %{{.*}} = catchswitch within none [label %{{.*}}] unwind label %[[lpad2:[^ ]*]]
+//
 // CHECK: call {{.*}}void @"?fin$0@0@nested___finally___finally_with_eh_edge@@"({{.*}})
 // CHECK: i32 1, label %[[RETURN:[^ ]*]]
 //
-// CHECK: [[lpad1]]
-// CHECK-NEXT: %[[innerpad:[^ ]*]] = cleanuppad
-// CHECK: invoke {{.*}}void @"?fin$1@0@nested___finally___finally_with_eh_edge@@"({{.*}})
-// CHECK-NEXT:    label %[[innercleanupretbb:[^ ]*]] unwind label %[[lpad2:[^ ]*]]
-//
-// CHECK: [[innercleanupretbb]]
-// CHECK-NEXT: cleanupret from %[[innerpad]] unwind label %[[lpad2]]
-//
-// CHECK: [[lpad2]]
+// CHECK: [[lpad2]]:
 // CHECK-NEXT: %[[outerpad:[^ ]*]] = cleanuppad
 // CHECK: call {{.*}}void @"?fin$0@0@nested___finally___finally_with_eh_edge@@"({{.*}})
 // CHECK-NEXT: cleanupret from %[[outerpad]] unwind to caller

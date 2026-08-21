@@ -21,7 +21,7 @@ Pair return_pair(int value) {
 }
 
 // CHECK-LABEL: define dso_local i64 @"?return_pair@@YA?AUPair@@H@Z"(
-// CHECK: call void @"?fin$0@0@return_pair@@"(
+// CHECK: invoke void @"?fin$0@0@return_pair@@"(
 // CHECK: switch i32 %{{.+}}, label %{{.+}} [
 // CHECK-NEXT: i32 1, label %[[RETURN:.+]]
 // CHECK: [[RETURN]]:
