@@ -22,6 +22,7 @@
 #include "clang/AST/StmtObjC.h"
 #include "clang/AST/StmtVisitor.h"
 #include "clang/Basic/DiagnosticSema.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/IR/EHPersonalities.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Intrinsics.h"
@@ -1814,8 +1815,143 @@ struct PerformSEHFinally final : EHScopeStack::Cleanup {
         CGM.getTypes().arrangeBuiltinFunctionCall(Context.VoidTy, Args);
 
     auto Callee = CGCallee::forDirect(OutlinedFinally);
+
+    auto BailoutIt = CGF.SEHFinallyBailouts.find(OutlinedFinally);
+    bool HasBailouts = BailoutIt != CGF.SEHFinallyBailouts.end() &&
+                       BailoutIt->second.DestinationSlot.isValid();
+    if (HasBailouts && !F.isForEHCleanup())
+      CGF.Builder.CreateStore(CGF.Builder.getInt32(0),
+                              BailoutIt->second.DestinationSlot);
+
     CGF.EmitCall(FnInfo, Callee, ReturnValueSlot(), Args);
+
+    // A jump out of an outlined finally cannot directly target a block in the
+    // parent function. Dispatch it after the helper returns instead.
+    if (HasBailouts && !F.isForEHCleanup() && CGF.HaveInsertPoint()) {
+      llvm::Value *Destination = CGF.Builder.CreateLoad(
+          BailoutIt->second.DestinationSlot, "seh.finally.bailout");
+      llvm::Value *HasBailout =
+          CGF.Builder.CreateICmpNE(Destination, CGF.Builder.getInt32(0));
+      llvm::BasicBlock *Dispatch =
+          CGF.createBasicBlock("seh.finally.bailout.dispatch");
+      llvm::BasicBlock *Continue =
+          CGF.createBasicBlock("seh.finally.bailout.cont");
+      CGF.Builder.CreateCondBr(HasBailout, Dispatch, Continue);
+
+      CGF.EmitBlock(Dispatch);
+      llvm::BasicBlock *Invalid =
+          CGF.createBasicBlock("seh.finally.bailout.invalid");
+      llvm::SwitchInst *Switch = llvm::SwitchInst::Create(
+          Destination, Invalid, BailoutIt->second.Statements.size(),
+          CGF.Builder.GetInsertBlock());
+
+      for (auto [Index, S] : llvm::enumerate(BailoutIt->second.Statements)) {
+        llvm::BasicBlock *Case =
+            CGF.createBasicBlock("seh.finally.bailout.case");
+        Switch->addCase(CGF.Builder.getInt32(Index + 1), Case);
+        CGF.EmitBlock(Case);
+
+        if (const auto *G = dyn_cast<GotoStmt>(S)) {
+          if (!CGF.EmitSEHFinallyBailout(*G))
+            CGF.EmitBranchThroughCleanup(
+                CGF.getJumpDestForLabel(G->getLabel()));
+        } else if (const auto *LC = dyn_cast<LoopControlStmt>(S)) {
+          if (const auto *Dest = CGF.TryGetDestForLoopControlStmt(*LC)) {
+            CGF.EmitBranchThroughCleanup(
+                isa<BreakStmt>(LC) ? Dest->BreakBlock : Dest->ContinueBlock);
+          } else if (!CGF.EmitSEHFinallyBailout(*LC)) {
+            CGF.Builder.CreateUnreachable();
+            CGF.Builder.ClearInsertionPoint();
+          }
+        } else if (const auto *R = dyn_cast<ReturnStmt>(S)) {
+          if (!CGF.EmitSEHFinallyBailout(*R))
+            CGF.EmitBranchThroughCleanup(CGF.ReturnBlock);
+        } else {
+          llvm_unreachable("unexpected SEH finally bailout");
+        }
+      }
+
+      CGF.EmitBlock(Invalid);
+      CGF.Builder.CreateUnreachable();
+      CGF.Builder.ClearInsertionPoint();
+      CGF.EmitBlock(Continue);
+    }
   }
+};
+} // end anonymous namespace
+
+namespace {
+static bool isOutlinedStmtBody(const Stmt *S) {
+  return isa<LambdaExpr, BlockExpr, CapturedStmt>(S);
+}
+
+struct SEHFinallyLocalFinder : ConstStmtVisitor<SEHFinallyLocalFinder> {
+  llvm::DenseSet<const LabelDecl *> Labels;
+  llvm::DenseSet<const Stmt *> BreakContinueTargets;
+
+  void Visit(const Stmt *S) {
+    if (!S || isOutlinedStmtBody(S))
+      return;
+    if (const auto *LS = dyn_cast<LabelStmt>(S))
+      Labels.insert(LS->getDecl());
+    if (isa<WhileStmt, DoStmt, ForStmt, CXXForRangeStmt, ObjCForCollectionStmt,
+            SwitchStmt>(S))
+      BreakContinueTargets.insert(S);
+    for (const Stmt *Child : S->children())
+      Visit(Child);
+  }
+};
+
+struct SEHFinallyBailoutFinder : ConstStmtVisitor<SEHFinallyBailoutFinder> {
+  const SEHFinallyLocalFinder &Locals;
+  llvm::SmallVector<const Stmt *, 4> Statements;
+  unsigned LoopDepth = 0;
+  unsigned BreakDepth = 0;
+
+  explicit SEHFinallyBailoutFinder(const SEHFinallyLocalFinder &Locals)
+      : Locals(Locals) {}
+
+  void Visit(const Stmt *S) {
+    if (!S || isOutlinedStmtBody(S))
+      return;
+
+    bool IsLoop =
+        isa<WhileStmt, DoStmt, ForStmt, CXXForRangeStmt, ObjCForCollectionStmt>(
+            S);
+    bool IsBreakTarget = IsLoop || isa<SwitchStmt>(S);
+    LoopDepth += IsLoop;
+    BreakDepth += IsBreakTarget;
+    ConstStmtVisitor<SEHFinallyBailoutFinder>::Visit(S);
+    for (const Stmt *Child : S->children())
+      Visit(Child);
+    BreakDepth -= IsBreakTarget;
+    LoopDepth -= IsLoop;
+  }
+
+  void VisitGotoStmt(const GotoStmt *S) {
+    if (!Locals.Labels.contains(S->getLabel()))
+      Statements.push_back(S);
+  }
+
+  void VisitBreakStmt(const BreakStmt *S) {
+    bool IsLocal =
+        S->hasLabelTarget()
+            ? Locals.BreakContinueTargets.contains(S->getNamedLoopOrSwitch())
+            : BreakDepth != 0;
+    if (!IsLocal)
+      Statements.push_back(S);
+  }
+
+  void VisitContinueStmt(const ContinueStmt *S) {
+    bool IsLocal =
+        S->hasLabelTarget()
+            ? Locals.BreakContinueTargets.contains(S->getNamedLoopOrSwitch())
+            : LoopDepth != 0;
+    if (!IsLocal)
+      Statements.push_back(S);
+  }
+
+  void VisitReturnStmt(const ReturnStmt *S) { Statements.push_back(S); }
 };
 } // end anonymous namespace
 
@@ -1941,10 +2077,11 @@ void CodeGenFunction::EmitCapturedLocals(CodeGenFunction &ParentCGF,
   // Find all captures in the Stmt.
   CaptureFinder Finder(ParentCGF, ParentCGF.CXXABIThisDecl);
   Finder.Visit(OutlinedStmt);
+  bool HasBailoutSlot = SEHFinallyBailoutParentAlloca.isValid();
 
   // We can exit early on x86_64 when there are no captures. We just have to
   // save the exception code in filters so that __exception_code() works.
-  if (!Finder.foundCaptures() &&
+  if (!Finder.foundCaptures() && !HasBailoutSlot &&
       CGM.getTarget().getTriple().getArch() != llvm::Triple::x86) {
     if (IsFilter)
       EmitSEHExceptionCodeSave(ParentCGF, nullptr, nullptr);
@@ -2073,6 +2210,14 @@ void CodeGenFunction::EmitCapturedLocals(CodeGenFunction &ParentCGF,
 
   if (IsFilter)
     EmitSEHExceptionCodeSave(ParentCGF, ParentFP, EntryFP);
+
+  if (HasBailoutSlot)
+    SEHFinallyBailoutParent = recoverAddrOfEscapedLocal(
+        ParentCGF, SEHFinallyBailoutParentAlloca, ParentFP);
+
+  if (SEHFinallyReturnValueParentAlloca.isValid())
+    SEHFinallyReturnValueParent = recoverAddrOfEscapedLocal(
+        ParentCGF, SEHFinallyReturnValueParentAlloca, ParentFP);
 }
 
 /// Arrange a function prototype that can be called by Windows exception
@@ -2238,9 +2383,46 @@ void CodeGenFunction::EnterSEHTryStmt(const SEHTryStmt &S) {
   CodeGenFunction HelperCGF(CGM, /*suppressNewContext=*/true);
   HelperCGF.ParentCGF = this;
   if (const SEHFinallyStmt *Finally = S.getFinallyHandler()) {
+    SEHFinallyLocalFinder Locals;
+    Locals.Visit(Finally->getBlock());
+    SEHFinallyBailoutFinder Bailouts(Locals);
+    Bailouts.Visit(Finally->getBlock());
+
+    Address BailoutSlot = Address::invalid();
+    if (!Bailouts.Statements.empty()) {
+      BailoutSlot =
+          CreateTempAlloca(Int32Ty, getIntAlign(), "seh.finally.bailout");
+      HelperCGF.SEHFinallyBailoutParentAlloca = BailoutSlot;
+      for (auto [Index, Bailout] : llvm::enumerate(Bailouts.Statements))
+        HelperCGF.SEHFinallyBailoutStmtToCode[Bailout] = Index + 1;
+    }
+
+    bool HasReturn = llvm::any_of(
+        Bailouts.Statements, [](const Stmt *S) { return isa<ReturnStmt>(S); });
+    if (HasReturn) {
+      Address ParentReturnValue = ReturnValue;
+      QualType ParentReturnType = FnRetTy;
+      const CGFunctionInfo *ParentFnInfo = CurFnInfo;
+      if (IsOutlinedSEHHelper && SEHFinallyParentFnInfo) {
+        ParentReturnValue = SEHFinallyReturnValueParent;
+        ParentReturnType = SEHFinallyParentReturnType;
+        ParentFnInfo = SEHFinallyParentFnInfo;
+      }
+
+      HelperCGF.SEHFinallyReturnValueParentAlloca = ParentReturnValue;
+      HelperCGF.SEHFinallyParentReturnType = ParentReturnType;
+      HelperCGF.SEHFinallyParentFnInfo = ParentFnInfo;
+    }
+
     // Outline the finally block.
     llvm::Function *FinallyFunc =
         HelperCGF.GenerateSEHFinallyFunction(*this, *Finally);
+
+    if (BailoutSlot.isValid()) {
+      SEHFinallyBailoutInfo &Info = SEHFinallyBailouts[FinallyFunc];
+      Info.DestinationSlot = BailoutSlot;
+      Info.Statements = std::move(Bailouts.Statements);
+    }
 
     // Push a cleanup for __finally blocks.
     EHStack.pushCleanup<PerformSEHFinally>(NormalAndEHSEHFinallyCleanup,

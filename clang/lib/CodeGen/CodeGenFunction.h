@@ -288,6 +288,11 @@ public:
     unsigned Index;
   };
 
+  struct SEHFinallyBailoutInfo {
+    Address DestinationSlot = Address::invalid();
+    llvm::SmallVector<const Stmt *, 4> Statements;
+  };
+
   CodeGenModule &CGM; // Per-module state.
   const TargetInfo &Target;
 
@@ -721,6 +726,17 @@ public:
   };
 
   llvm::SmallVector<const JumpDest *, 2> SEHTryEpilogueStack;
+
+  /// Outbound jumps in an outlined __finally helper are performed by its
+  /// parent after the helper returns.
+  llvm::DenseMap<llvm::Function *, SEHFinallyBailoutInfo> SEHFinallyBailouts;
+  Address SEHFinallyBailoutParentAlloca = Address::invalid();
+  Address SEHFinallyBailoutParent = Address::invalid();
+  llvm::DenseMap<const Stmt *, unsigned> SEHFinallyBailoutStmtToCode;
+  Address SEHFinallyReturnValueParentAlloca = Address::invalid();
+  Address SEHFinallyReturnValueParent = Address::invalid();
+  QualType SEHFinallyParentReturnType;
+  const CGFunctionInfo *SEHFinallyParentFnInfo = nullptr;
 
   llvm::Instruction *CurrentFuncletPad = nullptr;
 
@@ -3695,6 +3711,9 @@ public:
   void EmitAsmStmt(const AsmStmt &S);
 
   const BreakContinue *GetDestForLoopControlStmt(const LoopControlStmt &S);
+  const BreakContinue *
+  TryGetDestForLoopControlStmt(const LoopControlStmt &S) const;
+  bool EmitSEHFinallyBailout(const Stmt &S);
 
   void EmitObjCForCollectionStmt(const ObjCForCollectionStmt &S);
   void EmitObjCAtTryStmt(const ObjCAtTryStmt &S);

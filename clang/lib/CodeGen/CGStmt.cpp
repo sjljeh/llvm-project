@@ -856,6 +856,8 @@ void CodeGenFunction::EmitGotoStmt(const GotoStmt &S) {
     EmitStopPoint(&S);
 
   ApplyAtomGroup Grp(getDebugInfo());
+  if (EmitSEHFinallyBailout(S))
+    return;
   EmitBranchThroughCleanup(getJumpDestForLabel(S.getLabel()));
 }
 
@@ -1615,6 +1617,23 @@ static bool isSwiftAsyncCallee(const CallExpr *CE) {
 /// non-void.  Fun stuff :).
 void CodeGenFunction::EmitReturnStmt(const ReturnStmt &S) {
   ApplyAtomGroup Grp(getDebugInfo());
+
+  bool IsSEHFinallyBailout = false;
+  std::optional<llvm::SaveAndRestore<Address>> SavedReturnValue;
+  std::optional<llvm::SaveAndRestore<QualType>> SavedReturnType;
+  std::optional<llvm::SaveAndRestore<const CGFunctionInfo *>> SavedFnInfo;
+  if (IsOutlinedSEHHelper && SEHFinallyParentFnInfo) {
+    auto It = SEHFinallyBailoutStmtToCode.find(&S);
+    if (It != SEHFinallyBailoutStmtToCode.end()) {
+      Builder.CreateStore(Builder.getInt32(It->second),
+                          SEHFinallyBailoutParent);
+      SavedReturnValue.emplace(ReturnValue, SEHFinallyReturnValueParent);
+      SavedReturnType.emplace(FnRetTy, SEHFinallyParentReturnType);
+      SavedFnInfo.emplace(CurFnInfo, SEHFinallyParentFnInfo);
+      IsSEHFinallyBailout = true;
+    }
+  }
+
   if (requiresReturnValueCheck()) {
     llvm::Constant *SLoc = EmitCheckSourceLocation(S.getBeginLoc());
     auto *SLocPtr =
@@ -1626,8 +1645,9 @@ void CodeGenFunction::EmitReturnStmt(const ReturnStmt &S) {
     Builder.CreateStore(SLocPtr, ReturnLocation);
   }
 
-  // Returning from an outlined SEH helper is UB, and we already warn on it.
-  if (IsOutlinedSEHHelper) {
+  // A return from an outlined filter remains unsupported. Returns from a
+  // finally helper are dispatched by the parent after the helper returns.
+  if (IsOutlinedSEHHelper && !IsSEHFinallyBailout) {
     Builder.CreateUnreachable();
     Builder.ClearInsertionPoint();
   }
@@ -1738,10 +1758,10 @@ void CodeGenFunction::EmitDeclStmt(const DeclStmt &S) {
     EmitDecl(*I, /*EvaluateConditionDecl=*/true);
 }
 
-auto CodeGenFunction::GetDestForLoopControlStmt(const LoopControlStmt &S)
-    -> const BreakContinue * {
+auto CodeGenFunction::TryGetDestForLoopControlStmt(
+    const LoopControlStmt &S) const -> const BreakContinue * {
   if (!S.hasLabelTarget())
-    return &BreakContinueStack.back();
+    return BreakContinueStack.empty() ? nullptr : &BreakContinueStack.back();
 
   const Stmt *LoopOrSwitch = S.getNamedLoopOrSwitch();
   assert(LoopOrSwitch && "break/continue target not set?");
@@ -1749,10 +1769,34 @@ auto CodeGenFunction::GetDestForLoopControlStmt(const LoopControlStmt &S)
     if (BC.LoopOrSwitch == LoopOrSwitch)
       return &BC;
 
+  return nullptr;
+}
+
+auto CodeGenFunction::GetDestForLoopControlStmt(const LoopControlStmt &S)
+    -> const BreakContinue * {
+  if (const BreakContinue *Dest = TryGetDestForLoopControlStmt(S))
+    return Dest;
+
   llvm_unreachable("break/continue target not found");
 }
 
+bool CodeGenFunction::EmitSEHFinallyBailout(const Stmt &S) {
+  if (!SEHFinallyBailoutParent.isValid())
+    return false;
+
+  auto It = SEHFinallyBailoutStmtToCode.find(&S);
+  if (It == SEHFinallyBailoutStmtToCode.end())
+    return false;
+
+  Builder.CreateStore(Builder.getInt32(It->second), SEHFinallyBailoutParent);
+  EmitBranchThroughCleanup(ReturnBlock);
+  return true;
+}
+
 void CodeGenFunction::EmitBreakStmt(const BreakStmt &S) {
+  if (EmitSEHFinallyBailout(S))
+    return;
+
   assert(!BreakContinueStack.empty() && "break stmt not in a loop or switch!");
 
   // If this code is reachable then emit a stop point (if generating
@@ -1766,6 +1810,9 @@ void CodeGenFunction::EmitBreakStmt(const BreakStmt &S) {
 }
 
 void CodeGenFunction::EmitContinueStmt(const ContinueStmt &S) {
+  if (EmitSEHFinallyBailout(S))
+    return;
+
   assert(!BreakContinueStack.empty() && "continue stmt not in a loop!");
 
   // If this code is reachable then emit a stop point (if generating
