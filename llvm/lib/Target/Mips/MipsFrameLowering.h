@@ -43,6 +43,10 @@ public:
     return true;
   }
 
+  unsigned getWinEHParentFrameOffset(const MachineFunction &) const override {
+    return 0;
+  }
+
   MachineBasicBlock::iterator
   eliminateCallFramePseudoInstr(MachineFunction &MF,
                                 MachineBasicBlock &MBB,

@@ -41,6 +41,8 @@ const EHPersonality EHPersonality::MSVC_except_handler = {"_except_handler3",
                                                           nullptr};
 const EHPersonality EHPersonality::MSVC_C_specific_handler = {
     "__C_specific_handler", nullptr};
+const EHPersonality EHPersonality::MSVC_CxxFrameHandler = {
+    "__CxxFrameHandler", nullptr};
 const EHPersonality EHPersonality::MSVC_CxxFrameHandler3 = {
     "__CxxFrameHandler3", nullptr};
 const EHPersonality EHPersonality::MSVC_CxxFrameHandler4 = {
@@ -57,6 +59,8 @@ static const EHPersonality &getCPersonality(const TargetInfo &Target,
                                             const LangOptions &L) {
   const llvm::Triple &T = Target.getTriple();
   if (T.isWindowsMSVCEnvironment()) {
+    if (T.isMIPS())
+      return EHPersonality::MSVC_CxxFrameHandler;
     bool UseFH4 = CGOpts.MSVCCXXEH4Specified
                       ? CGOpts.MSVCCXXEH4
                       : L.isCompatibleWithMSVC(LangOptions::MSVC2019_3);

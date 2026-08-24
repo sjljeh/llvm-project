@@ -157,6 +157,8 @@ using TargetRegisterClass = MCRegisterClass;
       return ABI.getArgRegPtr(1);
     }
 
+    bool needsFixedCatchObjects() const override { return true; }
+
     bool isJumpTableRelative() const override {
       return getTargetMachine().isPositionIndependent();
     }

@@ -60,6 +60,15 @@ public:
                       bool HandlerData) const override;
 };
 
+/// Emit the five-field runtime-function records used by historical Windows
+/// MIPS, PowerPC, and Alpha targets. This is not the RISC-V unwind format.
+class LLVM_ABI RISCUnwindEmitter : public WinEH::UnwindEmitter {
+public:
+  void Emit(MCStreamer &Streamer) const override;
+  void EmitUnwindInfo(MCStreamer &Streamer, WinEH::FrameInfo *FI,
+                      bool HandlerData) const override;
+};
+
 class LLVM_ABI ARMUnwindEmitter : public WinEH::UnwindEmitter {
 public:
   void Emit(MCStreamer &Streamer) const override;
