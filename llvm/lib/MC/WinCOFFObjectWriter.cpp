@@ -1057,9 +1057,11 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
         (Reloc.Data.Type == COFF::IMAGE_REL_MIPS_REFHI ||
          Reloc.Data.Type == COFF::IMAGE_REL_MIPS_SECRELHI)) {
       // IMAGE_REL_MIPS_REFHI and IMAGE_REL_MIPS_SECRELHI *must*
-      // be followed by IMAGE_REL_MIPS_PAIR
+      // be followed by IMAGE_REL_MIPS_PAIR. The pair's symbol-table-index
+      // field stores the signed low 16-bit addend rather than a symbol index.
       auto RelocPair = Reloc;
       RelocPair.Data.Type = COFF::IMAGE_REL_MIPS_PAIR;
+      RelocPair.Data.SymbolTableIndex = FixedValue & 0xffff;
       Sec->Relocations.push_back(RelocPair);
     }
   }

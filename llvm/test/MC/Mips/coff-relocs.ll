@@ -23,7 +23,7 @@ define i32 @foo_var() {
 ; CHECK:        SymbolName:      var
 ; CHECK:        Type:            IMAGE_REL_MIPS_REFHI
 ; CHECK:      - VirtualAddress:  32
-; CHECK:        SymbolName:      .text
+; CHECK:        SymbolTableIndex: 0
 ; CHECK:        Type:            IMAGE_REL_MIPS_PAIR
 ; CHECK:      - VirtualAddress:  40
 ; CHECK:        SymbolName:      var
@@ -78,4 +78,3 @@ define dso_local void @foo_dbg() #0 !dbg !5 {
 ; CHECK:        SymbolName:      foo_dbg
 ; CHECK:        Type:            IMAGE_REL_MIPS_SECTION
 }
-

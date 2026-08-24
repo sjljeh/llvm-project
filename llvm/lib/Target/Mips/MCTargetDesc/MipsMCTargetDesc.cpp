@@ -229,7 +229,7 @@ StringRef MIPS_MC::selectMipsCPU(const Triple &TT, StringRef CPU) {
       if (TT.isNanoMips())
         CPU = "nanomips";
       else if (TT.isMIPS32())
-        CPU = "mips32";
+        CPU = TT.isWindowsMSVCEnvironment() ? "mips2" : "mips32";
       else
         CPU = "mips64";
     }
