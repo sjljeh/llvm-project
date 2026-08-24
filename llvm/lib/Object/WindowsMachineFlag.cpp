@@ -47,6 +47,8 @@ StringRef llvm::machineToStr(COFF::MachineTypes MT) {
     return "x64";
   case COFF::IMAGE_FILE_MACHINE_I386:
     return "x86";
+  case COFF::IMAGE_FILE_MACHINE_R4000:
+    return "mips";
   default:
     llvm_unreachable("unknown machine type");
   }

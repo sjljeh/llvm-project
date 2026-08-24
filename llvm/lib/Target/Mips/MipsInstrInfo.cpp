@@ -732,6 +732,12 @@ unsigned MipsInstrInfo::getInstSizeInBytes(const MachineInstr &MI) const {
   }
   case TargetOpcode::BUNDLE:
     return getInstBundleSize(MI);
+  case Mips::CATCHRET:
+    // lui + addiu + jr + nop
+    return 4 * 4;
+  case Mips::CLEANUPRET:
+    // jr + nop
+    return 2 * 4;
   case TargetOpcode::PATCHABLE_FUNCTION_ENTER:
   case TargetOpcode::PATCHABLE_FUNCTION_EXIT:
   case TargetOpcode::PATCHABLE_TAIL_CALL:

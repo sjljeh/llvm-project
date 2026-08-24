@@ -89,6 +89,8 @@ static const EHPersonality &getCPersonality(const TargetInfo &Target,
                                             const LangOptions &L) {
   const llvm::Triple &T = Target.getTriple();
   if (T.isWindowsMSVCEnvironment()) {
+    if (T.isMIPS())
+      return EHPersonality::MSVC_CxxFrameHandler;
     bool UseFH4 = CGOpts.MSVCCXXEH4Specified
                       ? CGOpts.MSVCCXXEH4
                       : L.isCompatibleWithMSVC(LangOptions::MSVC2019_3);

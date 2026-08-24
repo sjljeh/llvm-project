@@ -1152,6 +1152,54 @@ void llvm::Win64EH::UnwindEmitter::EmitUnwindInfo(MCStreamer &Streamer,
   ::EmitUnwindInfo(Streamer, info);
 }
 
+static const MCExpr *createRISCAbsoluteRef(MCContext &Context,
+                                           const MCSymbol *Symbol) {
+  return MCSymbolRefExpr::create(Symbol, Context);
+}
+
+static void emitRISCRuntimeFunction(MCStreamer &Streamer,
+                                    const WinEH::FrameInfo *Info) {
+  MCContext &Context = Streamer.getContext();
+  const MCSymbol *PrologEnd = Info->PrologEnd ? Info->PrologEnd : Info->Begin;
+  const MCSymbol *HandlerData = Info->ExceptionHandler ? Info->Symbol : nullptr;
+
+  const MCExpr *ExceptionHandler = MCConstantExpr::create(0, Context);
+  if (Info->ExceptionHandler)
+    ExceptionHandler =
+        createRISCAbsoluteRef(Context, Info->ExceptionHandler);
+  const MCExpr *HandlerDataRef = MCConstantExpr::create(0, Context);
+  if (HandlerData)
+    HandlerDataRef = createRISCAbsoluteRef(Context, HandlerData);
+
+  Streamer.emitValueToAlignment(Align(4));
+  Streamer.emitValue(createRISCAbsoluteRef(Context, Info->Begin), 4);
+  Streamer.emitValue(createRISCAbsoluteRef(Context, Info->End), 4);
+  Streamer.emitValue(ExceptionHandler, 4);
+  Streamer.emitValue(HandlerDataRef, 4);
+  Streamer.emitValue(createRISCAbsoluteRef(Context, PrologEnd), 4);
+}
+
+void llvm::Win64EH::RISCUnwindEmitter::Emit(MCStreamer &Streamer) const {
+  for (const auto &CFI : Streamer.getWinFrameInfos()) {
+    MCSection *PData = Streamer.getAssociatedPDataSection(CFI->TextSection);
+    Streamer.switchSection(PData);
+    emitRISCRuntimeFunction(Streamer, CFI.get());
+  }
+}
+
+void llvm::Win64EH::RISCUnwindEmitter::EmitUnwindInfo(
+    MCStreamer &Streamer, WinEH::FrameInfo *Info, bool) const {
+  MCSection *XData = Streamer.getAssociatedXDataSection(Info->TextSection);
+  Streamer.switchSection(XData);
+
+  if (!Info->Symbol) {
+    MCSymbol *Label = Streamer.getContext().createTempSymbol();
+    Info->Symbol = Label;
+    Streamer.emitValueToAlignment(Align(4));
+    Streamer.emitLabel(Label);
+  }
+}
+
 static const MCExpr *GetSubDivExpr(MCStreamer &Streamer, const MCSymbol *LHS,
                                    const MCSymbol *RHS, int Div) {
   MCContext &Context = Streamer.getContext();

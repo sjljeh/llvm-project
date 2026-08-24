@@ -34,11 +34,25 @@
 #include "llvm/Target/TargetMachine.h"
 using namespace llvm;
 
+static bool isLegacyMSVCCXXPersonality(const Function &F) {
+  if (!F.hasPersonalityFn())
+    return false;
+  const auto *PerFn =
+      dyn_cast<Function>(F.getPersonalityFn()->stripPointerCasts());
+  return PerFn && PerFn->getName() == "__CxxFrameHandler";
+}
+
+static bool usesMIPSWindowsEH(const AsmPrinter &Asm) {
+  return Asm.TM.getTargetTriple().isMIPS() &&
+         Asm.MAI.getWinEHEncodingType() == WinEH::EncodingType::MIPS;
+}
+
 WinException::WinException(AsmPrinter *A) : EHStreamer(A) {
   // MSVC's EH tables are always composed of 32-bit words. All known
-  // architectures use an imagerel32 relocation to refer to symbols, except
-  // 32-bit x86.
-  useImageRel32 = A->TM.getTargetTriple().getArch() != Triple::x86;
+  // modern architectures use an imagerel32 relocation to refer to symbols.
+  // 32-bit x86 and historical Windows MIPS use absolute pointers.
+  useImageRel32 = A->TM.getTargetTriple().getArch() != Triple::x86 &&
+                  !usesMIPSWindowsEH(*A);
   isAArch64 = Asm->TM.getTargetTriple().isAArch64();
   isThumb = Asm->TM.getTargetTriple().isThumb();
 }
@@ -161,6 +175,9 @@ void WinException::endFunction(const MachineFunction *MF) {
   // endFunclet will emit the necessary .xdata tables for table-based SEH.
   if (Per == EHPersonality::MSVC_TableSEH && MF->hasEHFunclets())
     return;
+  if (Per == EHPersonality::MSVC_CXX && isLegacyMSVCCXXPersonality(F) &&
+      usesMIPSWindowsEH(*Asm))
+    return;
 
   if (shouldEmitPersonality || shouldEmitLSDA) {
     Asm->OutStreamer->pushSection();
@@ -216,6 +233,20 @@ static const FuncletPadInst *getFuncletPad(const MachineBasicBlock &MBB) {
   return dyn_cast<FuncletPadInst>(MBB.getBasicBlock()->getFirstNonPHIIt());
 }
 
+static unsigned getMIPSFrameNestLevel(const FuncletPadInst *Owner) {
+  unsigned Level = 1;
+  while (Owner) {
+    ++Level;
+    const Value *ParentPad = nullptr;
+    if (const auto *CatchPad = dyn_cast<CatchPadInst>(Owner))
+      ParentPad = CatchPad->getCatchSwitch()->getParentPad();
+    else
+      ParentPad = cast<CleanupPadInst>(Owner)->getParentPad();
+    Owner = dyn_cast<FuncletPadInst>(ParentPad);
+  }
+  return Level;
+}
+
 bool WinException::funcletNeedsCXXFrameHandler4Personality(
     const MachineBasicBlock &MBB) const {
   const FuncletPadInst *Owner = getFuncletPad(MBB);
@@ -235,7 +266,7 @@ bool WinException::funcletNeedsCXXFrameHandler4Personality(
                       });
 }
 
-MCSymbol *WinException::getCXXFrameHandler4FuncInfoSymbol(
+MCSymbol *WinException::getCXXFuncInfoSymbol(
     const MachineBasicBlock &MBB) const {
   const Function &F = Asm->MF->getFunction();
   if (!MBB.isEHFuncletEntry()) {
@@ -338,8 +369,21 @@ void WinException::endFuncletImpl() {
     if (F.hasPersonalityFn())
       Per = classifyEHPersonality(F.getPersonalityFn()->stripPointerCasts());
 
-    if (Per == EHPersonality::MSVC_CXX && CurrentFuncletUsesPersonality &&
-        !CurrentFuncletEntry->isCleanupFuncletEntry()) {
+    if (Per == EHPersonality::MSVC_CXX && isLegacyMSVCCXXPersonality(F) &&
+        usesMIPSWindowsEH(*Asm)) {
+      if (!CurrentFuncletEntry->isCleanupFuncletEntry()) {
+        // Historical RISC pdata points directly at FuncInfo rather than an
+        // x64-style handler-data slot containing a pointer to FuncInfo.
+        Asm->OutStreamer->setCurrentWinEHHandlerDataSymbol(
+            getCXXFuncInfoSymbol(*CurrentFuncletEntry));
+        Asm->OutStreamer->emitWinEHHandlerData();
+        emitCXXFrameHandler3Table(
+            MF, CurrentFuncletEntry->isEHFuncletEntry() ? CurrentFuncletEntry
+                                                        : nullptr);
+      }
+    } else if (Per == EHPersonality::MSVC_CXX &&
+               CurrentFuncletUsesPersonality &&
+               !CurrentFuncletEntry->isCleanupFuncletEntry()) {
       // Emit an UNWIND_INFO struct describing the prologue.
       Asm->OutStreamer->emitWinEHHandlerData();
 
@@ -347,7 +391,7 @@ void WinException::endFuncletImpl() {
       // emit a reference to the LSDA for the parent function.
       MCSymbol *FuncInfoXData;
       if (isMSVCXXFrameHandler4(F.getPersonalityFn())) {
-        FuncInfoXData = getCXXFrameHandler4FuncInfoSymbol(*CurrentFuncletEntry);
+        FuncInfoXData = getCXXFuncInfoSymbol(*CurrentFuncletEntry);
       } else {
         StringRef FuncLinkageName =
             GlobalValue::dropLLVMManglingEscape(F.getName());
@@ -401,8 +445,7 @@ const MCExpr *WinException::create32bitRef(const GlobalValue *GV) {
 }
 
 const MCExpr *WinException::getLabel(const MCSymbol *Label) {
-  return MCSymbolRefExpr::create(Label, MCSymbolRefExpr::VK_COFF_IMGREL32,
-                                 Asm->OutContext);
+  return create32bitRef(Label);
 }
 
 const MCExpr *WinException::getOffset(const MCSymbol *OffsetOf,
@@ -422,6 +465,10 @@ const MCExpr *WinException::getOffsetPlusOne(const MCSymbol *OffsetOf,
 int WinException::getFrameIndexOffset(int FrameIndex,
                                       const WinEHFuncInfo &FuncInfo) {
   const TargetFrameLowering &TFI = *Asm->MF->getSubtarget().getFrameLowering();
+  const Function &F = Asm->MF->getFunction();
+  if (isLegacyMSVCCXXPersonality(F) && usesMIPSWindowsEH(*Asm))
+    return TFI.getFrameIndexReferenceFromSP(*Asm->MF, FrameIndex).getFixed();
+
   Register UnusedReg;
   if (Asm->MAI.usesWindowsCFI()) {
     StackOffset Offset =
@@ -794,7 +841,7 @@ void WinException::emitCXXFrameHandler4Table(const MachineFunction *MF) {
   const TargetFrameLowering *TFI = MF->getSubtarget().getFrameLowering();
 
   for (const FuncletInfo &FI : Funclets) {
-    MCSymbol *FuncInfoXData = getCXXFrameHandler4FuncInfoSymbol(*FI.Entry);
+    MCSymbol *FuncInfoXData = getCXXFuncInfoSymbol(*FI.Entry);
     MCSymbol *FuncletSym =
         FI.Owner ? getMCSymbolForMBB(Asm, FI.Entry) : nullptr;
     StringRef FuncLinkageName =
@@ -1017,10 +1064,75 @@ void WinException::emitCXXFrameHandler4Table(const MachineFunction *MF) {
   }
 }
 
-void WinException::emitCXXFrameHandler3Table(const MachineFunction *MF) {
+void WinException::emitCXXFrameHandler3Table(
+    const MachineFunction *MF, const MachineBasicBlock *LegacyCatchEntry) {
   const Function &F = MF->getFunction();
   auto &OS = *Asm->OutStreamer;
   const WinEHFuncInfo &FuncInfo = *MF->getWinEHFuncInfo();
+  const bool IsMIPSEH =
+      isLegacyMSVCCXXPersonality(F) && usesMIPSWindowsEH(*Asm);
+
+  struct LegacyCatchFuncInfo {
+    const MachineBasicBlock *Entry;
+    unsigned TryBlockIndex;
+    unsigned FrameNestLevel;
+    MCSymbol *FuncInfoXData;
+    MCSymbol *IPToStateXData;
+    SmallVector<std::pair<const MCExpr *, int>, 4> IPToStateTable;
+  };
+  SmallVector<LegacyCatchFuncInfo, 2> LegacyCatchInfos;
+
+  if (IsMIPSEH) {
+    for (unsigned I = 0; I != FuncInfo.TryBlockMap.size(); ++I) {
+      const WinEHTryBlockMapEntry &TryBlock = FuncInfo.TryBlockMap[I];
+      for (const WinEHHandlerType &Handler : TryBlock.HandlerArray) {
+        const auto *Entry =
+            dyn_cast_if_present<MachineBasicBlock *>(Handler.Handler);
+        if (!Entry || llvm::any_of(LegacyCatchInfos, [&](const auto &Info) {
+              return Info.Entry == Entry;
+            }))
+          continue;
+
+        MCSymbol *FuncletSym = getMCSymbolForMBB(Asm, Entry);
+        LegacyCatchInfos.push_back({
+            Entry, I, getMIPSFrameNestLevel(TryBlock.Owner) + 1,
+            getCXXFuncInfoSymbol(*Entry),
+            Asm->OutContext.getOrCreateSymbol(
+                Twine("$ip2state$", FuncletSym->getName())),
+            {}});
+      }
+    }
+
+    for (LegacyCatchFuncInfo &CatchInfo : LegacyCatchInfos) {
+      for (auto FuncletStart = MF->begin(), End = MF->end();
+           FuncletStart != End; ++FuncletStart) {
+        if (&*FuncletStart != CatchInfo.Entry)
+          continue;
+
+        auto FuncletEnd = std::next(FuncletStart);
+        while (FuncletEnd != End && !FuncletEnd->isEHFuncletEntry())
+          ++FuncletEnd;
+
+        const FuncletPadInst *Pad = getFuncletPad(*FuncletStart);
+        auto BaseState = FuncInfo.FuncletBaseStateMap.find(Pad);
+        assert(BaseState != FuncInfo.FuncletBaseStateMap.end() &&
+               "missing MIPS catch funclet base state");
+        CatchInfo.IPToStateTable.emplace_back(
+            create32bitRef(getMCSymbolForMBB(Asm, &*FuncletStart)),
+            BaseState->second);
+        for (const InvokeStateChange &StateChange :
+             InvokeStateChangeIterator::range(FuncInfo, FuncletStart,
+                                               FuncletEnd, BaseState->second)) {
+          const MCSymbol *ChangeLabel = StateChange.NewStartLabel;
+          if (!ChangeLabel)
+            ChangeLabel = StateChange.PreviousEndLabel;
+          CatchInfo.IPToStateTable.emplace_back(create32bitRef(ChangeLabel),
+                                                StateChange.NewState);
+        }
+        break;
+      }
+    }
+  }
 
   StringRef FuncLinkageName = GlobalValue::dropLLVMManglingEscape(F.getName());
 
@@ -1065,6 +1177,50 @@ void WinException::emitCXXFrameHandler3Table(const MachineFunction *MF) {
       OS.AddComment(Comment);
   };
 
+  auto EmitLegacyCatchInfo = [&](const LegacyCatchFuncInfo &CatchInfo) {
+    OS.emitValueToAlignment(Align(4));
+    OS.emitLabel(CatchInfo.FuncInfoXData);
+    AddComment("MagicNumber");
+    OS.emitInt32(0x19930520);
+    AddComment("MaxState");
+    OS.emitInt32(FuncInfo.CxxUnwindMap.size());
+    AddComment("UnwindMap");
+    OS.emitValue(create32bitRef(UnwindMapXData), 4);
+    AddComment("NumTryBlocks");
+    OS.emitInt32(0);
+    AddComment("TryBlockMap");
+    OS.emitInt32(0);
+    AddComment("IPMapEntries");
+    OS.emitInt32(CatchInfo.IPToStateTable.size());
+    AddComment("IPToStateXData");
+    OS.emitValue(create32bitRef(CatchInfo.IPToStateXData), 4);
+    AddComment("UnwindHelp");
+    OS.emitInt32(0);
+    AddComment("TryBlockIndex");
+    OS.emitInt32(CatchInfo.TryBlockIndex);
+    AddComment("FrameNestLevel");
+    OS.emitInt32(CatchInfo.FrameNestLevel);
+
+    OS.emitLabel(CatchInfo.IPToStateXData);
+    for (const auto &IPStatePair : CatchInfo.IPToStateTable) {
+      AddComment("IP");
+      OS.emitValue(IPStatePair.first, 4);
+      AddComment("ToState");
+      OS.emitInt32(IPStatePair.second);
+    }
+  };
+
+  if (LegacyCatchEntry) {
+    assert(IsMIPSEH && "catch-specific FuncInfo requires MIPS Windows EH");
+    auto CatchInfo = llvm::find_if(LegacyCatchInfos, [&](const auto &Info) {
+      return Info.Entry == LegacyCatchEntry;
+    });
+    assert(CatchInfo != LegacyCatchInfos.end() &&
+           "missing legacy RISC catch FuncInfo");
+    EmitLegacyCatchInfo(*CatchInfo);
+    return;
+  }
+
   // FuncInfo {
   //   uint32_t           MagicNumber
   //   int32_t            MaxState;
@@ -1084,7 +1240,7 @@ void WinException::emitCXXFrameHandler3Table(const MachineFunction *MF) {
   OS.emitLabel(FuncInfoXData);
 
   AddComment("MagicNumber");
-  OS.emitInt32(0x19930522);
+  OS.emitInt32(IsMIPSEH ? 0x19930520 : 0x19930522);
 
   AddComment("MaxState");
   OS.emitInt32(FuncInfo.CxxUnwindMap.size());
@@ -1104,20 +1260,29 @@ void WinException::emitCXXFrameHandler3Table(const MachineFunction *MF) {
   AddComment("IPToStateXData");
   OS.emitValue(create32bitRef(IPToStateXData), 4);
 
-  if (Asm->MAI.usesWindowsCFI() &&
+  if (!IsMIPSEH && Asm->MAI.usesWindowsCFI() &&
       FuncInfo.UnwindHelpFrameIdx != std::numeric_limits<int>::max()) {
     AddComment("UnwindHelp");
     OS.emitInt32(UnwindHelpOffset);
   }
 
-  AddComment("ESTypeList");
-  OS.emitInt32(0);
-
-  AddComment("EHFlags");
-  if (MMI->getModule()->getModuleFlag("eh-asynch")) {
-    OS.emitInt32(0);
-  } else {
+  if (IsMIPSEH) {
+    AddComment("UnwindHelp");
+    OS.emitInt32(UnwindHelpOffset);
+    AddComment("TryBlockIndex");
+    OS.emitInt32(-1);
+    AddComment("FrameNestLevel");
     OS.emitInt32(1);
+  } else {
+    AddComment("ESTypeList");
+    OS.emitInt32(0);
+
+    AddComment("EHFlags");
+    if (MMI->getModule()->getModuleFlag("eh-asynch")) {
+      OS.emitInt32(0);
+    } else {
+      OS.emitInt32(1);
+    }
   }
 
   // UnwindMapEntry {
@@ -1227,10 +1392,15 @@ void WinException::emitCXXFrameHandler3Table(const MachineFunction *MF) {
         AddComment("CatchObjOffset");
         OS.emitValue(FrameAllocOffsetRef, 4);
 
+        if (IsMIPSEH) {
+          AddComment("FrameNestLevel");
+          OS.emitInt32(getMIPSFrameNestLevel(TBME.Owner));
+        }
+
         AddComment("Handler");
         OS.emitValue(create32bitRef(HandlerSym), 4);
 
-        if (shouldEmitPersonality) {
+        if (!IsMIPSEH && shouldEmitPersonality) {
           AddComment("ParentFrameOffset");
           OS.emitInt32(ParentFrameOffset);
         }

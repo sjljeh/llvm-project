@@ -360,6 +360,12 @@ public:
     return WinFrameInfos;
   }
 
+  void setCurrentWinEHHandlerDataSymbol(MCSymbol *Symbol) {
+    assert(CurrentWinFrameInfo && !CurrentWinFrameInfo->End &&
+           "missing active WinEH frame");
+    CurrentWinFrameInfo->Symbol = Symbol;
+  }
+
   WinEH::FrameInfo::Epilog *getCurrentWinEpilog() const {
     return CurrentWinEpilog;
   }
