@@ -247,7 +247,12 @@ public:
   public:
     symbol_iterator() = default;
 
-    Symbol *operator*() const { return file->getSymbol(I->SymbolTableIndex); }
+    Symbol *operator*() const {
+      if (file->getMachineType() == llvm::COFF::IMAGE_FILE_MACHINE_R4000 &&
+          I->Type == llvm::COFF::IMAGE_REL_MIPS_PAIR)
+        return nullptr;
+      return file->getSymbol(I->SymbolTableIndex);
+    }
   };
 
   SectionChunk(ObjFile *file, const coff_section *header, Kind k = SectionKind);
@@ -283,8 +288,8 @@ public:
                    uint64_t p, uint64_t imageBase) const;
   void applyRelARM64(uint8_t *off, uint16_t type, OutputSection *os, uint64_t s,
                      uint64_t p, uint64_t imageBase) const;
-  void applyRelMIPS(uint8_t *off, uint16_t type, OutputSection *os, uint64_t s,
-                    uint64_t p, uint64_t imageBase) const;
+  void applyRelMIPS(uint8_t *off, const coff_relocation &rel, OutputSection *os,
+                    uint64_t s, uint64_t p, uint64_t imageBase) const;
 
   void getRuntimePseudoRelocs(std::vector<RuntimePseudoReloc> &res);
 
@@ -773,13 +778,15 @@ private:
 
 class Baserel {
 public:
-  Baserel(uint32_t v, uint8_t ty) : rva(v), type(ty) {}
+  Baserel(uint32_t v, uint8_t ty, uint16_t extra = 0)
+      : rva(v), type(ty), extra(extra) {}
   explicit Baserel(uint32_t v, llvm::COFF::MachineTypes machine)
       : Baserel(v, getDefaultType(machine)) {}
   static uint8_t getDefaultType(llvm::COFF::MachineTypes machine);
 
   uint32_t rva;
   uint8_t type;
+  uint16_t extra;
 };
 
 // This is a placeholder Chunk, to allow attaching a DefinedSynthetic to a

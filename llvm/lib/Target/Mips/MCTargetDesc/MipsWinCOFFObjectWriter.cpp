@@ -7,9 +7,12 @@
 //===---------------------------------------------------------------------===//
 
 #include "MCTargetDesc/MipsFixupKinds.h"
+#include "MCTargetDesc/MipsMCAsmInfo.h"
 #include "MCTargetDesc/MipsMCTargetDesc.h"
 #include "llvm/BinaryFormat/COFF.h"
 #include "llvm/MC/MCContext.h"
+#include "llvm/MC/MCExpr.h"
+#include "llvm/MC/MCValue.h"
 #include "llvm/MC/MCWinCOFFObjectWriter.h"
 
 using namespace llvm;
@@ -39,7 +42,16 @@ unsigned MipsWinCOFFObjectWriter::getRelocType(MCContext &Ctx,
 
   switch (FixupKind) {
   case FK_Data_4:
-    return COFF::IMAGE_REL_MIPS_REFWORD;
+    switch (Target.getSpecifier()) {
+    default:
+      Ctx.reportError(Fixup.getLoc(),
+                      "relocation specifier unsupported on COFF targets");
+      return COFF::IMAGE_REL_MIPS_ABSOLUTE;
+    case Mips::S_None:
+      return COFF::IMAGE_REL_MIPS_REFWORD;
+    case MCSymbolRefExpr::VK_COFF_IMGREL32:
+      return COFF::IMAGE_REL_MIPS_REFWORDNB;
+    }
   case FK_SecRel_2:
     return COFF::IMAGE_REL_MIPS_SECTION;
   case FK_SecRel_4:
