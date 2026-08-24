@@ -142,7 +142,7 @@ StringRef MIPS_MC::selectMipsCPU(const Triple &TT, StringRef CPU) {
         CPU = "mips64r6";
     } else {
       if (TT.isMIPS32())
-        CPU = "mips32";
+        CPU = TT.isWindowsMSVCEnvironment() ? "mips2" : "mips32";
       else
         CPU = "mips64";
     }

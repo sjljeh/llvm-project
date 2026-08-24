@@ -49,6 +49,7 @@ bool MipsTargetInfo::processorSupportsGPR64() const {
       .Case("r5900", true)
       .Case("i6400", true)
       .Case("i6500", true)
+      .Cases({"r4000", "r4200", "r4400", "r4600", "r10000"}, true)
       .Default(false);
 }
 
@@ -57,7 +58,8 @@ static constexpr llvm::StringLiteral ValidCPUNames[] = {
     {"mips32"}, {"mips32r2"}, {"mips32r3"}, {"mips32r5"}, {"mips32r6"},
     {"mips64"}, {"mips64r2"}, {"mips64r3"}, {"mips64r5"}, {"mips64r6"},
     {"octeon"}, {"octeon+"},  {"p5600"},    {"r5900"},    {"i6400"},
-    {"i6500"}};
+    {"i6500"},  {"r3000"},    {"r4000"},    {"r4200"},    {"r4400"},
+    {"r4600"},  {"r10000"}};
 
 bool MipsTargetInfo::isValidCPUName(StringRef Name) const {
   return llvm::is_contained(ValidCPUNames, Name);
@@ -72,6 +74,8 @@ unsigned MipsTargetInfo::getISARev() const {
   return llvm::StringSwitch<unsigned>(getCPU())
       .Cases({"mips32", "mips64"}, 1)
       .Cases({"mips32r2", "mips64r2", "octeon", "octeon+"}, 2)
+      .Cases({"r4000", "r4200", "r4400", "r4600"}, 3)
+      .Case("r10000", 4)
       .Cases({"mips32r3", "mips64r3"}, 3)
       .Cases({"mips32r5", "mips64r5", "p5600"}, 5)
       .Cases({"mips32r6", "mips64r6", "i6400", "i6500"}, 6)
@@ -322,7 +326,14 @@ WindowsMipsTargetInfo::WindowsMipsTargetInfo(const llvm::Triple &Triple,
 
 void WindowsMipsTargetInfo::getVisualStudioDefines(
     const LangOptions &Opts, MacroBuilder &Builder) const {
-  Builder.defineMacro("_M_MRX000", "4000");
+  StringRef MR = llvm::StringSwitch<StringRef>(getCPU())
+                     .Cases({"mips1", "r3000"}, "3000")
+                     .Case("r4200", "4200")
+                     .Case("r4400", "4400")
+                     .Case("r4600", "4600")
+                     .Cases({"mips4", "r10000"}, "10000")
+                     .Default("4000");
+  Builder.defineMacro("_M_MRX000", MR);
 }
 
 TargetInfo::BuiltinVaListKind

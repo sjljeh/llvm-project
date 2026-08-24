@@ -286,6 +286,12 @@ class Proc<string Name, list<SubtargetFeature> Features>
 def : Proc<"generic", [FeatureMips32]>;
 def : Proc<"mips1", [FeatureMips1]>;
 def : Proc<"mips2", [FeatureMips2]>;
+def : Proc<"r3000", [FeatureMips1]>;
+def : Proc<"r4000", [FeatureMips3]>;
+def : Proc<"r4200", [FeatureMips3]>;
+def : Proc<"r4400", [FeatureMips3]>;
+def : Proc<"r4600", [FeatureMips3]>;
+def : Proc<"r10000", [FeatureMips4]>;
 def : Proc<"mips32", [FeatureMips32]>;
 def : Proc<"mips32r2", [FeatureMips32r2]>;
 def : Proc<"mips32r3", [FeatureMips32r3]>;

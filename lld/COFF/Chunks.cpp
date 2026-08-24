@@ -764,6 +764,14 @@ static int getRuntimePseudoRelocSize(uint16_t type, Triple::ArchType arch) {
     default:
       return 0;
     }
+  case Triple::mipsel:
+    switch (type) {
+    case IMAGE_REL_MIPS_REFWORD:
+    case IMAGE_REL_MIPS_REFWORDNB:
+      return 32;
+    default:
+      return 0;
+    }
   case Triple::thumb:
     switch (type) {
     case IMAGE_REL_ARM_ADDR32:
