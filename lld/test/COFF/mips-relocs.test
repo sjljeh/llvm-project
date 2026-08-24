@@ -1,0 +1,96 @@
+# RUN: yaml2obj %s -o %t.obj
+# RUN: lld-link /out:%t.exe /entry:main /subsystem:native /machine:mips /base:0x400000 /fixed %t.obj
+# RUN: llvm-readobj --hex-dump=.text %t.exe | FileCheck %s
+# RUN: lld-link /out:%t.reloc.exe /entry:main /subsystem:native /machine:mips /base:0x400000 %t.obj
+# RUN: llvm-readobj --coff-basereloc %t.reloc.exe | FileCheck --check-prefix=BASEREL %s
+
+# CHECK: 0x{{0*}}401000 04204000 04200000 01081008 4000013c
+# CHECK: 0x{{0*}}401010 04202134 4100013c
+
+# BASEREL:      Type: HIGHLOW
+# BASEREL-NEXT: Address: 0x1000
+# BASEREL:      Type: MIPS_JMPADDR
+# BASEREL-NEXT: Address: 0x1008
+# BASEREL:      Type: HIGHADJ
+# BASEREL-NEXT: Address: 0x100C
+# BASEREL:      Type: LOW
+# BASEREL-NEXT: Address: 0x1010
+# BASEREL:      Type: HIGHADJ
+# BASEREL-NEXT: Address: 0x1014
+
+--- !COFF
+header:
+  Machine:         IMAGE_FILE_MACHINE_R4000
+  Characteristics: []
+sections:
+  - Name:            .text
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     0000000000000000000000080000013c000021340000013c
+    Relocations:
+      - VirtualAddress:  0
+        SymbolName:      target
+        Type:            IMAGE_REL_MIPS_REFWORD
+      - VirtualAddress:  4
+        SymbolName:      target
+        Type:            IMAGE_REL_MIPS_REFWORDNB
+      - VirtualAddress:  8
+        SymbolName:      target
+        Type:            IMAGE_REL_MIPS_JMPADDR
+      - VirtualAddress:  12
+        SymbolName:      target
+        Type:            IMAGE_REL_MIPS_REFHI
+      - VirtualAddress:  12
+        SymbolTableIndex: 0
+        Type:            IMAGE_REL_MIPS_PAIR
+      - VirtualAddress:  16
+        SymbolName:      target
+        Type:            IMAGE_REL_MIPS_REFLO
+      - VirtualAddress:  20
+        SymbolName:      target
+        Type:            IMAGE_REL_MIPS_REFHI
+      - VirtualAddress:  20
+        SymbolTableIndex: 32767
+        Type:            IMAGE_REL_MIPS_PAIR
+  - Name:            .data
+    Characteristics: [ IMAGE_SCN_CNT_INITIALIZED_DATA, IMAGE_SCN_MEM_READ, IMAGE_SCN_MEM_WRITE ]
+    Alignment:       4
+    SectionData:     0000000000000000
+symbols:
+  - Name:            .text
+    Value:           0
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_STATIC
+    SectionDefinition:
+      Length:          24
+      NumberOfRelocations: 8
+      NumberOfLinenumbers: 0
+      CheckSum:        0
+      Number:          1
+  - Name:            .data
+    Value:           0
+    SectionNumber:   2
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_STATIC
+    SectionDefinition:
+      Length:          8
+      NumberOfRelocations: 0
+      NumberOfLinenumbers: 0
+      CheckSum:        0
+      Number:          2
+  - Name:            main
+    Value:           0
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+  - Name:            target
+    Value:           4
+    SectionNumber:   2
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+...
