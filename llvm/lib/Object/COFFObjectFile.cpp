@@ -1989,10 +1989,15 @@ bool BaseRelocRef::operator==(const BaseRelocRef &Other) const {
 }
 
 void BaseRelocRef::moveNext() {
+  auto *Entry =
+      reinterpret_cast<const coff_base_reloc_block_entry *>(Header + 1);
+  uint32_t Advance =
+      Entry[Index].getType() == COFF::IMAGE_REL_BASED_HIGHADJ ? 2 : 1;
+
   // Header->BlockSize is the size of the current block, including the
   // size of the header itself.
   uint32_t Size = sizeof(*Header) +
-      sizeof(coff_base_reloc_block_entry) * (Index + 1);
+      sizeof(coff_base_reloc_block_entry) * (Index + Advance);
   if (Size == Header->BlockSize) {
     // .reloc contains a list of base relocation blocks. Each block
     // consists of the header followed by entries. The header contains
@@ -2002,7 +2007,7 @@ void BaseRelocRef::moveNext() {
         reinterpret_cast<const uint8_t *>(Header) + Size);
     Index = 0;
   } else {
-    ++Index;
+    Index += Advance;
   }
 }
 
