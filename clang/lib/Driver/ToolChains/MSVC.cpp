@@ -592,7 +592,8 @@ MSVCToolChain::getDefaultUnwindTableLevel(const ArgList &Args) const {
   // doesn't know how to generate them for all targets, so only enable
   // the ones that are actually implemented.
   if (getArch() == llvm::Triple::x86_64 || getArch() == llvm::Triple::arm ||
-      getArch() == llvm::Triple::thumb || getArch() == llvm::Triple::aarch64)
+      getArch() == llvm::Triple::thumb || getArch() == llvm::Triple::aarch64 ||
+      getArch() == llvm::Triple::mips || getArch() == llvm::Triple::mipsel)
     return UnwindTableLevel::Asynchronous;
 
   return UnwindTableLevel::None;

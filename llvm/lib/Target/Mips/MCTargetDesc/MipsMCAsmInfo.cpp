@@ -13,12 +13,18 @@
 #include "MipsMCAsmInfo.h"
 #include "MipsABIInfo.h"
 #include "MipsMCTargetDesc.h"
+#include "llvm/ADT/Enum.h"
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/MCValue.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/TargetParser/Triple.h"
 
 using namespace llvm;
+
+constexpr EnumStringDef<MCAsmInfo::AtSpecifierKind> COFFAtSpecifierDefs[] = {
+    {{"IMGREL"}, MCSymbolRefExpr::VK_COFF_IMGREL32},
+};
+constexpr auto COFFAtSpecifiers = BUILD_ENUM_STRINGS(COFFAtSpecifierDefs);
 
 void MipsELFMCAsmInfo::anchor() {}
 
@@ -53,8 +59,9 @@ void MipsCOFFMCAsmInfo::anchor() {}
 
 MipsCOFFMCAsmInfo::MipsCOFFMCAsmInfo(const MCTargetOptions &Options)
     : MCAsmInfoGNUCOFF(Options) {
+  initializeAtSpecifiers(COFFAtSpecifiers);
   HasSingleParameterDotFile = true;
-  WinEHEncodingType = WinEH::EncodingType::Itanium;
+  WinEHEncodingType = WinEH::EncodingType::MIPS;
 
   InternalSymbolPrefix = ".L";
   AllowAtInName = true;
