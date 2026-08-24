@@ -19,6 +19,7 @@
 #include "llvm/Object/COFF.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Endian.h"
+#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
 #include <iterator>
@@ -368,33 +369,55 @@ void SectionChunk::applyRelARM64(uint8_t *off, uint16_t type, OutputSection *os,
   }
 }
 
-static void applyMipsBranch(uint8_t *off, int64_t v) {
+static void applyMipsImm16(uint8_t *off, uint16_t v) { write16le(off, v); }
+
+static void applyMipsJmpAddr(uint8_t *off, uint64_t v) {
   if (v & 3)
     error("misaligned jmp offset");
-  add32(off, (v >> 2) & 0x03FFFFFC);
+  uint32_t inst = read32le(off);
+  write32le(off, (inst & 0xfc000000) | ((v >> 2) & 0x03ffffff));
 }
 
-void SectionChunk::applyRelMIPS(uint8_t *off, uint16_t type, OutputSection *os,
-                                uint64_t s, uint64_t p,
+static int64_t getMipsPairAddend(const SectionChunk *sec,
+                                 const coff_relocation &rel) {
+  ArrayRef<coff_relocation> relocs = sec->getRelocs();
+  auto it = llvm::find_if(relocs, [&](const coff_relocation &candidate) {
+    return &candidate == &rel;
+  });
+  if (it == relocs.end() || std::next(it) == relocs.end() ||
+      std::next(it)->Type != IMAGE_REL_MIPS_PAIR) {
+    error("MIPS HI16 relocation without matching PAIR relocation in " +
+          toString(sec->file));
+    return 0;
+  }
+  return SignExtend64<16>(std::next(it)->SymbolTableIndex & 0xffff);
+}
+
+void SectionChunk::applyRelMIPS(uint8_t *off, const coff_relocation &rel,
+                                OutputSection *os, uint64_t s, uint64_t,
                                 uint64_t imageBase) const {
-  switch (type) {
-  case IMAGE_REL_MIPS_REFWORD:
-    add32(off, s + imageBase);
-    break;
-  case IMAGE_REL_MIPS_JMPADDR:
-    applyMipsBranch(off, s + imageBase);
-    break;
-  case IMAGE_REL_MIPS_REFHI:
-    add16(off, (s + imageBase) >> 16);
-    break;
-  case IMAGE_REL_MIPS_REFLO:
-    add16(off, s + imageBase);
-    break;
+  uint64_t va = s + imageBase;
+  switch (rel.Type) {
+  case IMAGE_REL_MIPS_ABSOLUTE:
   case IMAGE_REL_MIPS_PAIR:
-    // Nothing to do
+    break;
+  case IMAGE_REL_MIPS_REFWORD:
+    add32(off, va);
     break;
   case IMAGE_REL_MIPS_REFWORDNB:
     add32(off, s);
+    break;
+  case IMAGE_REL_MIPS_JMPADDR:
+    applyMipsJmpAddr(off, va + (read32le(off) & 0x03ffffff) * 4);
+    break;
+  case IMAGE_REL_MIPS_REFHI: {
+    uint64_t v =
+        va + (uint64_t(read16le(off)) << 16) + getMipsPairAddend(this, rel);
+    applyMipsImm16(off, ((v + 0x8000) >> 16) & 0xffff);
+    break;
+  }
+  case IMAGE_REL_MIPS_REFLO:
+    applyMipsImm16(off, (va + read16le(off)) & 0xffff);
     break;
   case IMAGE_REL_MIPS_SECTION:
     applySecIdx(off, os, file->symtab.ctx.outputSections.size());
@@ -402,9 +425,20 @@ void SectionChunk::applyRelMIPS(uint8_t *off, uint16_t type, OutputSection *os,
   case IMAGE_REL_MIPS_SECREL:
     applySecRel(this, off, os, s);
     break;
+  case IMAGE_REL_MIPS_SECRELLO:
+    if (checkSecRel(this, os))
+      applyMipsImm16(off, (s - os->getRVA() + read16le(off)) & 0xffff);
+    break;
+  case IMAGE_REL_MIPS_SECRELHI:
+    if (checkSecRel(this, os)) {
+      uint64_t v = s - os->getRVA() + (uint64_t(read16le(off)) << 16) +
+                   getMipsPairAddend(this, rel);
+      applyMipsImm16(off, ((v + 0x8000) >> 16) & 0xffff);
+    }
+    break;
   default:
-    error("unsupported relocation type 0x" + Twine::utohexstr(type) + " in " +
-          toString(file));
+    error("unsupported relocation type 0x" + Twine::utohexstr(rel.Type) +
+          " in " + toString(file));
   }
 }
 
@@ -469,6 +503,9 @@ void SectionChunk::writeTo(uint8_t *buf) const {
 
 void SectionChunk::applyRelocation(uint8_t *off,
                                    const coff_relocation &rel) const {
+  if (getArch() == Triple::mipsel && rel.Type == IMAGE_REL_MIPS_PAIR)
+    return;
+
   auto *sym = dyn_cast_or_null<Defined>(file->getSymbol(rel.SymbolTableIndex));
 
   // Get the output section of the symbol for this relocation.  The output
@@ -507,7 +544,7 @@ void SectionChunk::applyRelocation(uint8_t *off,
     applyRelARM64(off, rel.Type, os, s, p, imageBase);
     break;
   case Triple::mipsel:
-    applyRelMIPS(off, rel.Type, os, s, p, imageBase);
+    applyRelMIPS(off, rel, os, s, p, imageBase);
     break;
   default:
     llvm_unreachable("unknown machine type");
@@ -621,11 +658,34 @@ static uint8_t getBaserelType(const coff_relocation &rel,
 // Only called when base relocation is enabled.
 void SectionChunk::getBaserels(std::vector<Baserel> *res) {
   for (const coff_relocation &rel : getRelocs()) {
-    uint8_t ty = getBaserelType(rel, getArch());
-    if (ty == IMAGE_REL_BASED_ABSOLUTE)
+    if (getArch() == Triple::mipsel && rel.Type == IMAGE_REL_MIPS_PAIR)
       continue;
+
     Symbol *target = file->getSymbol(rel.SymbolTableIndex);
     if (!isa_and_nonnull<Defined>(target) || isa<DefinedAbsolute>(target))
+      continue;
+
+    if (getArch() == Triple::mipsel) {
+      if (rel.Type == IMAGE_REL_MIPS_REFHI) {
+        ArrayRef<uint8_t> data = getContents();
+        if (rel.VirtualAddress + 2 <= data.size()) {
+          uint16_t hi = read16le(data.data() + rel.VirtualAddress);
+          uint64_t v = cast<Defined>(target)->getRVA() +
+                       file->symtab.ctx.config.imageBase +
+                       (uint64_t(hi) << 16) + getMipsPairAddend(this, rel);
+          res->emplace_back(rva + rel.VirtualAddress,
+                            IMAGE_REL_BASED_HIGHADJ, v & 0xffff);
+        }
+        continue;
+      }
+      if (rel.Type == IMAGE_REL_MIPS_REFLO) {
+        res->emplace_back(rva + rel.VirtualAddress, IMAGE_REL_BASED_LOW);
+        continue;
+      }
+    }
+
+    uint8_t ty = getBaserelType(rel, getArch());
+    if (ty == IMAGE_REL_BASED_ABSOLUTE)
       continue;
     res->emplace_back(rva + rel.VirtualAddress, ty);
   }
@@ -1083,7 +1143,11 @@ void PseudoRelocTableChunk::writeTo(uint8_t *buf) const {
 BaserelChunk::BaserelChunk(uint32_t page, Baserel *begin, Baserel *end) {
   // Block header consists of 4 byte page RVA and 4 byte block size.
   // Each entry is 2 byte. Last entry may be padding.
-  data.resize(alignTo((end - begin) * 2 + 8, 4));
+  size_t numEntries = end - begin;
+  for (Baserel *i = begin; i != end; ++i)
+    if (i->type == IMAGE_REL_BASED_HIGHADJ)
+      ++numEntries;
+  data.resize(alignTo(numEntries * 2 + 8, 4));
   uint8_t *p = data.data();
   write32le(p, page);
   write32le(p + 4, data.size());
@@ -1091,6 +1155,10 @@ BaserelChunk::BaserelChunk(uint32_t page, Baserel *begin, Baserel *end) {
   for (Baserel *i = begin; i != end; ++i) {
     write16le(p, (i->type << 12) | (i->rva - page));
     p += 2;
+    if (i->type == IMAGE_REL_BASED_HIGHADJ) {
+      write16le(p, i->extra);
+      p += 2;
+    }
   }
 }
 

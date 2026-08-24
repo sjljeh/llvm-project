@@ -1997,14 +1997,22 @@ void COFFDumper::printCOFFDirectives() {
   }
 }
 
-static std::string getBaseRelocTypeName(uint8_t Type) {
+static std::string getBaseRelocTypeName(uint8_t Type, uint16_t Machine) {
   switch (Type) {
   case COFF::IMAGE_REL_BASED_ABSOLUTE: return "ABSOLUTE";
   case COFF::IMAGE_REL_BASED_HIGH: return "HIGH";
   case COFF::IMAGE_REL_BASED_LOW: return "LOW";
   case COFF::IMAGE_REL_BASED_HIGHLOW: return "HIGHLOW";
   case COFF::IMAGE_REL_BASED_HIGHADJ: return "HIGHADJ";
+  case COFF::IMAGE_REL_BASED_MIPS_JMPADDR:
+    if (Machine == COFF::IMAGE_FILE_MACHINE_R4000)
+      return "MIPS_JMPADDR";
+    return "unknown (" + llvm::utostr(Type) + ")";
   case COFF::IMAGE_REL_BASED_ARM_MOV32T: return "ARM_MOV32(T)";
+  case COFF::IMAGE_REL_BASED_MIPS_JMPADDR16:
+    if (Machine == COFF::IMAGE_FILE_MACHINE_R4000)
+      return "MIPS_JMPADDR16";
+    return "unknown (" + llvm::utostr(Type) + ")";
   case COFF::IMAGE_REL_BASED_DIR64: return "DIR64";
   default: return "unknown (" + llvm::utostr(Type) + ")";
   }
@@ -2020,7 +2028,7 @@ void COFFDumper::printCOFFBaseReloc() {
     if (Error E = I.getType(Type))
       reportError(std::move(E), Obj->getFileName());
     DictScope Import(W, "Entry");
-    W.printString("Type", getBaseRelocTypeName(Type));
+    W.printString("Type", getBaseRelocTypeName(Type, Obj->getMachine()));
     W.printHex("Address", RVA);
   }
 }
