@@ -1480,6 +1480,8 @@ MachineTypes BitcodeFile::getMachineType(const llvm::lto::InputFile *obj) {
   case Triple::arm:
   case Triple::thumb:
     return ARMNT;
+  case Triple::mipsel:
+    return IMAGE_FILE_MACHINE_R4000;
   case Triple::aarch64:
     return t.isWindowsArm64EC() ? ARM64EC : ARM64;
   default:

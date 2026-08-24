@@ -49,6 +49,10 @@ void mips::getMipsCPUAndABI(const ArgList &Args, const llvm::Triple &Triple,
     DefMips64CPU = "mips3";
   }
 
+  // Windows NT MIPS targets predate MIPS32 and use the MIPS II ISA baseline.
+  if (Triple.isWindowsMSVCEnvironment())
+    DefMips32CPU = "mips2";
+
   if (Arg *A = Args.getLastArg(options::OPT_march_EQ, options::OPT_mcpu_EQ))
     CPUName = A->getValue();
 
