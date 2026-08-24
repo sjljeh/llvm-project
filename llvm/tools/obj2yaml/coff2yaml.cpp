@@ -199,6 +199,15 @@ void COFFDumper::dumpSections(unsigned NumSections) {
       const object::coff_relocation *reloc = Obj.getCOFFRelocation(Reloc);
       COFFYAML::Relocation Rel;
       object::symbol_iterator Sym = Reloc.getSymbol();
+      bool IsMipsPair = Obj.getMachine() == COFF::IMAGE_FILE_MACHINE_R4000 &&
+                        reloc->Type == COFF::IMAGE_REL_MIPS_PAIR;
+      if (IsMipsPair || Sym == Obj.symbol_end()) {
+        Rel.SymbolTableIndex = reloc->SymbolTableIndex;
+        Rel.VirtualAddress = reloc->VirtualAddress;
+        Rel.Type = reloc->Type;
+        Relocations.push_back(Rel);
+        continue;
+      }
       Expected<StringRef> SymbolNameOrErr = Sym->getName();
       if (!SymbolNameOrErr) {
        std::string Buf;
