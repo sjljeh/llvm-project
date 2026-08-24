@@ -9446,6 +9446,8 @@ def _SLASH_Qvec : CLFlag<"Qvec">,
   HelpText<"Enable the loop vectorization passes">, Alias<fvectorize>;
 def _SLASH_Qvec_ : CLFlag<"Qvec-">,
   HelpText<"Disable the loop vectorization passes">, Alias<fno_vectorize>;
+def _SLASH_QM : CLCompileJoined<"QM">,
+  HelpText<"MIPS-specific CPU options">;
 def _SLASH_showIncludes : CLFlag<"showIncludes">,
   HelpText<"Print info about included files to stderr">;
 def _SLASH_showIncludes_user : CLFlag<"showIncludes:user">,

@@ -255,6 +255,41 @@ void MipsAsmPrinter::emitInstruction(const MachineInstr *MI) {
     if (I->isBundle())
       continue;
 
+    if (I->getOpcode() == Mips::SEH_PrologEnd) {
+      OutStreamer->emitWinCFIEndProlog();
+      continue;
+    }
+
+    if (I->getOpcode() == Mips::CATCHRET) {
+      const MCSymbolRefExpr *Target = MCSymbolRefExpr::create(
+          I->getOperand(0).getMBB()->getSymbol(), OutContext);
+      const MCExpr *Hi =
+          MCSpecifierExpr::create(Target, Mips::S_HI, OutContext);
+      const MCExpr *Lo =
+          MCSpecifierExpr::create(Target, Mips::S_LO, OutContext);
+      EmitToStreamer(*OutStreamer,
+                     MCInstBuilder(Mips::LUi).addReg(Mips::V0).addExpr(Hi));
+      EmitToStreamer(*OutStreamer, MCInstBuilder(Mips::ADDiu)
+                                         .addReg(Mips::V0)
+                                         .addReg(Mips::V0)
+                                         .addExpr(Lo));
+      EmitToStreamer(*OutStreamer, MCInstBuilder(Mips::JR).addReg(Mips::RA));
+      EmitToStreamer(*OutStreamer, MCInstBuilder(Mips::SLL)
+                                       .addReg(Mips::ZERO)
+                                       .addReg(Mips::ZERO)
+                                       .addImm(0));
+      continue;
+    }
+
+    if (I->getOpcode() == Mips::CLEANUPRET) {
+      EmitToStreamer(*OutStreamer, MCInstBuilder(Mips::JR).addReg(Mips::RA));
+      EmitToStreamer(*OutStreamer, MCInstBuilder(Mips::SLL)
+                                       .addReg(Mips::ZERO)
+                                       .addReg(Mips::ZERO)
+                                       .addImm(0));
+      continue;
+    }
+
     if (I->getOpcode() == Mips::PseudoReturn ||
         I->getOpcode() == Mips::PseudoReturn64 ||
         I->getOpcode() == Mips::PseudoIndirectBranch ||

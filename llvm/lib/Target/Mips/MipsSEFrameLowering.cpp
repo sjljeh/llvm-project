@@ -19,6 +19,7 @@
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSwitch.h"
+#include "llvm/CodeGen/Analysis.h"
 #include "llvm/CodeGen/CFIInstBuilder.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
@@ -32,8 +33,10 @@
 #include "llvm/CodeGen/TargetInstrInfo.h"
 #include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
+#include "llvm/CodeGen/WinEHFuncInfo.h"
 #include "llvm/IR/DebugLoc.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/Instructions.h"
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MathExtras.h"
@@ -394,6 +397,63 @@ bool ExpandPseudo::expandExtractElementF64(MachineBasicBlock &MBB,
 MipsSEFrameLowering::MipsSEFrameLowering(const MipsSubtarget &STI)
     : MipsFrameLowering(STI, STI.getStackAlignment()) {}
 
+static unsigned getFuncletFrameNestLevel(const MachineBasicBlock &MBB) {
+  const BasicBlock *BB = MBB.getBasicBlock();
+  if (!MBB.isEHFuncletEntry() || !BB)
+    return 1;
+
+  const auto *Pad = dyn_cast<FuncletPadInst>(BB->getFirstNonPHIIt());
+  if (!Pad)
+    return 1;
+
+  unsigned Level = 2;
+  const Value *ParentPad = nullptr;
+  if (const auto *CatchPad = dyn_cast<CatchPadInst>(Pad))
+    ParentPad = CatchPad->getCatchSwitch()->getParentPad();
+  else
+    ParentPad = cast<CleanupPadInst>(Pad)->getParentPad();
+
+  while (const auto *Parent = dyn_cast<FuncletPadInst>(ParentPad)) {
+    ++Level;
+    if (const auto *CatchPad = dyn_cast<CatchPadInst>(Parent))
+      ParentPad = CatchPad->getCatchSwitch()->getParentPad();
+    else
+      ParentPad = cast<CleanupPadInst>(Parent)->getParentPad();
+  }
+  return Level;
+}
+
+void MipsSEFrameLowering::processFunctionBeforeFrameFinalized(
+    MachineFunction &MF, RegScavenger *) const {
+  if (!STI.getTargetTriple().isOSWindows())
+    return;
+
+  if (MF.getFunction().needsUnwindTableEntry())
+    MF.setHasWinCFI(true);
+
+  if (!MF.hasEHFunclets())
+    return;
+
+  MachineFrameInfo &MFI = MF.getFrameInfo();
+  WinEHFuncInfo &EHInfo = *MF.getWinEHFuncInfo();
+  EHInfo.EHScopeMembership = getEHScopeMembership(MF);
+
+  // The legacy runtime follows a funclet's static link at incoming SP - 4.
+  int64_t CurrentOffset = -4;
+  MFI.CreateFixedObject(/*Size=*/4, CurrentOffset, /*IsImmutable=*/false);
+  for (WinEHTryBlockMapEntry &TBME : EHInfo.TryBlockMap) {
+    for (WinEHHandlerType &Handler : TBME.HandlerArray) {
+      int FrameIndex = Handler.CatchObj.FrameIndex;
+      if (FrameIndex == INT_MAX || MFI.getObjectOffset(FrameIndex) != 0)
+        continue;
+      CurrentOffset -= MFI.getObjectSize(FrameIndex);
+      CurrentOffset =
+          alignDown(CurrentOffset, MFI.getObjectAlign(FrameIndex).value());
+      MFI.setObjectOffset(FrameIndex, CurrentOffset);
+    }
+  }
+}
+
 void MipsSEFrameLowering::emitPrologue(MachineFunction &MF,
                                        MachineBasicBlock &MBB) const {
   MachineFrameInfo &MFI    = MF.getFrameInfo();
@@ -419,8 +479,19 @@ void MipsSEFrameLowering::emitPrologue(MachineFunction &MF,
   // First, compute final stack size.
   uint64_t StackSize = MFI.getStackSize();
 
+  auto EmitPrologEnd = [&]() {
+    if (STI.getTargetTriple().isOSWindows() &&
+        (MF.hasWinCFI() || MF.hasEHFunclets() ||
+         MF.getFunction().needsUnwindTableEntry()))
+      BuildMI(MBB, MBBI, dl, TII.get(Mips::SEH_PrologEnd))
+          .setMIFlag(MachineInstr::FrameSetup);
+  };
+
   // No need to allocate space on the stack.
-  if (StackSize == 0 && !MFI.adjustsStack()) return;
+  if (StackSize == 0 && !MFI.adjustsStack()) {
+    EmitPrologEnd();
+    return;
+  }
 
   CFIInstBuilder CFIBuilder(MBB, MBBI, MachineInstr::NoFlags);
 
@@ -488,13 +559,34 @@ void MipsSEFrameLowering::emitPrologue(MachineFunction &MF,
     }
   }
 
-  // if framepointer enabled, set it to point to the stack pointer.
-  if (hasFP(MF)) {
-    // Insert instruction "move $fp, $sp" at this location.
-    BuildMI(MBB, MBBI, dl, TII.get(MOVE), FP).addReg(SP).addReg(ZERO)
-      .setMIFlag(MachineInstr::FrameSetup);
+  const bool IsFunclet = MBB.isEHFuncletEntry();
+  if (IsFunclet && STI.getTargetTriple().isOSWindows()) {
+    MBB.addLiveIn(Mips::V0);
+    BuildMI(MBB, MBBI, dl, TII.get(Mips::SW))
+        .addReg(Mips::V0)
+        .addReg(SP)
+        .addImm(StackSize - 4)
+        .setMIFlag(MachineInstr::FrameSetup);
+  }
 
-    CFIBuilder.buildDefCFARegister(FP);
+  // If framepointer enabled, set it to the local frame for a parent function
+  // or to the outermost parent frame passed in $v0 for a funclet.
+  if (hasFP(MF)) {
+    unsigned FrameSource = IsFunclet ? Mips::V0 : SP;
+    BuildMI(MBB, MBBI, dl, TII.get(MOVE), FP)
+        .addReg(FrameSource)
+        .addReg(ZERO)
+        .setMIFlag(MachineInstr::FrameSetup);
+
+    if (IsFunclet) {
+      for (unsigned Level = getFuncletFrameNestLevel(MBB); Level > 2; --Level)
+        BuildMI(MBB, MBBI, dl, TII.get(Mips::LW), FP)
+            .addReg(FP)
+            .addImm(-4)
+            .setMIFlag(MachineInstr::FrameSetup);
+    } else {
+      CFIBuilder.buildDefCFARegister(FP);
+    }
 
     if (RegInfo.hasStackRealignment(MF)) {
       // addiu $Reg, $zero, -MaxAlignment
@@ -516,6 +608,8 @@ void MipsSEFrameLowering::emitPrologue(MachineFunction &MF,
       }
     }
   }
+
+  EmitPrologEnd();
 }
 
 void MipsSEFrameLowering::emitInterruptPrologueStub(
@@ -661,7 +755,7 @@ void MipsSEFrameLowering::emitEpilogue(MachineFunction &MF,
   unsigned MOVE = ABI.GetGPRMoveOp();
 
   // if framepointer enabled, restore the stack pointer.
-  if (hasFP(MF)) {
+  if (hasFP(MF) && !MBB.isEHFuncletEntry()) {
     // Find the first instruction that restores a callee-saved register.
     MachineBasicBlock::iterator I = MBBI;
 

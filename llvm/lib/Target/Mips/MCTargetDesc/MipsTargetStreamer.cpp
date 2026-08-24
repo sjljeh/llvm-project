@@ -542,11 +542,15 @@ void MipsTargetAsmStreamer::emitDirectiveSetNoAt() {
 }
 
 void MipsTargetAsmStreamer::emitDirectiveEnd(StringRef Name) {
-  OS << "\t.end\t" << Name << '\n';
+  OS << "\t.end\t";
+  getContext().getOrCreateSymbol(Name)->print(OS, &getContext().getAsmInfo());
+  OS << '\n';
 }
 
 void MipsTargetAsmStreamer::emitDirectiveEnt(const MCSymbol &Symbol) {
-  OS << "\t.ent\t" << Symbol.getName() << '\n';
+  OS << "\t.ent\t";
+  Symbol.print(OS, &getContext().getAsmInfo());
+  OS << '\n';
 }
 
 void MipsTargetAsmStreamer::emitDirectiveAbiCalls() { OS << "\t.abicalls\n"; }

@@ -90,7 +90,8 @@ bool MipsFrameLowering::hasFPImpl(const MachineFunction &MF) const {
 
   return MF.getTarget().Options.DisableFramePointerElim(MF) ||
          MFI.hasVarSizedObjects() || MFI.isFrameAddressTaken() ||
-         TRI->hasStackRealignment(MF);
+         TRI->hasStackRealignment(MF) ||
+         (MF.hasEHFunclets() && STI.getTargetTriple().isOSWindows());
 }
 
 bool MipsFrameLowering::hasBP(const MachineFunction &MF) const {

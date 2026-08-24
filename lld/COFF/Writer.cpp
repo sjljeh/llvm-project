@@ -2754,10 +2754,16 @@ void Writer::sortExceptionTables() {
   struct EntryArm {
     ulittle32_t begin, unwind;
   };
+  struct EntryRISC {
+    ulittle32_t begin, end, exceptionHandler, handlerData, prologEnd;
+  };
 
   switch (ctx.config.machine) {
   case AMD64:
     sortExceptionTable<EntryX64>(pdata);
+    break;
+  case IMAGE_FILE_MACHINE_R4000:
+    sortExceptionTable<EntryRISC>(pdata);
     break;
   case ARM64EC:
   case ARM64X:

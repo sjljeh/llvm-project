@@ -157,6 +157,8 @@ using TargetRegisterClass = MCRegisterClass;
       return ABI.IsN64() ? Mips::A1_64 : Mips::A1;
     }
 
+    bool needsFixedCatchObjects() const override { return true; }
+
     bool isJumpTableRelative() const override {
       return getTargetMachine().isPositionIndependent();
     }

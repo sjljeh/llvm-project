@@ -742,6 +742,31 @@ static std::string getLanaiTargetCPU(const ArgList &Args) {
   return "";
 }
 
+static std::string getClangCLMipsTargetCPU(const Driver &D,
+                                           const ArgList &Args) {
+  const Arg *A = Args.getLastArg(options::OPT__SLASH_QM);
+  if (!A)
+    return "";
+
+  A->claim();
+  StringRef Value = A->getValue();
+  std::string CPU = llvm::StringSwitch<std::string>(Value.lower())
+                        .Case("mips1", "mips1")
+                        .Case("mips2", "mips2")
+                        .Case("mips3", "mips3")
+                        .Case("mips4", "mips4")
+                        .Case("r3000", "r3000")
+                        .Case("r4000", "r4000")
+                        .Case("r4200", "r4200")
+                        .Case("r4400", "r4400")
+                        .Case("r4600", "r4600")
+                        .Case("r10000", "r10000")
+                        .Default("");
+  if (CPU.empty())
+    D.Diag(diag::err_drv_invalid_value) << A->getAsString(Args) << Value;
+  return CPU;
+}
+
 /// Get the (LLVM) name of the WebAssembly cpu we are targeting.
 static StringRef getWebAssemblyTargetCPU(const ArgList &Args) {
   // If we have -mcpu=, use that.
@@ -795,6 +820,9 @@ std::string tools::getCPUName(const Driver &D, const ArgList &Args,
   case llvm::Triple::mipsel:
   case llvm::Triple::mips64:
   case llvm::Triple::mips64el: {
+    if (D.IsCLMode())
+      if (std::string CPU = getClangCLMipsTargetCPU(D, Args); !CPU.empty())
+        return CPU;
     StringRef CPUName;
     StringRef ABIName;
     mips::getMipsCPUAndABI(Args, T, CPUName, ABIName);

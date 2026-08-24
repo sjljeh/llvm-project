@@ -23,6 +23,7 @@
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/TargetFrameLowering.h"
 #include "llvm/CodeGen/TargetInstrInfo.h"
+#include "llvm/CodeGen/WinEHFuncInfo.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Type.h"
 #include "llvm/Support/Debug.h"
@@ -187,6 +188,15 @@ void MipsSERegisterInfo::eliminateFI(MachineBasicBlock::iterator II,
   } else
     FrameReg = getFrameRegister(MF);
 
+  bool IsWinEHFunclet = false;
+  if (MF.hasEHFunclets() &&
+      MF.getSubtarget<MipsSubtarget>().getTargetTriple().isOSWindows()) {
+    const auto &Scopes = MF.getWinEHFuncInfo()->EHScopeMembership;
+    auto ScopeIt = Scopes.find(MI.getParent());
+    IsWinEHFunclet =
+        ScopeIt != Scopes.end() && ScopeIt->second != MF.front().getNumber();
+  }
+
   // Calculate final offset.
   // - There is no need to change the offset if the frame object is one of the
   //   following: an outgoing argument, pointer to a dynamically allocated
@@ -197,7 +207,9 @@ void MipsSERegisterInfo::eliminateFI(MachineBasicBlock::iterator II,
   bool IsKill = false;
   int64_t Offset;
 
-  Offset = SPOffset + (int64_t)StackSize;
+  Offset = SPOffset;
+  if (!IsWinEHFunclet || FrameReg != ABI.GetFramePtr())
+    Offset += (int64_t)StackSize;
   Offset += MI.getOperand(OpNo + 1).getImm();
 
   LLVM_DEBUG(errs() << "Offset     : " << Offset << "\n"

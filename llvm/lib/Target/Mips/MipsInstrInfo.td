@@ -2360,6 +2360,17 @@ class PseudoReturnBase<RegisterOperand RO> : MipsPseudo<(outs), (ins RO:$rs),
 
 def PseudoReturn : PseudoReturnBase<GPR32Opnd>;
 
+let isCodeGenOnly = 1, hasSideEffects = 1, hasNoSchedulingInfo = 1 in
+def SEH_PrologEnd : MipsPseudo<(outs), (ins), []>;
+
+let isTerminator = 1, hasSideEffects = 1, isBarrier = 1, hasCtrlDep = 1,
+    isCodeGenOnly = 1, isReturn = 1, isEHScopeReturn = 1,
+    hasNoSchedulingInfo = 1 in {
+  def CLEANUPRET : MipsPseudo<(outs), (ins), [(cleanupret bb)]>;
+  def CATCHRET : MipsPseudo<(outs), (ins brtarget:$dst, brtarget:$from),
+                            [(catchret bb:$dst, bb:$from)]>;
+}
+
 // Exception handling related node and instructions.
 // The conversion sequence is:
 // ISD::EH_RETURN -> MipsISD::EH_RETURN ->
