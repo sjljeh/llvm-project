@@ -47,12 +47,21 @@ static bool usesMIPSWindowsEH(const AsmPrinter &Asm) {
          Asm.MAI.getWinEHEncodingType() == WinEH::EncodingType::MIPS;
 }
 
+static bool usesPPCWindowsEH(const AsmPrinter &Asm) {
+  return Asm.TM.getTargetTriple().isPPC32() &&
+         Asm.MAI.getWinEHEncodingType() == WinEH::EncodingType::PPC;
+}
+
+static bool usesLegacyRISCWindowsEH(const AsmPrinter &Asm) {
+  return usesMIPSWindowsEH(Asm) || usesPPCWindowsEH(Asm);
+}
+
 WinException::WinException(AsmPrinter *A) : EHStreamer(A) {
   // MSVC's EH tables are always composed of 32-bit words. All known
   // modern architectures use an imagerel32 relocation to refer to symbols.
-  // 32-bit x86 and historical Windows MIPS use absolute pointers.
+  // 32-bit x86 and historical Windows MIPS and PowerPC use absolute pointers.
   useImageRel32 = A->TM.getTargetTriple().getArch() != Triple::x86 &&
-                  !usesMIPSWindowsEH(*A);
+                  !usesLegacyRISCWindowsEH(*A);
   isAArch64 = Asm->TM.getTargetTriple().isAArch64();
   isThumb = Asm->TM.getTargetTriple().isThumb();
 }
@@ -178,7 +187,7 @@ void WinException::endFunction(const MachineFunction *MF) {
   if (Per == EHPersonality::MSVC_TableSEH && MF->hasEHFunclets())
     return;
   if (Per == EHPersonality::MSVC_CXX && isLegacyMSVCCXXPersonality(F) &&
-      usesMIPSWindowsEH(*Asm))
+      usesLegacyRISCWindowsEH(*Asm))
     return;
 
   if (shouldEmitPersonality || shouldEmitLSDA) {
@@ -316,6 +325,11 @@ void WinException::beginFunclet(const MachineBasicBlock &MBB, MCSymbol *Sym) {
   }
 
   CurrentFuncletUsesPersonality = shouldEmitPersonality;
+  // The NT PowerPC C++ runtime invokes funclets through _CallSettingFrame.
+  // Exceptions leaving a funclet must unwind through that runtime wrapper,
+  // so only the parent function carries __CxxFrameHandler in .pdata.
+  if (usesPPCWindowsEH(*Asm) && MBB.isEHFuncletEntry())
+    CurrentFuncletUsesPersonality = false;
   bool IsExceptionHandler = true;
   if (CurrentFuncletUsesPersonality &&
       isMSVCXXFrameHandler4(F.getPersonalityFn())) {
@@ -374,8 +388,13 @@ void WinException::endFuncletImpl() {
       Per = classifyEHPersonality(F.getPersonalityFn()->stripPointerCasts());
 
     if (Per == EHPersonality::MSVC_CXX && isLegacyMSVCCXXPersonality(F) &&
-        usesMIPSWindowsEH(*Asm)) {
-      if (!CurrentFuncletEntry->isCleanupFuncletEntry()) {
+        usesLegacyRISCWindowsEH(*Asm)) {
+      bool EmitLegacyCXXData =
+          usesMIPSWindowsEH(*Asm)
+              ? !CurrentFuncletEntry->isCleanupFuncletEntry()
+              : (CurrentFuncletUsesPersonality &&
+                 !CurrentFuncletEntry->isEHFuncletEntry());
+      if (EmitLegacyCXXData) {
         // Historical RISC pdata points directly at FuncInfo rather than an
         // x64-style handler-data slot containing a pointer to FuncInfo.
         Asm->OutStreamer->setCurrentWinEHHandlerDataSymbol(
@@ -473,6 +492,10 @@ int WinException::getFrameIndexOffset(int FrameIndex,
   const Function &F = Asm->MF->getFunction();
   if (isLegacyMSVCCXXPersonality(F) && usesMIPSWindowsEH(*Asm))
     return TFI.getFrameIndexReferenceFromSP(*Asm->MF, FrameIndex).getFixed();
+  if (isLegacyMSVCCXXPersonality(F) && usesPPCWindowsEH(*Asm))
+    // NT PowerPC records catch-object displacements from the incoming SP,
+    // which is the establisher frame returned by RtlVirtualUnwind.
+    return Asm->MF->getFrameInfo().getObjectOffset(FrameIndex);
 
   Register UnusedReg;
   if (Asm->MF->usesWindowsUnwindInfo()) {
@@ -1076,6 +1099,8 @@ void WinException::emitCXXFrameHandler3Table(
   const WinEHFuncInfo &FuncInfo = *MF->getWinEHFuncInfo();
   const bool IsMIPSEH =
       isLegacyMSVCCXXPersonality(F) && usesMIPSWindowsEH(*Asm);
+  const bool IsPPCEH = isLegacyMSVCCXXPersonality(F) && usesPPCWindowsEH(*Asm);
+  const bool IsLegacyRISCEH = IsMIPSEH || IsPPCEH;
 
   struct LegacyCatchFuncInfo {
     const MachineBasicBlock *Entry;
@@ -1245,7 +1270,7 @@ void WinException::emitCXXFrameHandler3Table(
   OS.emitLabel(FuncInfoXData);
 
   AddComment("MagicNumber");
-  OS.emitInt32(IsMIPSEH ? 0x19930520 : 0x19930522);
+  OS.emitInt32(IsLegacyRISCEH ? 0x19930520 : 0x19930522);
 
   AddComment("MaxState");
   OS.emitInt32(FuncInfo.CxxUnwindMap.size());
@@ -1265,7 +1290,7 @@ void WinException::emitCXXFrameHandler3Table(
   AddComment("IPToStateXData");
   OS.emitValue(create32bitRef(IPToStateXData), 4);
 
-  if (!IsMIPSEH &&
+  if (!IsLegacyRISCEH &&
       FuncInfo.UnwindHelpFrameIdx != std::numeric_limits<int>::max() &&
       MF->usesWindowsUnwindInfo()) {
     AddComment("UnwindHelp");
@@ -1279,7 +1304,7 @@ void WinException::emitCXXFrameHandler3Table(
     OS.emitInt32(-1);
     AddComment("FrameNestLevel");
     OS.emitInt32(1);
-  } else {
+  } else if (!IsPPCEH) {
     AddComment("ESTypeList");
     OS.emitInt32(0);
 
@@ -1355,7 +1380,7 @@ void WinException::emitCXXFrameHandler3Table(
 
     // All funclets use the same parent frame offset currently.
     unsigned ParentFrameOffset = 0;
-    if (shouldEmitPersonality) {
+    if (shouldEmitPersonality && !IsLegacyRISCEH) {
       const TargetFrameLowering *TFI = MF->getSubtarget().getFrameLowering();
       ParentFrameOffset = TFI->getWinEHParentFrameOffset(*MF);
     }
@@ -1406,7 +1431,7 @@ void WinException::emitCXXFrameHandler3Table(
         AddComment("Handler");
         OS.emitValue(create32bitRef(HandlerSym), 4);
 
-        if (!IsMIPSEH && shouldEmitPersonality) {
+        if (!IsLegacyRISCEH && shouldEmitPersonality) {
           AddComment("ParentFrameOffset");
           OS.emitInt32(ParentFrameOffset);
         }
