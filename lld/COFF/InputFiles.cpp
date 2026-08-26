@@ -972,8 +972,18 @@ MachineTypes ObjFile::getMachineType() const {
 }
 
 ArrayRef<uint8_t> ObjFile::getDebugSection(StringRef secName) {
-  if (SectionChunk *sec = SectionChunk::findByName(debugChunks, secName))
-    return sec->consumeDebugMagic();
+  if (SectionChunk *sec = SectionChunk::findByName(debugChunks, secName)) {
+    ArrayRef<uint8_t> contents = sec->getContents();
+    // The Visual C++ 4.0 PowerPC libraries carry legacy CodeView C7 streams
+    // (signature 1). LLD cannot consume that format, but these records are not
+    // needed for linking; silently skip them instead of warning once per
+    // archive member during an otherwise non-debug link.
+    if (getMachineType() == IMAGE_FILE_MACHINE_POWERPC &&
+        contents.size() >= sizeof(uint32_t) &&
+        support::endian::read32le(contents.data()) == 1)
+      return {};
+    return SectionChunk::consumeDebugMagic(contents, secName);
+  }
   return {};
 }
 
@@ -1482,6 +1492,8 @@ MachineTypes BitcodeFile::getMachineType(const llvm::lto::InputFile *obj) {
     return ARMNT;
   case Triple::mipsel:
     return IMAGE_FILE_MACHINE_R4000;
+  case Triple::ppcle:
+    return IMAGE_FILE_MACHINE_POWERPC;
   case Triple::aarch64:
     return t.isWindowsArm64EC() ? ARM64EC : ARM64;
   default:

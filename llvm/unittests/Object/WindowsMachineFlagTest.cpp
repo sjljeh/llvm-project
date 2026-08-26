@@ -19,9 +19,11 @@ TEST(WindowsMachineFlagTest, KnownMachineTypes) {
   EXPECT_EQ("arm64x", machineToStr(COFF::IMAGE_FILE_MACHINE_ARM64X));
   EXPECT_EQ("x64", machineToStr(COFF::IMAGE_FILE_MACHINE_AMD64));
   EXPECT_EQ("x86", machineToStr(COFF::IMAGE_FILE_MACHINE_I386));
+  EXPECT_EQ("mips", machineToStr(COFF::IMAGE_FILE_MACHINE_R4000));
+  EXPECT_EQ("ppc", machineToStr(COFF::IMAGE_FILE_MACHINE_POWERPC));
 }
 
 TEST(WindowsMachineFlagTest, UnknownMachineTypes) {
-  EXPECT_EQ("unknown", machineToStr(COFF::IMAGE_FILE_MACHINE_POWERPC));
+  EXPECT_EQ("unknown", machineToStr(COFF::IMAGE_FILE_MACHINE_IA64));
   EXPECT_EQ("unknown", machineToStr(COFF::IMAGE_FILE_MACHINE_UNKNOWN));
 }
