@@ -1501,6 +1501,21 @@ def DYNALLOC : PPCEmitTimePseudo<(outs gprc:$result), (ins gprc:$negsize, memri:
                              (PPCdynalloc i32:$negsize, iaddr:$fpsi))]>;
 def DYNAREAOFFSET : PPCEmitTimePseudo<(outs i32imm:$result), (ins memri:$fpsi), "#DYNAREAOFFSET",
                        [(set i32:$result, (PPCdynareaoffset iaddr:$fpsi))]>;
+
+let isCodeGenOnly = 1, hasSideEffects = 1, hasNoSchedulingInfo = 1 in
+def SEH_PrologEnd : PPCEmitTimePseudo<(outs), (ins), "#SEH_PrologEnd", []>;
+
+let isTerminator = 1, hasSideEffects = 1, isBarrier = 1, hasCtrlDep = 1,
+    isCodeGenOnly = 1, isReturn = 1, isEHScopeReturn = 1,
+    hasNoSchedulingInfo = 1, Uses = [LR, RM] in {
+  def CLEANUPRET : PPCEmitTimePseudo<(outs), (ins), "#CLEANUPRET",
+                                     [(cleanupret bb)]>;
+  let Defs = [R3] in
+  def CATCHRET : PPCEmitTimePseudo<
+      (outs), (ins directbrtarget:$dst, directbrtarget:$from), "#CATCHRET $dst",
+      [(catchret bb:$dst, bb:$from)]>;
+}
+
 // Probed alloca to support stack clash protection.
 let Defs = [R1], Uses = [R1], hasNoSchedulingInfo = 1 in {
 def PROBED_ALLOCA_32 : PPCCustomInserterPseudo<(outs gprc:$result),

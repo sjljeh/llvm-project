@@ -18,6 +18,7 @@
 #include "PPCSubtarget.h"
 #include "PPCTargetMachine.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/CodeGen/Analysis.h"
 #include "llvm/CodeGen/LivePhysRegs.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
@@ -25,6 +26,7 @@
 #include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/RegisterScavenging.h"
+#include "llvm/CodeGen/WinEHFuncInfo.h"
 #include "llvm/IR/Function.h"
 #include "llvm/Target/TargetOptions.h"
 
@@ -49,7 +51,7 @@ static unsigned computeReturnSaveOffset(const PPCSubtarget &STI) {
 
 static unsigned computeTOCSaveOffset(const PPCSubtarget &STI) {
   if (STI.isPPCWinCOFFABI())
-    return 4;
+    return 8;
   if (STI.isAIXABI())
     return STI.isPPC64() ? 40 : 20;
   return STI.isELFv2ABI() ? 24 : 40;
@@ -61,6 +63,8 @@ static unsigned computeFramePointerSaveOffset(const PPCSubtarget &STI) {
 }
 
 static unsigned computeLinkageSize(const PPCSubtarget &STI) {
+  if (STI.isPPCWinCOFFABI())
+    return 56;
   if (STI.isAIXABI() || STI.isPPC64())
     return (STI.isELFv2ABI() ? 4 : 6) * (STI.isPPC64() ? 8 : 4);
 
@@ -381,6 +385,7 @@ bool PPCFrameLowering::needsFP(const MachineFunction &MF) const {
   return MF.getTarget().Options.DisableFramePointerElim(MF) ||
          MFI.hasVarSizedObjects() || MFI.hasStackMap() || MFI.hasPatchPoint() ||
          MF.exposesReturnsTwice() ||
+         (MF.hasEHFunclets() && Subtarget.isPPCWinCOFFABI()) ||
          (MF.getTarget().Options.GuaranteedTailCallOpt &&
           MF.getInfo<PPCFunctionInfo>()->hasFastCall());
 }
@@ -630,7 +635,9 @@ void PPCFrameLowering::emitPrologue(MachineFunction &MF,
   assert((isSVR4ABI || Subtarget.isAIXABI()) && "Unsupported PPC ABI.");
 
   // Work out frame sizes.
-  uint64_t FrameSize = determineFrameLayoutAndUpdate(MF);
+  uint64_t FrameSize = MBB.isEHFuncletEntry()
+                           ? MFI.getStackSize()
+                           : determineFrameLayoutAndUpdate(MF);
   int64_t NegFrameSize = -FrameSize;
   if (!isPPC64 && (!isInt<32>(FrameSize) || !isInt<32>(NegFrameSize)))
     llvm_unreachable("Unhandled stack size!");
@@ -642,6 +649,10 @@ void PPCFrameLowering::emitPrologue(MachineFunction &MF,
   PPCFunctionInfo *FI = MF.getInfo<PPCFunctionInfo>();
   bool MustSaveLR = FI->mustSaveLR();
   bool MustSaveTOC = FI->mustSaveTOC();
+  const bool IsWinEHFunclet =
+      Subtarget.isPPCWinCOFFABI() && MBB.isEHFuncletEntry();
+  const bool IsWinEHParent = Subtarget.isPPCWinCOFFABI() &&
+                             MF.hasEHFunclets() && !MBB.isEHFuncletEntry();
   const SmallVectorImpl<Register> &MustSaveCRs = FI->getMustSaveCRs();
   bool MustSaveCR = !MustSaveCRs.empty();
   // Do we have a frame pointer and/or base pointer for this function?
@@ -679,6 +690,14 @@ void PPCFrameLowering::emitPrologue(MachineFunction &MF,
   const MCInstrDesc &HashST =
       TII.get(isPPC64 ? (HasPrivileged ? PPC::HASHSTP8 : PPC::HASHST8)
                       : (HasPrivileged ? PPC::HASHSTP : PPC::HASHST));
+
+  auto EmitPrologEnd = [&]() {
+    if (Subtarget.isPPCWinCOFFABI() &&
+        (MF.hasWinCFI() || MF.hasEHFunclets() ||
+         MF.getFunction().needsUnwindTableEntry()))
+      BuildMI(MBB, MBBI, dl, TII.get(PPC::SEH_PrologEnd))
+          .setMIFlag(MachineInstr::FrameSetup);
+  };
 
   // Regarding this assert: Even though LR is saved in the caller's frame (i.e.,
   // LROffset is positive), that slot is callee-owned. Because PPC32 SVR4 has no
@@ -822,6 +841,15 @@ void PPCFrameLowering::emitPrologue(MachineFunction &MF,
   if (MustSaveCR && !(SingleScratchReg && MustSaveLR))
     BuildMoveFromCR();
 
+  // _CallSettingFrame passes an EH funclet's parent incoming SP in r2 and
+  // restores the real TOC from offset 8. Preserve that slot in every parent.
+  if (IsWinEHParent)
+    BuildMI(MBB, MBBI, dl, StoreInst)
+        .addReg(TOCReg)
+        .addImm(TOCSaveOffset)
+        .addReg(SPReg)
+        .setMIFlag(MachineInstr::FrameSetup);
+
   if (HasRedZone) {
     if (HasFP)
       BuildMI(MBB, MBBI, dl, StoreInst)
@@ -886,6 +914,7 @@ void PPCFrameLowering::emitPrologue(MachineFunction &MF,
   if (!FrameSize) {
     if (MustSaveLR && !HasFastMFLR)
       SaveLR(LROffset);
+    EmitPrologEnd();
     return;
   }
 
@@ -1165,11 +1194,30 @@ void PPCFrameLowering::emitPrologue(MachineFunction &MF,
     }
   }
 
-  // If there is a frame pointer, copy R1 into R31
+  // If there is a frame pointer, set it to the local frame for a parent or to
+  // the parent frame selected by the runtime for an NT PowerPC funclet.
   if (HasFP) {
-    BuildMI(MBB, MBBI, dl, OrInst, FPReg)
-      .addReg(SPReg)
-      .addReg(SPReg);
+    if (IsWinEHFunclet) {
+      MBB.addLiveIn(PPC::R2);
+      if (isInt<16>(NegFrameSize)) {
+        BuildMI(MBB, MBBI, dl, TII.get(PPC::ADDI), FPReg)
+            .addReg(PPC::R2)
+            .addImm(NegFrameSize)
+            .setMIFlag(MachineInstr::FrameSetup);
+      } else {
+        TII.materializeImmPostRA(MBB, MBBI, dl, ScratchReg, NegFrameSize);
+        BuildMI(MBB, MBBI, dl, TII.get(PPC::ADD4), FPReg)
+            .addReg(PPC::R2)
+            .addReg(ScratchReg)
+            .setMIFlag(MachineInstr::FrameSetup);
+      }
+      BuildMI(MBB, MBBI, dl, TII.get(PPC::LWZ), PPC::R2)
+          .addImm(TOCSaveOffset)
+          .addReg(PPC::R2)
+          .setMIFlag(MachineInstr::FrameSetup);
+    } else {
+      BuildMI(MBB, MBBI, dl, OrInst, FPReg).addReg(SPReg).addReg(SPReg);
+    }
 
     if (!HasBP && needsCFI) {
       // Change the definition of CFA from SP+offset to FP+offset, because SP
@@ -1235,6 +1283,7 @@ void PPCFrameLowering::emitPrologue(MachineFunction &MF,
       }
     }
   }
+  EmitPrologEnd();
 }
 
 void PPCFrameLowering::inlineStackProbe(MachineFunction &MF,
@@ -2090,6 +2139,32 @@ void PPCFrameLowering::processFunctionBeforeFrameFinalized(MachineFunction &MF,
                                                        RegScavenger *RS) const {
   // Get callee saved register information.
   MachineFrameInfo &MFI = MF.getFrameInfo();
+
+  if (Subtarget.isPPCWinCOFFABI()) {
+    if (MF.getFunction().needsUnwindTableEntry() || MF.hasEHFunclets())
+      MF.setHasWinCFI(true);
+
+    if (MF.hasEHFunclets()) {
+      WinEHFuncInfo &EHInfo = *MF.getWinEHFuncInfo();
+      EHInfo.EHScopeMembership = getEHScopeMembership(MF);
+
+      // Catch objects are addressed from the incoming SP (the establisher
+      // frame), so assign them fixed negative offsets in the parent's frame.
+      int64_t CurrentOffset = 0;
+      for (WinEHTryBlockMapEntry &TBME : EHInfo.TryBlockMap) {
+        for (WinEHHandlerType &Handler : TBME.HandlerArray) {
+          int FrameIndex = Handler.CatchObj.FrameIndex;
+          if (FrameIndex == INT_MAX || MFI.getObjectOffset(FrameIndex) != 0)
+            continue;
+          CurrentOffset -= MFI.getObjectSize(FrameIndex);
+          CurrentOffset =
+              alignDown(CurrentOffset, MFI.getObjectAlign(FrameIndex).value());
+          MFI.setObjectOffset(FrameIndex, CurrentOffset);
+        }
+      }
+    }
+  }
+
   const std::vector<CalleeSavedInfo> &CSI = MFI.getCalleeSavedInfo();
 
   // If the function is shrink-wrapped, and if the function has a tail call, the

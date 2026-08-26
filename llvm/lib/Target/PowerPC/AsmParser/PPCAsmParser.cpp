@@ -1488,6 +1488,7 @@ bool PPCAsmParser::parseOperand(OperandVector &Operands) {
     return false;
   }
   case AsmToken::Identifier:
+  case AsmToken::String:
   case AsmToken::LParen:
   case AsmToken::Plus:
   case AsmToken::Minus:

@@ -141,7 +141,7 @@ static const EHPersonality &getCPersonality(const TargetInfo &Target,
                                             const LangOptions &L) {
   const llvm::Triple &T = Target.getTriple();
   if (T.isWindowsMSVCEnvironment()) {
-    if (T.isMIPS())
+    if (T.isMIPS() || T.isPPC32())
       return EHPersonality::MSVC_CxxFrameHandler;
     bool UseFH4 = CGOpts.MSVCCXXEH4Specified
                       ? CGOpts.MSVCCXXEH4

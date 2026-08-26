@@ -565,6 +565,8 @@ namespace llvm {
     getExceptionSelectorRegister(ExceptionHandling EH,
                                  const Constant *PersonalityFn) const override;
 
+    bool needsFixedCatchObjects() const override { return true; }
+
     /// Override to support customized stack guard loading.
     bool useLoadStackGuardNode(const Module &M) const override;
 
