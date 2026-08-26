@@ -48,6 +48,8 @@ static unsigned computeReturnSaveOffset(const PPCSubtarget &STI) {
 }
 
 static unsigned computeTOCSaveOffset(const PPCSubtarget &STI) {
+  if (STI.isPPCWinCOFFABI())
+    return 4;
   if (STI.isAIXABI())
     return STI.isPPC64() ? 40 : 20;
   return STI.isELFv2ABI() ? 24 : 40;

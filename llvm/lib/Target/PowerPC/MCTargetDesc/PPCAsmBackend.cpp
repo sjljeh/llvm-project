@@ -18,6 +18,7 @@
 #include "llvm/MC/MCMachObjectWriter.h"
 #include "llvm/MC/MCObjectWriter.h"
 #include "llvm/MC/MCSubtargetInfo.h"
+#include "llvm/MC/MCWinCOFFObjectWriter.h"
 #include "llvm/MC/MCSymbolELF.h"
 #include "llvm/MC/MCSymbolXCOFF.h"
 #include "llvm/MC/MCValue.h"
@@ -51,6 +52,8 @@ static uint64_t adjustFixupValue(MCContext &Ctx, const MCFixup &Fixup,
   case FK_Data_2:
   case FK_Data_4:
   case FK_Data_8:
+  case FK_SecRel_2:
+  case FK_SecRel_4:
   case PPC::fixup_ppc_nofixup:
     return Value;
   case PPC::fixup_ppc_brcond14:
@@ -83,11 +86,13 @@ static unsigned getFixupKindNumBytes(unsigned Kind) {
   case FK_Data_1:
     return 1;
   case FK_Data_2:
+  case FK_SecRel_2:
   case PPC::fixup_ppc_half16:
   case PPC::fixup_ppc_half16ds:
   case PPC::fixup_ppc_half16dq:
     return 2;
   case FK_Data_4:
+  case FK_SecRel_4:
   case PPC::fixup_ppc_brcond14:
   case PPC::fixup_ppc_brcond14abs:
   case PPC::fixup_ppc_br24:
@@ -274,6 +279,17 @@ public:
   }
 };
 
+class WinCOFFPPCAsmBackend : public PPCAsmBackend {
+public:
+  WinCOFFPPCAsmBackend(const Target &T, const Triple &TT)
+      : PPCAsmBackend(T, TT) {}
+
+  std::unique_ptr<MCObjectTargetWriter>
+  createObjectTargetWriter() const override {
+    return createPPCWinCOFFObjectWriter();
+  }
+};
+
 } // end anonymous namespace
 
 std::optional<MCFixupKind>
@@ -313,6 +329,8 @@ MCAsmBackend *llvm::createPPCAsmBackend(const Target &T,
   const Triple &TT = STI.getTargetTriple();
   if (TT.isOSBinFormatXCOFF())
     return new XCOFFPPCAsmBackend(T, TT);
+  if (TT.isOSBinFormatCOFF())
+    return new WinCOFFPPCAsmBackend(T, TT);
 
   return new ELFPPCAsmBackend(T, TT);
 }

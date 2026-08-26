@@ -900,6 +900,53 @@ bool Writer::fixGnuImportChunks() {
   // be sorted into the same sections as our own synthesized .idata chunks.
   fixPartialSectionChars(".idata", rdata);
 
+  auto getImportDescriptorName = [](ObjFile *file, SectionChunk *chunk =
+                                                       nullptr) -> StringRef {
+    for (Symbol *sym : file->getSymbols()) {
+      if (!sym)
+        continue;
+      StringRef name = sym->getName();
+      if (!name.consume_front("__IMPORT_DESCRIPTOR_"))
+        continue;
+      if (chunk) {
+        auto *d = dyn_cast<DefinedRegular>(sym);
+        if (!d || d->getChunk() != chunk)
+          continue;
+      }
+      return name;
+    }
+    return StringRef();
+  };
+
+  auto isNullThunkObject = [](ObjFile *file) {
+    for (Symbol *sym : file->getSymbols()) {
+      if (!sym || !isa<Defined>(sym))
+        continue;
+      StringRef name = sym->getName();
+      if (name.starts_with("\x7f") && name.ends_with("_NULL_THUNK_DATA"))
+        return true;
+    }
+    return false;
+  };
+
+  auto getNullThunkDllName = [](ObjFile *file) -> StringRef {
+    for (Symbol *sym : file->getSymbols()) {
+      if (!sym || !isa<Defined>(sym))
+        continue;
+      StringRef name = sym->getName();
+      if (name.consume_front("\x7f") &&
+          name.consume_back("_NULL_THUNK_DATA"))
+        return name;
+    }
+    return StringRef();
+  };
+
+  auto getImportDllName = [&](ObjFile *file) -> StringRef {
+    if (StringRef name = getImportDescriptorName(file); !name.empty())
+      return name;
+    return getNullThunkDllName(file);
+  };
+
   bool hasIdata = false;
   // Sort all .idata$* chunks, grouping chunks from the same library,
   // with alphabetical ordering of the object files within a library.
@@ -910,6 +957,7 @@ bool Writer::fixGnuImportChunks() {
 
     if (!pSec->chunks.empty())
       hasIdata = true;
+    bool isThunkList = pSec->name == ".idata$4" || pSec->name == ".idata$5";
     llvm::stable_sort(pSec->chunks, [&](Chunk *s, Chunk *t) {
       SectionChunk *sc1 = dyn_cast<SectionChunk>(s);
       SectionChunk *sc2 = dyn_cast<SectionChunk>(t);
@@ -918,6 +966,20 @@ bool Writer::fixGnuImportChunks() {
         // S is not less than T.
         return sc1 != nullptr;
       }
+
+      if (isThunkList) {
+        StringRef dll1 = getImportDllName(sc1->file);
+        StringRef dll2 = getImportDllName(sc2->file);
+        if (!dll1.empty() && !dll2.empty()) {
+          if (dll1 != dll2)
+            return dll1 < dll2;
+          bool null1 = isNullThunkObject(sc1->file);
+          bool null2 = isNullThunkObject(sc2->file);
+          if (null1 != null2)
+            return !null1;
+        }
+      }
+
       // Make a string with "libraryname/objectfile" for sorting, achieving
       // both grouping by library and sorting of objects within a library,
       // at once.
@@ -927,6 +989,59 @@ bool Writer::fixGnuImportChunks() {
           (sc2->file->parentName + "/" + sc2->file->getName()).str();
       return key1 < key2;
     });
+  }
+
+  DenseMap<StringRef, SectionChunk *> firstLookups;
+  DenseMap<StringRef, SectionChunk *> firstAddresses;
+
+  // Old COFF import libraries use descriptor relocations against section
+  // symbols named .idata$4/.idata$5. Retarget those local references to the
+  // first real thunk for the descriptor's DLL; the *_NULL_THUNK_DATA chunk is
+  // only the terminator and must not become the descriptor's table start.
+  for (auto it : partialSections) {
+    PartialSection *pSec = it.second;
+    DenseMap<StringRef, SectionChunk *> *firstChunk = nullptr;
+    if (pSec->name == ".idata$4")
+      firstChunk = &firstLookups;
+    else if (pSec->name == ".idata$5")
+      firstChunk = &firstAddresses;
+    else
+      continue;
+
+    for (Chunk *c : pSec->chunks) {
+      auto *sc = dyn_cast<SectionChunk>(c);
+      if (!sc || isNullThunkObject(sc->file))
+        continue;
+      StringRef dll = getImportDescriptorName(sc->file);
+      if (!dll.empty())
+        firstChunk->try_emplace(dll, sc);
+    }
+  }
+
+  auto retargetIdataSectionSymbol = [](SectionChunk *sc, StringRef name,
+                                       SectionChunk *target) {
+    for (Symbol *&sym : sc->file->getMutableSymbols())
+      if (sym && (isa<Undefined>(sym) || isa<DefinedCOFF>(sym)) &&
+          sym->getName() == name)
+        sym = make<DefinedSynthetic>(name, target);
+  };
+
+  for (auto it : partialSections) {
+    PartialSection *pSec = it.second;
+    if (pSec->name != ".idata$2")
+      continue;
+    for (Chunk *c : pSec->chunks) {
+      auto *sc = dyn_cast<SectionChunk>(c);
+      if (!sc)
+        continue;
+      StringRef dll = getImportDescriptorName(sc->file, sc);
+      if (dll.empty())
+        continue;
+      if (SectionChunk *lookup = firstLookups.lookup(dll))
+        retargetIdataSectionSymbol(sc, ".idata$4", lookup);
+      if (SectionChunk *address = firstAddresses.lookup(dll))
+        retargetIdataSectionSymbol(sc, ".idata$5", address);
+    }
   }
   return hasIdata;
 }
@@ -1230,6 +1345,16 @@ void Writer::createMiscChunks() {
 
   // Create thunks for locally-dllimported symbols.
   ctx.forEachSymtab([&](SymbolTable &symtab) {
+    if (symtab.machine == IMAGE_FILE_MACHINE_POWERPC) {
+      if (auto *toc = dyn_cast_or_null<DefinedSynthetic>(symtab.find(".toc"))) {
+        EmptyChunk *tocChunk = make<EmptyChunk>();
+        rdataSec->insertChunkAtStart(tocChunk);
+        // The NT PowerPC ABI uses r2 as a biased TOC anchor, allowing signed
+        // 16-bit offsets to address data before and after the anchor.
+        replaceSymbol<DefinedSynthetic>(toc, toc->getName(), tocChunk, 0x8000);
+      }
+    }
+
     if (!symtab.localImportChunks.empty()) {
       for (Chunk *c : symtab.localImportChunks)
         rdataSec->addChunk(c);
@@ -2762,6 +2887,7 @@ void Writer::sortExceptionTables() {
   case AMD64:
     sortExceptionTable<EntryX64>(pdata);
     break;
+  case IMAGE_FILE_MACHINE_POWERPC:
   case IMAGE_FILE_MACHINE_R4000:
     sortExceptionTable<EntryRISC>(pdata);
     break;

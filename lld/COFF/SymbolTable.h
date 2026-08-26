@@ -93,6 +93,7 @@ public:
 
   // Symbol names are mangled by prepending "_" on x86.
   StringRef mangle(StringRef sym);
+  StringRef mangleEntry(StringRef sym);
 
   // Windows specific -- "main" is not the only main function in Windows.
   // You can choose one from these four -- {w,}{WinMain,main}.

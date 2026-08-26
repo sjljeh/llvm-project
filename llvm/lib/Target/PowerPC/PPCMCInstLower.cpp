@@ -29,10 +29,54 @@
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/Target/TargetLoweringObjectFile.h"
+#include "llvm/TargetParser/Triple.h"
 using namespace llvm;
+
+static bool isPPCWinCOFFABI(const Triple &TT) {
+  return TT.isOSBinFormatCOFF() &&
+         (TT.getArch() == Triple::ppc || TT.getArch() == Triple::ppcle);
+}
+
+static bool isDirectCallLikeOpcode(unsigned Opcode) {
+  switch (Opcode) {
+  case PPC::BL:
+  case PPC::BL8:
+  case PPC::BL_NOP:
+  case PPC::BL8_NOP:
+  case PPC::TAILB:
+  case PPC::TAILB8:
+  case PPC::TAILBA:
+  case PPC::TAILBA8:
+  case PPC::TCRETURNdi:
+  case PPC::TCRETURNdi8:
+  case PPC::TCRETURNai:
+  case PPC::TCRETURNai8:
+    return true;
+  default:
+    return false;
+  }
+}
+
+static MCSymbol *getPPCWinCOFFEntryPointSymbol(const MachineOperand &MO,
+                                               AsmPrinter &AP) {
+  SmallString<128> Name;
+  if (MO.isGlobal()) {
+    AP.getObjFileLowering().getNameWithPrefix(Name, MO.getGlobal(), AP.TM);
+  } else {
+    const DataLayout &DL = AP.getDataLayout();
+    Mangler::getNameWithPrefix(Name, MO.getSymbolName(), DL);
+  }
+
+  return AP.OutContext.getOrCreateSymbol(Twine("..") + Name);
+}
 
 static MCSymbol *GetSymbolFromOperand(const MachineOperand &MO,
                                       AsmPrinter &AP) {
+  const MachineInstr *MI = MO.getParent();
+  if (MI && isPPCWinCOFFABI(AP.TM.getTargetTriple()) &&
+      isDirectCallLikeOpcode(MI->getOpcode()))
+    return getPPCWinCOFFEntryPointSymbol(MO, AP);
+
   if (MO.isGlobal()) {
     // Get the symbol from the global, accounting for XCOFF-specific
     // intricacies (see TargetLoweringObjectFileXCOFF::getTargetSymbol).
