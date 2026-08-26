@@ -391,6 +391,8 @@ std::unique_ptr<TargetInfo> AllocateTarget(const llvm::Triple &Triple,
       return std::make_unique<LinuxTargetInfo<PPC32TargetInfo>>(Triple, Opts);
     case llvm::Triple::FreeBSD:
       return std::make_unique<FreeBSDTargetInfo<PPC32TargetInfo>>(Triple, Opts);
+    case llvm::Triple::Win32:
+      return std::make_unique<MicrosoftPPC32TargetInfo>(Triple, Opts);
     default:
       return std::make_unique<PPC32TargetInfo>(Triple, Opts);
     }

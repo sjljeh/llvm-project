@@ -13,6 +13,7 @@
 #ifndef LLVM_LIB_TARGET_POWERPC_MCTARGETDESC_PPCMCASMINFO_H
 #define LLVM_LIB_TARGET_POWERPC_MCTARGETDESC_PPCMCASMINFO_H
 
+#include "llvm/MC/MCAsmInfoCOFF.h"
 #include "llvm/MC/MCAsmInfoELF.h"
 #include "llvm/MC/MCAsmInfoXCOFF.h"
 #include "llvm/MC/MCExpr.h"
@@ -37,6 +38,15 @@ class PPCXCOFFMCAsmInfo : public MCAsmInfoXCOFF {
 public:
   explicit PPCXCOFFMCAsmInfo(bool is64Bit, const Triple &,
                              const MCTargetOptions &Options);
+  void printSpecifierExpr(raw_ostream &OS,
+                          const MCSpecifierExpr &Expr) const override;
+  bool evaluateAsRelocatableImpl(const MCSpecifierExpr &Expr, MCValue &Res,
+                                 const MCAssembler *Asm) const override;
+};
+
+class PPCCOFFMCAsmInfo : public MCAsmInfoGNUCOFF {
+public:
+  explicit PPCCOFFMCAsmInfo(const Triple &, const MCTargetOptions &Options);
   void printSpecifierExpr(raw_ostream &OS,
                           const MCSpecifierExpr &Expr) const override;
   bool evaluateAsRelocatableImpl(const MCSpecifierExpr &Expr, MCValue &Res,

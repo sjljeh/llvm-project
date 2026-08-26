@@ -1353,6 +1353,8 @@ static codeview::CPUType toCodeViewMachine(COFF::MachineTypes machine) {
     return codeview::CPUType::ARMNT;
   case COFF::IMAGE_FILE_MACHINE_I386:
     return codeview::CPUType::Intel80386;
+  case COFF::IMAGE_FILE_MACHINE_POWERPC:
+    return codeview::CPUType::PPC601;
   case COFF::IMAGE_FILE_MACHINE_R4000:
     return codeview::CPUType::MIPS;
   default:
@@ -1728,6 +1730,8 @@ static uint32_t getSecrelReloc(Triple::ArchType arch) {
     return COFF::IMAGE_REL_I386_SECREL;
   case Triple::mipsel:
     return COFF::IMAGE_REL_MIPS_SECREL;
+  case Triple::ppcle:
+    return COFF::IMAGE_REL_PPC_SECREL;
   case Triple::thumb:
     return COFF::IMAGE_REL_ARM_SECREL;
   case Triple::aarch64:

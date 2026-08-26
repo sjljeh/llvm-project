@@ -1071,6 +1071,13 @@ StringRef SymbolTable::mangle(StringRef sym) {
   return sym;
 }
 
+StringRef SymbolTable::mangleEntry(StringRef sym) {
+  assert(machine != IMAGE_FILE_MACHINE_UNKNOWN);
+  if (machine == IMAGE_FILE_MACHINE_POWERPC && !sym.starts_with(".."))
+    return saver().save(".." + sym);
+  return mangle(sym);
+}
+
 StringRef SymbolTable::mangleMaybe(Symbol *s) {
   // If the plain symbol name has already been resolved, do nothing.
   Undefined *unmangled = dyn_cast<Undefined>(s);
@@ -1099,24 +1106,24 @@ StringRef SymbolTable::findDefaultEntry() {
          "must handle /subsystem before calling this");
 
   if (ctx.config.mingw)
-    return mangle(ctx.config.subsystem == IMAGE_SUBSYSTEM_WINDOWS_GUI
-                      ? "WinMainCRTStartup"
-                      : "mainCRTStartup");
+    return mangleEntry(ctx.config.subsystem == IMAGE_SUBSYSTEM_WINDOWS_GUI
+                           ? "WinMainCRTStartup"
+                           : "mainCRTStartup");
 
   if (ctx.config.subsystem == IMAGE_SUBSYSTEM_WINDOWS_GUI) {
     if (findUnderscoreMangle("wWinMain")) {
       if (!findUnderscoreMangle("WinMain"))
-        return mangle("wWinMainCRTStartup");
+        return mangleEntry("wWinMainCRTStartup");
       Warn(ctx) << "found both wWinMain and WinMain; using latter";
     }
-    return mangle("WinMainCRTStartup");
+    return mangleEntry("WinMainCRTStartup");
   }
   if (findUnderscoreMangle("wmain")) {
     if (!findUnderscoreMangle("main"))
-      return mangle("wmainCRTStartup");
+      return mangleEntry("wmainCRTStartup");
     Warn(ctx) << "found both wmain and main; using latter";
   }
-  return mangle("mainCRTStartup");
+  return mangleEntry("mainCRTStartup");
 }
 
 WindowsSubsystem SymbolTable::inferSubsystem() {

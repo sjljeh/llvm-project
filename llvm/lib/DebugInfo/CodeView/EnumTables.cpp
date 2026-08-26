@@ -73,10 +73,24 @@ EnumStrings<uint16_t> getRegisterNames(CPUType Cpu) {
   static constexpr auto RegisterNames_ARM64 =
       BUILD_ENUM_STRINGS(RegisterNameDefs_ARM64);
 
+  constexpr EnumStringDef<uint16_t> RegisterNameDefs_PPC[] = {
+#define CV_REGISTERS_PPC
+#define CV_REGISTER(name, val) CV_ENUM_CLASS_ENT(RegisterId, name),
+#include "llvm/DebugInfo/CodeView/CodeViewRegisters.def"
+#undef CV_REGISTER
+#undef CV_REGISTERS_PPC
+  };
+  static constexpr auto RegisterNames_PPC =
+      BUILD_ENUM_STRINGS(RegisterNameDefs_PPC);
+
   if (Cpu == CPUType::ARMNT) {
     return RegisterNames_ARM;
   } else if (Cpu == CPUType::ARM64) {
     return RegisterNames_ARM64;
+  } else if (Cpu == CPUType::PPC601 || Cpu == CPUType::PPC603 ||
+             Cpu == CPUType::PPC604 || Cpu == CPUType::PPC620 ||
+             Cpu == CPUType::PPCFP || Cpu == CPUType::PPCBE) {
+    return RegisterNames_PPC;
   }
   return RegisterNames_X86;
 }

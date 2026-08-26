@@ -81,6 +81,7 @@ class ModulePass;
   void initializePPCPrepareIFuncsOnAIXPass(PassRegistry &);
   void initializePPCLinuxAsmPrinterPass(PassRegistry &);
   void initializePPCAIXAsmPrinterPass(PassRegistry &);
+  void initializePPCWinCOFFAsmPrinterPass(PassRegistry &);
 
   extern char &PPCVSXFMAMutateID;
 

@@ -238,6 +238,9 @@ WinCOFFWriter::WinCOFFWriter(WinCOFFObjectWriter &OWriter,
                              raw_pwrite_stream &OS, DwoMode Mode)
     : OWriter(OWriter), W(OS, llvm::endianness::little), Mode(Mode) {
   Header.Machine = OWriter.TargetObjectWriter->getMachine();
+  if (Header.Machine == COFF::IMAGE_FILE_MACHINE_POWERPC)
+    Header.Characteristics = COFF::IMAGE_FILE_32BIT_MACHINE |
+                             COFF::IMAGE_FILE_BYTES_REVERSED_LO;
   // Some relocations on ARM64 (the 21 bit ADRP relocations) have a slightly
   // limited range for the immediate offset (+/- 1 MB); create extra offset
   // label symbols with regular intervals to allow referencing a
@@ -819,8 +822,10 @@ void WinCOFFWriter::assignFileOffsets() {
 
       for (auto &Relocation : Sec->Relocations) {
         assert(Relocation.Symb->getIndex() != -1);
-        if (Header.Machine != COFF::IMAGE_FILE_MACHINE_R4000 ||
-            Relocation.Data.Type != COFF::IMAGE_REL_MIPS_PAIR) {
+        if (!((Header.Machine == COFF::IMAGE_FILE_MACHINE_R4000 &&
+               Relocation.Data.Type == COFF::IMAGE_REL_MIPS_PAIR) ||
+              (Header.Machine == COFF::IMAGE_FILE_MACHINE_POWERPC &&
+               Relocation.Data.Type == COFF::IMAGE_REL_PPC_PAIR))) {
           Relocation.Data.SymbolTableIndex = Relocation.Symb->getIndex();
         }
       }
@@ -844,6 +849,9 @@ void WinCOFFWriter::assignFileOffsets() {
 void WinCOFFWriter::reset() {
   memset(&Header, 0, sizeof(Header));
   Header.Machine = OWriter.TargetObjectWriter->getMachine();
+  if (Header.Machine == COFF::IMAGE_FILE_MACHINE_POWERPC)
+    Header.Characteristics = COFF::IMAGE_FILE_32BIT_MACHINE |
+                             COFF::IMAGE_FILE_BYTES_REVERSED_LO;
   Sections.clear();
   Symbols.clear();
   Strings.clear();
@@ -1053,14 +1061,18 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
 
   if (OWriter.TargetObjectWriter->recordRelocation(Fixup)) {
     Sec->Relocations.push_back(Reloc);
-    if (Header.Machine == COFF::IMAGE_FILE_MACHINE_R4000 &&
-        (Reloc.Data.Type == COFF::IMAGE_REL_MIPS_REFHI ||
-         Reloc.Data.Type == COFF::IMAGE_REL_MIPS_SECRELHI)) {
-      // IMAGE_REL_MIPS_REFHI and IMAGE_REL_MIPS_SECRELHI *must*
-      // be followed by IMAGE_REL_MIPS_PAIR. The pair's symbol-table-index
-      // field stores the signed low 16-bit addend rather than a symbol index.
+    if ((Header.Machine == COFF::IMAGE_FILE_MACHINE_R4000 &&
+         (Reloc.Data.Type == COFF::IMAGE_REL_MIPS_REFHI ||
+          Reloc.Data.Type == COFF::IMAGE_REL_MIPS_SECRELHI)) ||
+        (Header.Machine == COFF::IMAGE_FILE_MACHINE_POWERPC &&
+         (Reloc.Data.Type == COFF::IMAGE_REL_PPC_REFHI ||
+          Reloc.Data.Type == COFF::IMAGE_REL_PPC_SECRELHI))) {
+      // MIPS and PowerPC HI relocations must be followed by a PAIR. The pair's
+      // symbol-table-index field stores the signed low 16-bit addend.
       auto RelocPair = Reloc;
-      RelocPair.Data.Type = COFF::IMAGE_REL_MIPS_PAIR;
+      RelocPair.Data.Type = Header.Machine == COFF::IMAGE_FILE_MACHINE_R4000
+                                ? COFF::IMAGE_REL_MIPS_PAIR
+                                : COFF::IMAGE_REL_PPC_PAIR;
       RelocPair.Data.SymbolTableIndex = FixedValue & 0xffff;
       Sec->Relocations.push_back(RelocPair);
     }
