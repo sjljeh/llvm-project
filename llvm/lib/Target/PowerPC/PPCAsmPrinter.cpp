@@ -977,6 +977,25 @@ void PPCAsmPrinter::emitInstruction(const MachineInstr *MI) {
   // Lower multi-instruction pseudo operations.
   switch (MI->getOpcode()) {
   default: break;
+  case PPC::SEH_PrologEnd:
+    OutStreamer->emitWinCFIEndProlog();
+    return;
+  case PPC::CATCHRET: {
+    const MCSymbolRefExpr *Target = MCSymbolRefExpr::create(
+        MI->getOperand(0).getMBB()->getSymbol(), OutContext);
+    const MCExpr *Hi = MCSpecifierExpr::create(Target, PPC::S_HA, OutContext);
+    const MCExpr *Lo = MCSpecifierExpr::create(Target, PPC::S_LO, OutContext);
+    EmitToStreamer(*OutStreamer,
+                   MCInstBuilder(PPC::LIS).addReg(PPC::R3).addExpr(Hi));
+    EmitToStreamer(
+        *OutStreamer,
+        MCInstBuilder(PPC::ADDI).addReg(PPC::R3).addReg(PPC::R3).addExpr(Lo));
+    EmitToStreamer(*OutStreamer, MCInstBuilder(PPC::BLR));
+    return;
+  }
+  case PPC::CLEANUPRET:
+    EmitToStreamer(*OutStreamer, MCInstBuilder(PPC::BLR));
+    return;
   case TargetOpcode::PATCHABLE_FUNCTION_ENTER: {
     assert(!Subtarget->isAIXABI() &&
            "AIX does not support patchable function entry!");
