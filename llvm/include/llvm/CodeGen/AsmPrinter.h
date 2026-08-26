@@ -368,6 +368,13 @@ public:
 
   MCSymbol *getSymbol(const GlobalValue *GV) const;
 
+  /// Return the symbol used to describe a function's executable code in debug
+  /// information. Descriptor-based targets may override this to avoid
+  /// pointing debug records at the function descriptor.
+  virtual MCSymbol *getFunctionSymbolForDebug(const GlobalValue *GV) const {
+    return getSymbol(GV);
+  }
+
   /// Similar to getSymbol() but preferred for references. On ELF, this uses a
   /// local symbol if a reference to GV is guaranteed to be resolved to the
   /// definition in the same module.

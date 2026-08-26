@@ -767,6 +767,25 @@ static std::string getClangCLMipsTargetCPU(const Driver &D,
   return CPU;
 }
 
+static std::string getClangCLPPCTargetCPU(const Driver &D,
+                                          const ArgList &Args) {
+  const Arg *A = Args.getLastArg(options::OPT__SLASH_QP);
+  if (!A)
+    return "";
+
+  A->claim();
+  StringRef Value = A->getValue();
+  std::string CPU = llvm::StringSwitch<std::string>(Value)
+                        .Case("601", "601")
+                        .Case("603", "603")
+                        .Case("604", "604")
+                        .Case("620", "620")
+                        .Default("");
+  if (CPU.empty())
+    D.Diag(diag::err_drv_invalid_value) << A->getAsString(Args) << Value;
+  return CPU;
+}
+
 /// Get the (LLVM) name of the WebAssembly cpu we are targeting.
 static StringRef getWebAssemblyTargetCPU(const ArgList &Args) {
   // If we have -mcpu=, use that.
@@ -839,6 +858,9 @@ std::string tools::getCPUName(const Driver &D, const ArgList &Args,
   case llvm::Triple::ppcle:
   case llvm::Triple::ppc64:
   case llvm::Triple::ppc64le:
+    if (D.IsCLMode())
+      if (std::string CPU = getClangCLPPCTargetCPU(D, Args); !CPU.empty())
+        return CPU;
     if (Arg *A = Args.getLastArg(options::OPT_mcpu_EQ))
       return std::string(
           llvm::PPC::getNormalizedPPCTargetCPU(T, A->getValue()));

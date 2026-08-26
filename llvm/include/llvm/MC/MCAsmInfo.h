@@ -50,6 +50,7 @@ enum class EncodingType {
   ARM,     /// Windows NT (Windows on ARM)
   CE,      /// Windows CE ARM, PowerPC, SH3, SH4
   Itanium, /// Windows x64, Windows Itanium (IA-64)
+  PPC,     /// Windows NT PowerPC
   X86,     /// Windows x86, uses no CFI, just EH tables
   MIPS = Alpha,
 };

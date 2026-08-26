@@ -28,8 +28,10 @@ class MCCodeEmitter;
 class MCContext;
 class MCInstrDesc;
 class MCInstrInfo;
+class MCObjectWriter;
 class MCObjectTargetWriter;
 class MCRegisterInfo;
+class MCStreamer;
 class MCSubtargetInfo;
 class MCTargetOptions;
 class Target;
@@ -52,6 +54,10 @@ MCRegister getRegNumForOperand(const MCInstrDesc &Desc, MCRegister Reg,
 
 } // namespace PPC
 
+namespace PPC_MC {
+void initLLVMToCVRegMapping(MCRegisterInfo *MRI);
+} // namespace PPC_MC
+
 MCCodeEmitter *createPPCMCCodeEmitter(const MCInstrInfo &MCII,
                                       MCContext &Ctx);
 
@@ -68,6 +74,13 @@ createPPCMachObjectWriter(bool Is64Bit, uint32_t CPUType, uint32_t CPUSubtype);
 
 /// Construct a PPC XCOFF object writer.
 std::unique_ptr<MCObjectTargetWriter> createPPCXCOFFObjectWriter(bool Is64Bit);
+
+std::unique_ptr<MCObjectTargetWriter> createPPCWinCOFFObjectWriter();
+
+MCStreamer *createPPCWinCOFFStreamer(MCContext &C,
+                                     std::unique_ptr<MCAsmBackend> &&AB,
+                                     std::unique_ptr<MCObjectWriter> &&OW,
+                                     std::unique_ptr<MCCodeEmitter> &&CE);
 
 /// Returns true iff Val consists of one contiguous run of 1s with any number of
 /// 0s on either side.  The 1s are allowed to wrap from LSB to MSB, so

@@ -172,6 +172,8 @@ public:
     return CPUKnown;
   }
 
+  StringRef getCPU() const { return CPU; }
+
   StringRef getABI() const override { return ABI; }
 
   llvm::SmallVector<Builtin::InfosShard> getTargetBuiltins() const override;
@@ -516,6 +518,35 @@ public:
   using AIXTargetInfo::AIXTargetInfo;
   BuiltinVaListKind getBuiltinVaListKind() const override {
     return TargetInfo::CharPtrBuiltinVaList;
+  }
+};
+
+class LLVM_LIBRARY_VISIBILITY MicrosoftPPC32TargetInfo
+    : public WindowsTargetInfo<PPC32TargetInfo> {
+public:
+  MicrosoftPPC32TargetInfo(const llvm::Triple &Triple,
+                           const TargetOptions &Opts)
+      : WindowsTargetInfo<PPC32TargetInfo>(Triple, Opts) {
+    TheCXXABI.set(TargetCXXABI::Microsoft);
+    SizeType = UnsignedInt;
+    PtrDiffType = IntPtrType = SignedInt;
+    LongDoubleWidth = LongDoubleAlign = 64;
+    LongDoubleFormat = &llvm::APFloat::IEEEdouble();
+  }
+
+  BuiltinVaListKind getBuiltinVaListKind() const override {
+    return TargetInfo::CharPtrBuiltinVaList;
+  }
+
+  void getTargetDefines(const LangOptions &Opts,
+                        MacroBuilder &Builder) const override {
+    WindowsTargetInfo<PPC32TargetInfo>::getTargetDefines(Opts, Builder);
+    StringRef PPCArch = llvm::StringSwitch<StringRef>(getCPU())
+                            .Cases({"603", "603e", "603ev"}, "603")
+                            .Cases({"604", "604e"}, "604")
+                            .Case("620", "620")
+                            .Default("601");
+    Builder.defineMacro("_M_PPC", PPCArch);
   }
 };
 

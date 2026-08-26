@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "PPCRegisterInfo.h"
+#include "MCTargetDesc/PPCMCTargetDesc.h"
 #include "PPCFrameLowering.h"
 #include "PPCInstrBuilder.h"
 #include "PPCMachineFunctionInfo.h"
@@ -98,6 +99,7 @@ PPCRegisterInfo::PPCRegisterInfo(const PPCTargetMachine &TM)
                        TM.isPPC64() ? 0 : 1,
                        TM.isPPC64() ? 0 : 1),
     TM(TM) {
+  PPC_MC::initLLVMToCVRegMapping(this);
   ImmToIdxMap[PPC::LD]   = PPC::LDX;    ImmToIdxMap[PPC::STD]  = PPC::STDX;
   ImmToIdxMap[PPC::LBZ]  = PPC::LBZX;   ImmToIdxMap[PPC::STB]  = PPC::STBX;
   ImmToIdxMap[PPC::LHZ]  = PPC::LHZX;   ImmToIdxMap[PPC::LHA]  = PPC::LHAX;
@@ -159,6 +161,53 @@ PPCRegisterInfo::PPCRegisterInfo(const PPCTargetMachine &TM)
   ImmToIdxMap[PPC::STXVP]  = PPC::STXVPX;
   ImmToIdxMap[PPC::PLXVP]  = PPC::LXVPX;
   ImmToIdxMap[PPC::PSTXVP] = PPC::STXVPX;
+}
+
+bool PPCRegisterInfo::isIgnoredCVReg(MCRegister LLVMReg) const {
+  switch (LLVMReg) {
+#define PPC_CV_GPR_CASE(N) case PPC::R##N:
+    PPC_CV_GPR_CASE(0)  PPC_CV_GPR_CASE(1)  PPC_CV_GPR_CASE(2)
+    PPC_CV_GPR_CASE(3)  PPC_CV_GPR_CASE(4)  PPC_CV_GPR_CASE(5)
+    PPC_CV_GPR_CASE(6)  PPC_CV_GPR_CASE(7)  PPC_CV_GPR_CASE(8)
+    PPC_CV_GPR_CASE(9)  PPC_CV_GPR_CASE(10) PPC_CV_GPR_CASE(11)
+    PPC_CV_GPR_CASE(12) PPC_CV_GPR_CASE(13) PPC_CV_GPR_CASE(14)
+    PPC_CV_GPR_CASE(15) PPC_CV_GPR_CASE(16) PPC_CV_GPR_CASE(17)
+    PPC_CV_GPR_CASE(18) PPC_CV_GPR_CASE(19) PPC_CV_GPR_CASE(20)
+    PPC_CV_GPR_CASE(21) PPC_CV_GPR_CASE(22) PPC_CV_GPR_CASE(23)
+    PPC_CV_GPR_CASE(24) PPC_CV_GPR_CASE(25) PPC_CV_GPR_CASE(26)
+    PPC_CV_GPR_CASE(27) PPC_CV_GPR_CASE(28) PPC_CV_GPR_CASE(29)
+    PPC_CV_GPR_CASE(30) PPC_CV_GPR_CASE(31)
+#undef PPC_CV_GPR_CASE
+#define PPC_CV_FPR_CASE(N) case PPC::F##N:
+    PPC_CV_FPR_CASE(0)  PPC_CV_FPR_CASE(1)  PPC_CV_FPR_CASE(2)
+    PPC_CV_FPR_CASE(3)  PPC_CV_FPR_CASE(4)  PPC_CV_FPR_CASE(5)
+    PPC_CV_FPR_CASE(6)  PPC_CV_FPR_CASE(7)  PPC_CV_FPR_CASE(8)
+    PPC_CV_FPR_CASE(9)  PPC_CV_FPR_CASE(10) PPC_CV_FPR_CASE(11)
+    PPC_CV_FPR_CASE(12) PPC_CV_FPR_CASE(13) PPC_CV_FPR_CASE(14)
+    PPC_CV_FPR_CASE(15) PPC_CV_FPR_CASE(16) PPC_CV_FPR_CASE(17)
+    PPC_CV_FPR_CASE(18) PPC_CV_FPR_CASE(19) PPC_CV_FPR_CASE(20)
+    PPC_CV_FPR_CASE(21) PPC_CV_FPR_CASE(22) PPC_CV_FPR_CASE(23)
+    PPC_CV_FPR_CASE(24) PPC_CV_FPR_CASE(25) PPC_CV_FPR_CASE(26)
+    PPC_CV_FPR_CASE(27) PPC_CV_FPR_CASE(28) PPC_CV_FPR_CASE(29)
+    PPC_CV_FPR_CASE(30) PPC_CV_FPR_CASE(31)
+#undef PPC_CV_FPR_CASE
+  case PPC::CR0:
+  case PPC::CR1:
+  case PPC::CR2:
+  case PPC::CR3:
+  case PPC::CR4:
+  case PPC::CR5:
+  case PPC::CR6:
+  case PPC::CR7:
+  case PPC::XER:
+  case PPC::LR:
+  case PPC::CTR:
+  case PPC::FP:
+  case PPC::BP:
+    return false;
+  default:
+    return true;
+  }
 }
 
 /// getPointerRegClass - Return the register class to use to hold pointers.

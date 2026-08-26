@@ -5396,7 +5396,7 @@ static bool isIndirectCall(const SDValue &Callee, SelectionDAG &DAG,
 
 // AIX and 64-bit ELF ABIs w/o PCRel require a TOC save/restore around calls.
 static inline bool isTOCSaveRestoreRequired(const PPCSubtarget &Subtarget) {
-  return Subtarget.isAIXABI() ||
+  return Subtarget.isAIXABI() || Subtarget.isPPCWinCOFFABI() ||
          (Subtarget.is64BitELFABI() && !Subtarget.isUsingPCRelativeCalls());
 }
 
@@ -5580,12 +5580,10 @@ static void prepareDescriptorIndirectCall(SelectionDAG &DAG, SDValue &Callee,
                                           const CallBase *CB, const SDLoc &dl,
                                           bool hasNest,
                                           const PPCSubtarget &Subtarget) {
-  // Function pointers in the 64-bit SVR4 ABI do not point to the function
-  // entry point, but to the function descriptor (the function entry point
-  // address is part of the function descriptor though).
-  // The function descriptor is a three doubleword structure with the
-  // following fields: function entry point, TOC base address and
-  // environment pointer.
+  // Function pointers in descriptor-based ABIs do not point to the function
+  // entry point, but to a descriptor containing the entry point and TOC base.
+  // ELFv1 and AIX descriptors also contain an environment pointer; Windows
+  // PowerPC descriptors contain only the first two words.
   // Thus for a call through a function pointer, the following actions need
   // to be performed:
   //   1. Save the TOC of the caller in the TOC save area of its stack
@@ -5593,8 +5591,8 @@ static void prepareDescriptorIndirectCall(SelectionDAG &DAG, SDValue &Callee,
   //   2. Load the address of the function entry point from the function
   //      descriptor.
   //   3. Load the TOC of the callee from the function descriptor into r2.
-  //   4. Load the environment pointer from the function descriptor into
-  //      r11.
+  //   4. For ABIs with a three-word descriptor, load the environment pointer
+  //      from the descriptor into r11.
   //   5. Branch to the function entry point address.
   //   6. On return of the callee, the TOC of the caller needs to be
   //      restored (this is done in FinishCall()).
@@ -5615,13 +5613,14 @@ static void prepareDescriptorIndirectCall(SelectionDAG &DAG, SDValue &Callee,
 
   MachinePointerInfo MPI(CB ? CB->getCalledOperand() : nullptr);
 
+  const bool HasEnvironmentPointer = !Subtarget.isPPCWinCOFFABI();
+
   // Registers used in building the DAG.
-  const MCRegister EnvPtrReg = Subtarget.getEnvironmentPointerRegister();
   const MCRegister TOCReg = Subtarget.getTOCPointerRegister();
 
   // Offsets of descriptor members.
   const unsigned TOCAnchorOffset = Subtarget.descriptorTOCAnchorOffset();
-  const unsigned EnvPtrOffset = Subtarget.descriptorEnvironmentPointerOffset();
+
 
   const MVT RegVT = Subtarget.getScalarIntVT();
   const Align Alignment = Subtarget.isPPC64() ? Align(8) : Align(4);
@@ -5638,14 +5637,6 @@ static void prepareDescriptorIndirectCall(SelectionDAG &DAG, SDValue &Callee,
       DAG.getLoad(RegVT, dl, LDChain, AddTOC,
                   MPI.getWithOffset(TOCAnchorOffset), Alignment, MMOFlags);
 
-  // One for loading the environment pointer.
-  SDValue PtrOff = DAG.getIntPtrConstant(EnvPtrOffset, dl);
-  SDValue AddPtr = DAG.getNode(ISD::ADD, dl, RegVT, Callee, PtrOff);
-  SDValue LoadEnvPtr =
-      DAG.getLoad(RegVT, dl, LDChain, AddPtr,
-                  MPI.getWithOffset(EnvPtrOffset), Alignment, MMOFlags);
-
-
   // Then copy the newly loaded TOC anchor to the TOC pointer.
   SDValue TOCVal = DAG.getCopyToReg(Chain, dl, TOCReg, TOCPtr, Glue);
   Chain = TOCVal.getValue(0);
@@ -5655,7 +5646,15 @@ static void prepareDescriptorIndirectCall(SelectionDAG &DAG, SDValue &Callee,
   // place of the environment pointer.
   assert((!hasNest || !Subtarget.isAIXABI()) &&
          "Nest parameter is not supported on AIX.");
-  if (!hasNest) {
+  if (HasEnvironmentPointer && !hasNest) {
+    const MCRegister EnvPtrReg = Subtarget.getEnvironmentPointerRegister();
+    const unsigned EnvPtrOffset =
+        Subtarget.descriptorEnvironmentPointerOffset();
+    SDValue PtrOff = DAG.getIntPtrConstant(EnvPtrOffset, dl);
+    SDValue AddPtr = DAG.getNode(ISD::ADD, dl, RegVT, Callee, PtrOff);
+    SDValue LoadEnvPtr =
+        DAG.getLoad(RegVT, dl, LDChain, AddPtr,
+                    MPI.getWithOffset(EnvPtrOffset), Alignment, MMOFlags);
     SDValue EnvVal = DAG.getCopyToReg(Chain, dl, EnvPtrReg, LoadEnvPtr, Glue);
     Chain = EnvVal.getValue(0);
     Glue = EnvVal.getValue(1);
@@ -5728,7 +5727,8 @@ buildCallOperands(SmallVectorImpl<SDValue> &Ops,
     }
 
     // Add the register used for the environment pointer.
-    if (Subtarget.usesFunctionDescriptors() && !CFlags.HasNest)
+    if (Subtarget.usesFunctionDescriptors() &&
+        !Subtarget.isPPCWinCOFFABI() && !CFlags.HasNest)
       Ops.push_back(DAG.getRegister(Subtarget.getEnvironmentPointerRegister(),
                                     RegVT));
 
@@ -5750,7 +5750,8 @@ buildCallOperands(SmallVectorImpl<SDValue> &Ops,
   // We cannot add R2/X2 as an operand here for PATCHPOINT, because there is
   // no way to mark dependencies as implicit here.
   // We will add the R2/X2 dependency in EmitInstrWithCustomInserter.
-  if ((Subtarget.is64BitELFABI() || Subtarget.isAIXABI()) &&
+  if ((Subtarget.is64BitELFABI() || Subtarget.isAIXABI() ||
+       Subtarget.isPPCWinCOFFABI()) &&
        !CFlags.IsPatchPoint && !Subtarget.isUsingPCRelativeCalls())
     Ops.push_back(DAG.getRegister(Subtarget.getTOCPointerRegister(), RegVT));
 
@@ -5778,7 +5779,7 @@ SDValue PPCTargetLowering::FinishCall(
     SmallVectorImpl<SDValue> &InVals, const CallBase *CB) const {
 
   if ((Subtarget.is64BitELFABI() && !Subtarget.isUsingPCRelativeCalls()) ||
-      Subtarget.isAIXABI())
+      Subtarget.isAIXABI() || Subtarget.isPPCWinCOFFABI())
     setUsesTOCBasePtr(DAG);
 
   unsigned CallOpc =
@@ -6170,6 +6171,18 @@ SDValue PPCTargetLowering::LowerCall_32SVR4(
 
   if (!MemOpChains.empty())
     Chain = DAG.getNode(ISD::TokenFactor, dl, MVT::Other, MemOpChains);
+
+  if (CFlags.IsIndirect && Subtarget.isPPCWinCOFFABI()) {
+    const unsigned TOCSaveOffset =
+        Subtarget.getFrameLowering()->getTOCSaveOffset();
+    setUsesTOCBasePtr(DAG);
+    SDValue TOCVal = DAG.getCopyFromReg(Chain, dl, PPC::R2, MVT::i32);
+    SDValue TOCOff = DAG.getIntPtrConstant(TOCSaveOffset, dl);
+    SDValue TOCSlot = DAG.getNode(ISD::ADD, dl, MVT::i32, StackPtr, TOCOff);
+    Chain = DAG.getStore(
+        TOCVal.getValue(1), dl, TOCVal, TOCSlot,
+        MachinePointerInfo::getStack(DAG.getMachineFunction(), TOCSaveOffset));
+  }
 
   // Build a sequence of copy-to-reg nodes chained together with token chain
   // and flag operands which copy the outgoing args into the appropriate regs.

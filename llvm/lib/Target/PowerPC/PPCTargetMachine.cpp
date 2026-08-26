@@ -148,6 +148,7 @@ LLVMInitializePowerPCTarget() {
   initializePPCPrepareIFuncsOnAIXPass(PR);
   initializePPCLinuxAsmPrinterPass(PR);
   initializePPCAIXAsmPrinterPass(PR);
+  initializePPCWinCOFFAsmPrinterPass(PR);
 }
 
 static std::string computeFSAdditions(StringRef FS, CodeGenOptLevel OL,
@@ -189,6 +190,8 @@ static std::string computeFSAdditions(StringRef FS, CodeGenOptLevel OL,
 static std::unique_ptr<TargetLoweringObjectFile> createTLOF(const Triple &TT) {
   if (TT.isOSAIX())
     return std::make_unique<TargetLoweringObjectFileXCOFF>();
+  if (TT.isOSBinFormatCOFF())
+    return std::make_unique<TargetLoweringObjectFileCOFF>();
 
   return std::make_unique<PPC64LinuxTargetObjectFile>();
 }
@@ -252,6 +255,9 @@ getEffectivePPCCodeModel(const Triple &TT, std::optional<CodeModel::Model> CM,
       return CodeModel::Large;
     return CodeModel::Small;
   }
+
+  if (TT.isOSBinFormatCOFF())
+    return CodeModel::Small;
 
   assert(TT.isOSBinFormatELF() && "All remaining PPC OSes are ELF based.");
 

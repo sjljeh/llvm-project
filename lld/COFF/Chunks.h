@@ -251,6 +251,12 @@ public:
       if (file->getMachineType() == llvm::COFF::IMAGE_FILE_MACHINE_R4000 &&
           I->Type == llvm::COFF::IMAGE_REL_MIPS_PAIR)
         return nullptr;
+      if (file->getMachineType() == llvm::COFF::IMAGE_FILE_MACHINE_POWERPC) {
+        uint16_t type = I->Type & llvm::COFF::IMAGE_REL_PPC_TYPEMASK;
+        if (type == llvm::COFF::IMAGE_REL_PPC_PAIR ||
+            type == llvm::COFF::IMAGE_REL_PPC_IMGLUE)
+          return nullptr;
+      }
       return file->getSymbol(I->SymbolTableIndex);
     }
   };
@@ -290,6 +296,8 @@ public:
                      uint64_t p, uint64_t imageBase) const;
   void applyRelMIPS(uint8_t *off, const coff_relocation &rel, OutputSection *os,
                     uint64_t s, uint64_t p, uint64_t imageBase) const;
+  void applyRelPPC(uint8_t *off, const coff_relocation &rel, OutputSection *os,
+                   uint64_t s, uint64_t p, uint64_t imageBase) const;
 
   void getRuntimePseudoRelocs(std::vector<RuntimePseudoReloc> &res);
 

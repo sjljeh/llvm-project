@@ -113,6 +113,33 @@ getOldNewOptions(COFFLinkerContext &ctx, opt::InputArgList &args, unsigned id) {
   return ret;
 }
 
+static StringRef getPPCDescriptorName(SymbolTable &symtab, StringRef name) {
+  if (symtab.machine == IMAGE_FILE_MACHINE_POWERPC && name.starts_with(".."))
+    return saver().save(name.substr(2));
+  return name;
+}
+
+static StringRef getPPCCodeEntryName(SymbolTable &symtab, StringRef name) {
+  if (symtab.machine == IMAGE_FILE_MACHINE_POWERPC && !name.starts_with(".."))
+    return saver().save(".." + name);
+  return name;
+}
+
+static Symbol *addEntryRoot(SymbolTable &symtab, StringRef entryName,
+                            bool aliasEC = true) {
+  if (symtab.machine != IMAGE_FILE_MACHINE_POWERPC)
+    return symtab.addGCRoot(entryName, aliasEC);
+
+  // Windows NT PowerPC PE headers name the function descriptor as the entry
+  // point. Keep the code entry live as well so archive extraction and GC see
+  // both sides of the descriptor ABI.
+  Symbol *entry =
+      symtab.addGCRoot(getPPCDescriptorName(symtab, entryName), aliasEC);
+  if (entryName.starts_with(".."))
+    symtab.addGCRoot(getPPCCodeEntryName(symtab, entryName));
+  return entry;
+}
+
 // Parse options of the form "old;new[;extra]".
 static std::tuple<StringRef, StringRef, StringRef>
 getOldNewOptionsExtra(COFFLinkerContext &ctx, opt::InputArgList &args,
@@ -614,7 +641,8 @@ void LinkerDriver::parseDirectives(InputFile *file) {
       if (!arg->getValue()[0])
         Fatal(ctx) << "missing entry point symbol name";
       ctx.forEachActiveSymtab([&](SymbolTable &symtab) {
-        symtab.entry = symtab.addGCRoot(symtab.mangle(arg->getValue()), true);
+        StringRef entryName = symtab.mangle(arg->getValue());
+        symtab.entry = addEntryRoot(symtab, entryName);
       });
       break;
     case OPT_failifmismatch:
@@ -2030,6 +2058,14 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   for (auto *arg : args.filtered(OPT_incl))
     ctx.symtab.addGCRoot(arg->getValue());
 
+  // PPC function entry points are named "..foo", while PE headers and archive
+  // indices use the descriptor symbol "foo". Root both before archive
+  // extraction so the right startup member is loaded first.
+  if (ctx.symtab.machine == IMAGE_FILE_MACHINE_POWERPC) {
+    if (auto *arg = args.getLastArg(OPT_entry))
+      addEntryRoot(ctx.symtab, ctx.symtab.mangle(arg->getValue()), false);
+  }
+
   // Handle /implib
   if (auto *arg = args.getLastArg(OPT_implib))
     config->implib = arg->getValue();
@@ -2530,22 +2566,23 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     if (auto *arg = args.getLastArg(OPT_entry)) {
       if (!arg->getValue()[0])
         Fatal(ctx) << "missing entry point symbol name";
-      symtab.entry = symtab.addGCRoot(symtab.mangle(arg->getValue()), true);
+      StringRef entryName = symtab.mangle(arg->getValue());
+      symtab.entry = addEntryRoot(symtab, entryName);
     } else if (!symtab.entry && !config->noEntry) {
       if (args.hasArg(OPT_dll)) {
         StringRef s = DllDefaultEntryPoint(config->machine, config->mingw);
-        symtab.entry = symtab.addGCRoot(s, true);
+        symtab.entry = addEntryRoot(symtab, s);
       } else if (config->driverWdm) {
         // /driver:wdm implies /entry:_NtProcessStartup
-        symtab.entry =
-            symtab.addGCRoot(symtab.mangle("_NtProcessStartup"), true);
+        StringRef entryName = symtab.mangleEntry("_NtProcessStartup");
+        symtab.entry = addEntryRoot(symtab, entryName);
       } else {
         // Windows specific -- If entry point name is not given, we need to
         // infer that from user-defined entry name.
         StringRef s = symtab.findDefaultEntry();
         if (s.empty())
           Fatal(ctx) << "entry point must be defined";
-        symtab.entry = symtab.addGCRoot(s, true);
+        symtab.entry = addEntryRoot(symtab, s);
         Log(ctx) << "Entry name inferred: " << s;
       }
     }
@@ -2634,6 +2671,8 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
 
   ctx.forEachSymtab([&](SymbolTable &symtab) {
     symtab.addSynthetic(symtab.mangle("__ImageBase"), nullptr);
+    if (symtab.machine == IMAGE_FILE_MACHINE_POWERPC)
+      symtab.addSynthetic(".toc", nullptr);
     if (symtab.machine == I386) {
       symtab.addAbsolute("___safe_se_handler_table", 0);
       symtab.addAbsolute("___safe_se_handler_count", 0);

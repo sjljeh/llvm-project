@@ -193,6 +193,8 @@ public:
   bool isVirtualFrameRegister(MCRegister Reg) const override {
     return Reg == PPC::FP || Reg == PPC::FP8;
   }
+
+  bool isIgnoredCVReg(MCRegister LLVMReg) const override;
 };
 
 } // end namespace llvm

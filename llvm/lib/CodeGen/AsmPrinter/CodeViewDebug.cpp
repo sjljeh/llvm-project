@@ -125,6 +125,9 @@ static CPUType mapArchToCVCPUType(Triple::ArchType Type) {
     return CPUType::ARM64;
   case Triple::ArchType::mipsel:
     return CPUType::MIPS;
+  case Triple::ArchType::ppc:
+  case Triple::ArchType::ppcle:
+    return CPUType::PPC601;
   case Triple::ArchType::UnknownArch:
     return CPUType::Unknown;
   default:
@@ -1119,7 +1122,7 @@ void CodeViewDebug::emitDebugInfoForFunction(const Function *GV,
                                              FunctionInfo &FI) {
   // For each function there is a separate subsection which holds the PC to
   // file:line table.
-  const MCSymbol *Fn = Asm->getSymbol(GV);
+  const MCSymbol *Fn = Asm->getFunctionSymbolForDebug(GV);
   assert(Fn);
 
   // Switch to the to a comdat section, if appropriate.

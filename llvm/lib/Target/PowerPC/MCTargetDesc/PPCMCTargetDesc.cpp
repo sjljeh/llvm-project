@@ -21,6 +21,7 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/BinaryFormat/ELF.h"
+#include "llvm/DebugInfo/CodeView/CodeView.h"
 #include "llvm/MC/MCAsmBackend.h"
 #include "llvm/MC/MCAssembler.h"
 #include "llvm/MC/MCCodeEmitter.h"
@@ -58,6 +59,45 @@ using namespace llvm;
 
 #define GET_REGINFO_MC_DESC
 #include "PPCGenRegisterInfo.inc"
+
+void PPC_MC::initLLVMToCVRegMapping(MCRegisterInfo *MRI) {
+  static const struct {
+    codeview::RegisterId CVReg;
+    MCPhysReg Reg;
+  } RegMap[] = {
+#define PPC_CV_GPR(N) {codeview::RegisterId::PPC_GPR##N, PPC::R##N}
+      PPC_CV_GPR(0),  PPC_CV_GPR(1),  PPC_CV_GPR(2),  PPC_CV_GPR(3),
+      PPC_CV_GPR(4),  PPC_CV_GPR(5),  PPC_CV_GPR(6),  PPC_CV_GPR(7),
+      PPC_CV_GPR(8),  PPC_CV_GPR(9),  PPC_CV_GPR(10), PPC_CV_GPR(11),
+      PPC_CV_GPR(12), PPC_CV_GPR(13), PPC_CV_GPR(14), PPC_CV_GPR(15),
+      PPC_CV_GPR(16), PPC_CV_GPR(17), PPC_CV_GPR(18), PPC_CV_GPR(19),
+      PPC_CV_GPR(20), PPC_CV_GPR(21), PPC_CV_GPR(22), PPC_CV_GPR(23),
+      PPC_CV_GPR(24), PPC_CV_GPR(25), PPC_CV_GPR(26), PPC_CV_GPR(27),
+      PPC_CV_GPR(28), PPC_CV_GPR(29), PPC_CV_GPR(30), PPC_CV_GPR(31),
+#undef PPC_CV_GPR
+#define PPC_CV_FPR(N) {codeview::RegisterId::PPC_FPR##N, PPC::F##N}
+      PPC_CV_FPR(0),  PPC_CV_FPR(1),  PPC_CV_FPR(2),  PPC_CV_FPR(3),
+      PPC_CV_FPR(4),  PPC_CV_FPR(5),  PPC_CV_FPR(6),  PPC_CV_FPR(7),
+      PPC_CV_FPR(8),  PPC_CV_FPR(9),  PPC_CV_FPR(10), PPC_CV_FPR(11),
+      PPC_CV_FPR(12), PPC_CV_FPR(13), PPC_CV_FPR(14), PPC_CV_FPR(15),
+      PPC_CV_FPR(16), PPC_CV_FPR(17), PPC_CV_FPR(18), PPC_CV_FPR(19),
+      PPC_CV_FPR(20), PPC_CV_FPR(21), PPC_CV_FPR(22), PPC_CV_FPR(23),
+      PPC_CV_FPR(24), PPC_CV_FPR(25), PPC_CV_FPR(26), PPC_CV_FPR(27),
+      PPC_CV_FPR(28), PPC_CV_FPR(29), PPC_CV_FPR(30), PPC_CV_FPR(31),
+#undef PPC_CV_FPR
+#define PPC_CV_CR(N) {codeview::RegisterId::PPC_CR##N, PPC::CR##N}
+      PPC_CV_CR(0), PPC_CV_CR(1), PPC_CV_CR(2), PPC_CV_CR(3),
+      PPC_CV_CR(4), PPC_CV_CR(5), PPC_CV_CR(6), PPC_CV_CR(7),
+#undef PPC_CV_CR
+      {codeview::RegisterId::PPC_XER, PPC::XER},
+      {codeview::RegisterId::PPC_LR, PPC::LR},
+      {codeview::RegisterId::PPC_CTR, PPC::CTR},
+      {codeview::RegisterId::PPC_GPR31, PPC::FP},
+      {codeview::RegisterId::PPC_GPR30, PPC::BP},
+  };
+  for (const auto &I : RegMap)
+    MRI->mapLLVMRegToCVReg(I.Reg, static_cast<int>(I.CVReg));
+}
 
 /// stripRegisterPrefix - This method strips the character prefix from a
 /// register name so that only the number is left.  Used by for linux asm.
@@ -162,6 +202,7 @@ static MCRegisterInfo *createPPCMCRegisterInfo(const Triple &TT) {
 
   MCRegisterInfo *X = new MCRegisterInfo();
   InitPPCMCRegisterInfo(X, RA, Flavour, Flavour);
+  PPC_MC::initLLVMToCVRegMapping(X);
   return X;
 }
 
@@ -189,6 +230,8 @@ static MCAsmInfo *createPPCMCAsmInfo(const MCRegisterInfo &MRI,
   MCAsmInfo *MAI;
   if (TheTriple.isOSBinFormatXCOFF())
     MAI = new PPCXCOFFMCAsmInfo(isPPC64, TheTriple, Options);
+  else if (TheTriple.isOSBinFormatCOFF())
+    MAI = new PPCCOFFMCAsmInfo(TheTriple, Options);
   else
     MAI = new PPCELFMCAsmInfo(isPPC64, TheTriple, Options);
 
@@ -499,6 +542,9 @@ LLVMInitializePowerPCTargetMC() {
 
     // Register the elf streamer.
     TargetRegistry::RegisterELFStreamer(*T, createPPCELFStreamer);
+
+    // Register the COFF streamer.
+    TargetRegistry::RegisterCOFFStreamer(*T, createPPCWinCOFFStreamer);
 
     // Register the XCOFF streamer.
     TargetRegistry::RegisterXCOFFStreamer(*T, createPPCXCOFFStreamer);

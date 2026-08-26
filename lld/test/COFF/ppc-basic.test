@@ -1,0 +1,72 @@
+# RUN: split-file %s %t
+# RUN: llvm-mc -triple=powerpcle-pc-windows -filetype=obj %t/entry.s -o %t/entry.obj
+# RUN: llvm-mc -triple=powerpcle-pc-windows -filetype=obj %t/helper.s -o %t/helper.obj
+# RUN: yaml2obj %t/glue.yaml -o %t/glue.obj
+# RUN: lld-link /machine:ppc /entry:entry /subsystem:native /nodefaultlib /out:%t.exe %t/entry.obj %t/helper.obj %t/glue.obj
+# RUN: llvm-readobj --file-headers --sections %t.exe | FileCheck %s --check-prefix=HEADERS
+# RUN: llvm-objdump -d --triple=powerpcle-pc-windows --no-show-raw-insn %t.exe | FileCheck %s --check-prefix=DISASM
+# RUN: llvm-objdump -s -j .rdata %t.exe | FileCheck %s --check-prefix=RDATA
+
+# HEADERS:      Format: COFF-PowerPC
+# HEADERS:      Machine: IMAGE_FILE_MACHINE_POWERPC (0x1F0)
+# HEADERS:      AddressOfEntryPoint: 0x2000
+# HEADERS:      Name: .text
+# HEADERS:      VirtualAddress: 0x1000
+# HEADERS:      Name: .rdata
+# HEADERS:      VirtualAddress: 0x2000
+
+# DISASM:       00401000 <.text>:
+# DISASM-NEXT:    401000:      bl 0x401008 <.text+0x8>
+# DISASM-NEXT:    401004:      b 0x401004 <.text+0x4>
+# DISASM-NEXT:    401008:      addi 3, 3, 3
+# DISASM-NEXT:    40100c:      blr
+
+# The two eight-byte descriptors contain {code VA, biased TOC VA}.
+# RDATA:        Contents of section .rdata:
+# RDATA-NEXT:   402000 00104000 00a04000 08104000 00a04000
+
+#--- entry.s
+.text
+.globl ..entry
+..entry:
+  bl ..helper
+  b .
+
+.section .rdata,"dr"
+.globl entry
+entry:
+  .long ..entry
+  .long .toc
+
+#--- helper.s
+.text
+.globl ..helper
+..helper:
+  addi 3, 3, 3
+  blr
+
+.section .rdata,"dr"
+.globl helper
+helper:
+  .long ..helper
+  .long .toc
+
+#--- glue.yaml
+--- !COFF
+header:
+  Machine:         IMAGE_FILE_MACHINE_POWERPC
+  Characteristics: []
+sections:
+  - Name:            .text
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     00000000
+    Relocations:
+      # IMAGE_REL_PPC_IMGLUE stores an instruction offset in the symbol-index
+      # field, so it must never be treated as a real symbol table index while
+      # collecting base relocations.
+      - VirtualAddress:  0
+        SymbolTableIndex: 65535
+        Type:            14 # IMAGE_REL_PPC_IMGLUE
+symbols: []
+...

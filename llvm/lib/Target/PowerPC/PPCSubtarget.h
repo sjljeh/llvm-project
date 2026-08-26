@@ -205,6 +205,11 @@ public:
   bool isTargetLinux() const { return getTargetTriple().isOSLinux(); }
 
   bool isAIXABI() const { return getTargetTriple().isOSAIX(); }
+  bool isPPCWinCOFFABI() const {
+    const Triple &TT = getTargetTriple();
+    return TT.isOSBinFormatCOFF() &&
+           (TT.getArch() == Triple::ppc || TT.getArch() == Triple::ppcle);
+  }
   bool isSVR4ABI() const { return !isAIXABI(); }
   bool isELFv2ABI() const;
 
@@ -249,7 +254,8 @@ public:
   bool usesFunctionDescriptors() const {
     // Both 32-bit and 64-bit AIX are descriptor based. For ELF only the 64-bit
     // v1 ABI uses descriptors.
-    return isAIXABI() || (is64BitELFABI() && !isELFv2ABI());
+    return isAIXABI() || isPPCWinCOFFABI() ||
+           (is64BitELFABI() && !isELFv2ABI());
   }
 
   unsigned descriptorTOCAnchorOffset() const {
@@ -271,7 +277,7 @@ public:
   }
 
   MCRegister getTOCPointerRegister() const {
-    assert((is64BitELFABI() || isAIXABI()) &&
+    assert((is64BitELFABI() || isAIXABI() || isPPCWinCOFFABI()) &&
            "Should only be called when the target is a TOC based ABI.");
     return IsPPC64 ? PPC::X2 : PPC::R2;
   }

@@ -98,6 +98,14 @@ constexpr EnumStringDef<MCAsmInfo::AtSpecifierKind> ELFAtSpecifierDefs[] = {
 };
 constexpr auto elfAtSpecifiers = BUILD_ENUM_STRINGS(ELFAtSpecifierDefs);
 
+constexpr EnumStringDef<MCAsmInfo::AtSpecifierKind> COFFAtSpecifierDefs[] = {
+    {{"ha"}, PPC::S_HA},
+    {{"h"}, PPC::S_HI},
+    {{"l"}, PPC::S_LO},
+    {{"IMGREL"}, MCSymbolRefExpr::VK_COFF_IMGREL32},
+};
+constexpr auto coffAtSpecifiers = BUILD_ENUM_STRINGS(COFFAtSpecifierDefs);
+
 constexpr EnumStringDef<MCAsmInfo::AtSpecifierKind> XCOFFAtSpecifierDefs[] = {
     // clang-format off
     {{"gd"}, PPC::S_AIX_TLSGD},
@@ -255,6 +263,35 @@ void PPCXCOFFMCAsmInfo::printSpecifierExpr(raw_ostream &OS,
 }
 
 bool PPCXCOFFMCAsmInfo::evaluateAsRelocatableImpl(
+    const MCSpecifierExpr &Expr, MCValue &Res, const MCAssembler *Asm) const {
+  return evaluateAsRelocatable(Expr, Res, Asm);
+}
+
+PPCCOFFMCAsmInfo::PPCCOFFMCAsmInfo(const Triple &T,
+                                   const MCTargetOptions &Options)
+    : MCAsmInfoGNUCOFF(Options) {
+  assert(T.getArch() == Triple::ppcle &&
+         "Windows NT PowerPC requires little-endian code");
+  CodePointerSize = CalleeSaveStackSlotSize = 4;
+  IsLittleEndian = true;
+  AlignmentIsInBytes = false;
+  CommentString = "#";
+  DollarIsPC = true;
+  MinInstAlignment = 4;
+  SupportsDebugInformation = true;
+  ExceptionsType = ExceptionHandling::WinEH;
+  WinEHEncodingType = WinEH::EncodingType::PPC;
+  InternalSymbolPrefix = ".L";
+  initializeAtSpecifiers(coffAtSpecifiers);
+}
+
+void PPCCOFFMCAsmInfo::printSpecifierExpr(
+    raw_ostream &OS, const MCSpecifierExpr &Expr) const {
+  printExpr(OS, *Expr.getSubExpr());
+  OS << '@' << getSpecifierName(Expr.getSpecifier());
+}
+
+bool PPCCOFFMCAsmInfo::evaluateAsRelocatableImpl(
     const MCSpecifierExpr &Expr, MCValue &Res, const MCAssembler *Asm) const {
   return evaluateAsRelocatable(Expr, Res, Asm);
 }

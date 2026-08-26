@@ -23,6 +23,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
 #include <iterator>
+#include <optional>
 
 using namespace llvm;
 using namespace llvm::object;
@@ -166,6 +167,176 @@ void SectionChunk::applyRelX86(uint8_t *off, uint16_t type, OutputSection *os,
   default:
     error("unsupported relocation type 0x" + Twine::utohexstr(type) + " in " +
           toString(file));
+  }
+}
+
+static uint16_t readPPC16(uint8_t *off, bool isLE) {
+  return isLE ? read16le(off) : read16be(off);
+}
+
+static uint32_t readPPC32(uint8_t *off, bool isLE) {
+  return isLE ? read32le(off) : read32be(off);
+}
+
+static void writePPC16(uint8_t *off, uint16_t v, bool isLE) {
+  if (isLE)
+    write16le(off, v);
+  else
+    write16be(off, v);
+}
+
+static void writePPC32(uint8_t *off, uint32_t v, bool isLE) {
+  if (isLE)
+    write32le(off, v);
+  else
+    write32be(off, v);
+}
+
+static void applyPPCImm16(uint8_t *off, uint16_t v, bool isLE) {
+  writePPC16(off, v, isLE);
+}
+
+static void applyPPCAddr24(uint8_t *off, uint64_t v, bool isLE) {
+  uint32_t inst = readPPC32(off, isLE);
+  writePPC32(off, (inst & 0xfc000003) | (v & 0x03fffffc), isLE);
+}
+
+static void applyPPCAddr14(uint8_t *off, uint64_t v, bool isLE) {
+  uint32_t inst = readPPC32(off, isLE);
+  writePPC32(off, (inst & 0xffff0003) | (v & 0x0000fffc), isLE);
+}
+
+static int64_t getPPCPairAddend(const SectionChunk *sec,
+                                const coff_relocation &rel) {
+  ArrayRef<coff_relocation> relocs = sec->getRelocs();
+  auto it = llvm::find_if(relocs,
+                          [&](const coff_relocation &r) { return &r == &rel; });
+  if (it == relocs.end() || std::next(it) == relocs.end() ||
+      std::next(it)->Type != IMAGE_REL_PPC_PAIR) {
+    error("PowerPC HI16 relocation without matching PAIR relocation in " +
+          toString(sec->file));
+    return 0;
+  }
+  return SignExtend64<16>(std::next(it)->SymbolTableIndex & 0xffff);
+}
+
+static std::optional<uint64_t> getPPCTocRVA(const SectionChunk *sec) {
+  Symbol *toc = sec->file->symtab.ctx.symtab.find(".toc");
+  if (auto *d = dyn_cast_or_null<Defined>(toc))
+    return d->getRVA();
+
+  error("PowerPC TOC-relative relocation without .toc definition in " +
+        toString(sec->file));
+  return std::nullopt;
+}
+
+static std::optional<uint32_t> getPPCImportGlueInst(Symbol *sym) {
+  auto *d = dyn_cast_or_null<DefinedRegular>(sym);
+  if (!d)
+    return std::nullopt;
+
+  auto *obj = dyn_cast<ObjFile>(d->getFile());
+  if (!obj)
+    return std::nullopt;
+
+  for (Chunk *chunk : obj->getChunks()) {
+    auto *sec = dyn_cast<SectionChunk>(chunk);
+    if (!sec)
+      continue;
+    for (const coff_relocation &rel : sec->getRelocs()) {
+      if ((rel.Type & IMAGE_REL_PPC_TYPEMASK) != IMAGE_REL_PPC_IMGLUE)
+        continue;
+      if (obj->getSymbol(rel.SymbolTableIndex) == sym)
+        return rel.VirtualAddress;
+    }
+  }
+
+  return std::nullopt;
+}
+
+void SectionChunk::applyRelPPC(uint8_t *off, const coff_relocation &rel,
+                               OutputSection *os, uint64_t s, uint64_t p,
+                               uint64_t imageBase) const {
+  bool isLE = getArch() == Triple::ppcle;
+  uint16_t type = rel.Type & IMAGE_REL_PPC_TYPEMASK;
+  uint64_t va = s + imageBase;
+  switch (type) {
+  case IMAGE_REL_PPC_ABSOLUTE:
+  case IMAGE_REL_PPC_PAIR:
+  case IMAGE_REL_PPC_IMGLUE:
+    break;
+  case IMAGE_REL_PPC_IFGLUE:
+    if (std::optional<uint32_t> inst =
+            getPPCImportGlueInst(file->getSymbol(rel.SymbolTableIndex)))
+      writePPC32(off, *inst, isLE);
+    break;
+  case IMAGE_REL_PPC_ADDR64:
+    add64(off, va);
+    break;
+  case IMAGE_REL_PPC_ADDR32:
+    writePPC32(off, readPPC32(off, isLE) + va, isLE);
+    break;
+  case IMAGE_REL_PPC_ADDR32NB:
+    writePPC32(off, readPPC32(off, isLE) + s, isLE);
+    break;
+  case IMAGE_REL_PPC_ADDR24:
+    applyPPCAddr24(off, va + (readPPC32(off, isLE) & 0x03fffffc), isLE);
+    break;
+  case IMAGE_REL_PPC_ADDR14:
+    applyPPCAddr14(off, va + (readPPC32(off, isLE) & 0x0000fffc), isLE);
+    break;
+  case IMAGE_REL_PPC_REL24:
+    applyPPCAddr24(off, static_cast<int64_t>(s) - static_cast<int64_t>(p),
+                   isLE);
+    break;
+  case IMAGE_REL_PPC_REL14:
+    applyPPCAddr14(off, static_cast<int64_t>(s) - static_cast<int64_t>(p),
+                   isLE);
+    break;
+  case IMAGE_REL_PPC_TOCREL16:
+    if (std::optional<uint64_t> tocRVA = getPPCTocRVA(this)) {
+      int64_t v = static_cast<int64_t>(s) - static_cast<int64_t>(*tocRVA) +
+                  readPPC16(off, isLE);
+      applyPPCImm16(off, v, isLE);
+    }
+    break;
+  case IMAGE_REL_PPC_TOCREL14:
+    if (std::optional<uint64_t> tocRVA = getPPCTocRVA(this)) {
+      int64_t v = static_cast<int64_t>(s) - static_cast<int64_t>(*tocRVA) +
+                  (readPPC32(off, isLE) & 0x0000fffc);
+      applyPPCAddr14(off, v, isLE);
+    }
+    break;
+  case IMAGE_REL_PPC_REFHI: {
+    uint64_t v = va + (uint64_t(readPPC16(off, isLE)) << 16) +
+                 getPPCPairAddend(this, rel);
+    applyPPCImm16(off, ((v + 0x8000) >> 16) & 0xffff, isLE);
+    break;
+  }
+  case IMAGE_REL_PPC_REFLO:
+    applyPPCImm16(off, (va + readPPC16(off, isLE)) & 0xffff, isLE);
+    break;
+  case IMAGE_REL_PPC_SECTION:
+    applySecIdx(off, os, file->symtab.ctx.outputSections.size());
+    break;
+  case IMAGE_REL_PPC_SECREL:
+    applySecRel(this, off, os, s);
+    break;
+  case IMAGE_REL_PPC_SECRELLO:
+    if (checkSecRel(this, os))
+      applyPPCImm16(off, (s - os->getRVA() + readPPC16(off, isLE)) & 0xffff,
+                    isLE);
+    break;
+  case IMAGE_REL_PPC_SECRELHI:
+    if (checkSecRel(this, os)) {
+      uint64_t v = s - os->getRVA() + (uint64_t(readPPC16(off, isLE)) << 16) +
+                   getPPCPairAddend(this, rel);
+      applyPPCImm16(off, ((v + 0x8000) >> 16) & 0xffff, isLE);
+    }
+    break;
+  default:
+    error("unsupported relocation type 0x" + Twine::utohexstr(rel.Type) +
+          " in " + toString(file));
   }
 }
 
@@ -488,6 +659,12 @@ void SectionChunk::writeTo(uint8_t *buf) const {
   // Apply relocations.
   size_t inputSize = getSize();
   for (const coff_relocation &rel : getRelocs()) {
+    Triple::ArchType arch = getArch();
+    if (arch == Triple::ppcle &&
+        ((rel.Type & IMAGE_REL_PPC_TYPEMASK) == IMAGE_REL_PPC_PAIR ||
+         (rel.Type & IMAGE_REL_PPC_TYPEMASK) == IMAGE_REL_PPC_IMGLUE))
+      continue;
+
     // Check for an invalid relocation offset. This check isn't perfect, because
     // we don't have the relocation size, which is only known after checking the
     // machine and relocation type. As a result, a relocation may overwrite the
@@ -545,6 +722,9 @@ void SectionChunk::applyRelocation(uint8_t *off,
     break;
   case Triple::mipsel:
     applyRelMIPS(off, rel, os, s, p, imageBase);
+    break;
+  case Triple::ppcle:
+    applyRelPPC(off, rel, os, s, p, imageBase);
     break;
   default:
     llvm_unreachable("unknown machine type");
@@ -622,6 +802,12 @@ static uint8_t getBaserelType(const coff_relocation &rel,
     if (rel.Type == IMAGE_REL_I386_DIR32)
       return IMAGE_REL_BASED_HIGHLOW;
     return IMAGE_REL_BASED_ABSOLUTE;
+  case Triple::ppcle:
+    if ((rel.Type & IMAGE_REL_PPC_TYPEMASK) == IMAGE_REL_PPC_ADDR64)
+      return IMAGE_REL_BASED_DIR64;
+    if ((rel.Type & IMAGE_REL_PPC_TYPEMASK) == IMAGE_REL_PPC_ADDR32)
+      return IMAGE_REL_BASED_HIGHLOW;
+    return IMAGE_REL_BASED_ABSOLUTE;
   case Triple::thumb:
     if (rel.Type == IMAGE_REL_ARM_ADDR32)
       return IMAGE_REL_BASED_HIGHLOW;
@@ -652,6 +838,28 @@ static uint8_t getBaserelType(const coff_relocation &rel,
   }
 }
 
+static bool addPPCBaserelHighLow(const SectionChunk *sec,
+                                 const coff_relocation &rel, Defined *target,
+                                 uint16_t type, std::vector<Baserel> *res) {
+  if (type == IMAGE_REL_PPC_REFHI) {
+    ArrayRef<uint8_t> data = sec->getContents();
+    if (rel.VirtualAddress + 2 <= data.size()) {
+      uint16_t hi = readPPC16(
+          const_cast<uint8_t *>(data.data() + rel.VirtualAddress), true);
+      uint64_t v = target->getRVA() + sec->file->symtab.ctx.config.imageBase +
+                   (uint64_t(hi) << 16) + getPPCPairAddend(sec, rel);
+      res->emplace_back(sec->rva + rel.VirtualAddress,
+                        IMAGE_REL_BASED_HIGHADJ, v & 0xffff);
+    }
+    return true;
+  }
+  if (type == IMAGE_REL_PPC_REFLO) {
+    res->emplace_back(sec->rva + rel.VirtualAddress, IMAGE_REL_BASED_LOW);
+    return true;
+  }
+  return false;
+}
+
 // Windows-specific.
 // Collect all locations that contain absolute addresses, which need to be
 // fixed by the loader if load-time relocation is needed.
@@ -660,6 +868,11 @@ void SectionChunk::getBaserels(std::vector<Baserel> *res) {
   for (const coff_relocation &rel : getRelocs()) {
     if (getArch() == Triple::mipsel && rel.Type == IMAGE_REL_MIPS_PAIR)
       continue;
+    if (getArch() == Triple::ppcle) {
+      uint16_t type = rel.Type & IMAGE_REL_PPC_TYPEMASK;
+      if (type == IMAGE_REL_PPC_PAIR || type == IMAGE_REL_PPC_IMGLUE)
+        continue;
+    }
 
     Symbol *target = file->getSymbol(rel.SymbolTableIndex);
     if (!isa_and_nonnull<Defined>(target) || isa<DefinedAbsolute>(target))
@@ -682,6 +895,12 @@ void SectionChunk::getBaserels(std::vector<Baserel> *res) {
         res->emplace_back(rva + rel.VirtualAddress, IMAGE_REL_BASED_LOW);
         continue;
       }
+    }
+
+    if (getArch() == Triple::ppcle) {
+      uint16_t type = rel.Type & IMAGE_REL_PPC_TYPEMASK;
+      if (addPPCBaserelHighLow(this, rel, cast<Defined>(target), type, res))
+        continue;
     }
 
     uint8_t ty = getBaserelType(rel, getArch());
@@ -772,6 +991,17 @@ static int getRuntimePseudoRelocSize(uint16_t type, Triple::ArchType arch) {
     default:
       return 0;
     }
+  case Triple::ppcle:
+    switch (type & IMAGE_REL_PPC_TYPEMASK) {
+    case IMAGE_REL_PPC_ADDR64:
+      return 64;
+    case IMAGE_REL_PPC_ADDR32:
+    case IMAGE_REL_PPC_ADDR32NB:
+      return 32;
+    default:
+      return 0;
+    }
+
   case Triple::thumb:
     switch (type) {
     case IMAGE_REL_ARM_ADDR32:

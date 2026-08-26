@@ -32,6 +32,7 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/BinaryFormat/COFF.h"
 #include "llvm/BinaryFormat/ELF.h"
 #include "llvm/CodeGen/AsmPrinter.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
@@ -54,6 +55,7 @@
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCInstBuilder.h"
+#include "llvm/MC/MCSectionCOFF.h"
 #include "llvm/MC/MCSectionELF.h"
 #include "llvm/MC/MCSectionXCOFF.h"
 #include "llvm/MC/MCStreamer.h"
@@ -322,7 +324,38 @@ public:
   void emitGlobalIFunc(Module &M, const GlobalIFunc &GI) override;
 };
 
+class PPCWinCOFFAsmPrinter : public PPCAsmPrinter {
+  MCSymbol *getFunctionEntryPointSymbol(const GlobalValue *GV) const;
+
+public:
+  static char ID;
+
+  explicit PPCWinCOFFAsmPrinter(TargetMachine &TM,
+                                std::unique_ptr<MCStreamer> Streamer)
+      : PPCAsmPrinter(TM, std::move(Streamer), ID) {}
+
+  StringRef getPassName() const override {
+    return "Windows COFF PPC Assembly Printer";
+  }
+
+  void SetupMachineFunction(MachineFunction &MF) override;
+  MCSymbol *getFunctionSymbolForDebug(const GlobalValue *GV) const override {
+    return getFunctionEntryPointSymbol(GV);
+  }
+  void emitFunctionEntryLabel() override;
+  void emitFunctionDescriptor() override;
+};
+
 } // end anonymous namespace
+
+static bool isPPCWinCOFFABI(const Triple &TT) {
+  return TT.isOSBinFormatCOFF() &&
+         (TT.getArch() == Triple::ppc || TT.getArch() == Triple::ppcle);
+}
+
+static MCSymbol *getPPCWinCOFFEntryPointSymbol(MCContext &Ctx, StringRef Name) {
+  return Ctx.getOrCreateSymbol(Twine("..") + Name);
+}
 
 void PPCAsmPrinter::PrintSymbolOperand(const MachineOperand &MO,
                                        raw_ostream &O) {
@@ -2236,6 +2269,50 @@ void PPCLinuxAsmPrinter::emitFunctionBodyEnd() {
   }
 }
 
+MCSymbol *
+PPCWinCOFFAsmPrinter::getFunctionEntryPointSymbol(const GlobalValue *GV) const {
+  SmallString<128> Name;
+  getObjFileLowering().getNameWithPrefix(Name, GV, TM);
+  return getPPCWinCOFFEntryPointSymbol(OutContext, Name);
+}
+
+void PPCWinCOFFAsmPrinter::SetupMachineFunction(MachineFunction &MF) {
+  PPCAsmPrinter::SetupMachineFunction(MF);
+
+  CurrentFnDescSym = CurrentFnSym;
+  CurrentFnSym = getFunctionEntryPointSymbol(&MF.getFunction());
+  if (CurrentFnSymForSize == CurrentFnDescSym)
+    CurrentFnSymForSize = CurrentFnSym;
+}
+
+void PPCWinCOFFAsmPrinter::emitFunctionEntryLabel() {
+  const Function &F = MF->getFunction();
+
+  emitVisibility(CurrentFnDescSym, F.getVisibility());
+  emitLinkage(&F, CurrentFnDescSym);
+  emitFunctionDescriptor();
+
+  PPCAsmPrinter::emitFunctionEntryLabel();
+}
+
+void PPCWinCOFFAsmPrinter::emitFunctionDescriptor() {
+  const unsigned PointerSize = getDataLayout().getPointerSize();
+  MCSectionSubPair Current = OutStreamer->getCurrentSection();
+  MCSection *DescSection =
+      OutContext.getCOFFSection(".rdata", COFF::IMAGE_SCN_CNT_INITIALIZED_DATA |
+                                              COFF::IMAGE_SCN_MEM_READ);
+
+  OutStreamer->switchSection(DescSection);
+  OutStreamer->emitValueToAlignment(Align(PointerSize));
+  OutStreamer->emitLabel(CurrentFnDescSym);
+  OutStreamer->emitValue(MCSymbolRefExpr::create(CurrentFnSym, OutContext),
+                         PointerSize);
+  OutStreamer->emitValue(
+      MCSymbolRefExpr::create(OutContext.getOrCreateSymbol(".toc"), OutContext),
+      PointerSize);
+  OutStreamer->switchSection(Current.first, Current.second);
+}
+
 char PPCLinuxAsmPrinter::ID = 0;
 
 INITIALIZE_PASS(PPCLinuxAsmPrinter, "ppc-linux-asm-printer",
@@ -3396,6 +3473,9 @@ createPPCAsmPrinterPass(TargetMachine &tm,
   if (tm.getTargetTriple().isOSAIX())
     return new PPCAIXAsmPrinter(tm, std::move(Streamer));
 
+  if (isPPCWinCOFFABI(tm.getTargetTriple()))
+    return new PPCWinCOFFAsmPrinter(tm, std::move(Streamer));
+
   return new PPCLinuxAsmPrinter(tm, std::move(Streamer));
 }
 
@@ -3649,9 +3729,12 @@ void PPCAIXAsmPrinter::emitGlobalIFunc(Module &M, const GlobalIFunc &GI) {
 }
 
 char PPCAIXAsmPrinter::ID = 0;
+char PPCWinCOFFAsmPrinter::ID = 0;
 
 INITIALIZE_PASS(PPCAIXAsmPrinter, "ppc-aix-asm-printer",
                 "AIX PPC Assembly Printer", false, false)
+INITIALIZE_PASS(PPCWinCOFFAsmPrinter, "ppc-wincoff-asm-printer",
+                "Windows COFF PPC Assembly Printer", false, false)
 
 // Force static initialization.
 extern "C" LLVM_ABI LLVM_EXTERNAL_VISIBILITY void

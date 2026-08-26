@@ -687,6 +687,7 @@ bool AsmPrinter::doInitialization(Module &M) {
       break;
     case WinEH::EncodingType::X86:
     case WinEH::EncodingType::MIPS:
+    case WinEH::EncodingType::PPC:
     case WinEH::EncodingType::CE:
     case WinEH::EncodingType::Itanium:
       ES = new WinException(this);
