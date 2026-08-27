@@ -251,6 +251,10 @@ public:
       if (file->getMachineType() == llvm::COFF::IMAGE_FILE_MACHINE_R4000 &&
           I->Type == llvm::COFF::IMAGE_REL_MIPS_PAIR)
         return nullptr;
+      if ((file->getMachineType() == llvm::COFF::IMAGE_FILE_MACHINE_ALPHA ||
+           file->getMachineType() == llvm::COFF::IMAGE_FILE_MACHINE_ALPHA64) &&
+          I->Type == llvm::COFF::IMAGE_REL_ALPHA_PAIR)
+        return nullptr;
       if (file->getMachineType() == llvm::COFF::IMAGE_FILE_MACHINE_POWERPC) {
         uint16_t type = I->Type & llvm::COFF::IMAGE_REL_PPC_TYPEMASK;
         if (type == llvm::COFF::IMAGE_REL_PPC_PAIR ||
@@ -290,6 +294,9 @@ public:
                    uint64_t p, uint64_t imageBase) const;
   void applyRelX86(uint8_t *off, uint16_t type, OutputSection *os, uint64_t s,
                    uint64_t p, uint64_t imageBase) const;
+  void applyRelAlpha(uint8_t *off, const coff_relocation &rel,
+                     OutputSection *os, uint64_t s, uint64_t p,
+                     uint64_t imageBase) const;
   void applyRelARM(uint8_t *off, uint16_t type, OutputSection *os, uint64_t s,
                    uint64_t p, uint64_t imageBase) const;
   void applyRelARM64(uint8_t *off, uint16_t type, OutputSection *os, uint64_t s,

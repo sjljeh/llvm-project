@@ -492,6 +492,14 @@ def IsFloatingPoint : UnaryTrait {
   let Spelling = "__is_floating_point";
 }
 
+// Used by MSVC Alpha stdarg/varargs headers to select the floating
+// register save area.  This spelling was a target-specific front-end builtin,
+// rather than the later C++ type trait above.
+def IsFloat : UnaryTrait {
+  let Spelling = "__builtin_isfloat";
+  let KeyFlags = [KEYMS];
+}
+
 def IsIntegral : UnaryTrait {
   let Spelling = "__is_integral";
 }

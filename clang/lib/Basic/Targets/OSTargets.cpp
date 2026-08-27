@@ -288,7 +288,9 @@ static void addVisualCDefines(const LangOptions &Opts, MacroBuilder &Builder) {
 void addWindowsDefines(const llvm::Triple &Triple, const LangOptions &Opts,
                        MacroBuilder &Builder) {
   Builder.defineMacro("_WIN32");
-  if (Triple.isArch64Bit())
+  // Alpha uses a feature-selected 32-bit TASO ABI under the same 64-bit
+  // architecture triple. Its target subclasses define _WIN64 when appropriate.
+  if (Triple.isArch64Bit() && !Triple.isAlpha())
     Builder.defineMacro("_WIN64");
   if (Triple.isWindowsGNUEnvironment())
     addMinGWDefines(Triple, Opts, Builder);

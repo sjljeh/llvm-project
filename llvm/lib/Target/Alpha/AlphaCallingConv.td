@@ -1,0 +1,50 @@
+//===- AlphaCallingConv.td - Calling Conventions for Alpha -*- tablegen -*-===//
+//
+//                     The LLVM Compiler Infrastructure
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.TXT for details.
+//
+//===----------------------------------------------------------------------===//
+// This describes the calling conventions for Alpha architecture.
+//===----------------------------------------------------------------------===//
+
+//===----------------------------------------------------------------------===//
+// Alpha Return Value Calling Convention
+//===----------------------------------------------------------------------===//
+def RetCC_Alpha : CallingConv<[
+  CCIfType<[i32], CCPromoteToType<i64>>,
+
+  // i64 is returned in register R0
+  // R1 is an llvm extension, I don't know what gcc does
+  CCIfType<[i64], CCAssignToReg<[R0,R1]>>,
+
+  // f32 / f64 are returned in F0/F1
+  CCIfType<[f32, f64], CCAssignToReg<[F0, F1]>>
+]>;
+
+//===----------------------------------------------------------------------===//
+// Alpha Argument Calling Conventions
+//===----------------------------------------------------------------------===//
+def CC_Alpha : CallingConv<[
+  CCIfType<[i32], CCPromoteToType<i64>>,
+
+  // The first 6 arguments are passed in registers, whether integer or
+  // floating-point
+  CCIfType<[i64], CCAssignToRegWithShadow<[R16, R17, R18, R19, R20, R21],
+                                          [F16, F17, F18, F19, F20, F21]>>,
+
+  CCIfType<[f32, f64], CCAssignToRegWithShadow<[F16, F17, F18, F19, F20, F21],
+                                               [R16, R17, R18, R19, R20, R21]>>,
+
+  // Stack slots are 8 bytes in size and 8-byte aligned.
+  CCIfType<[i64, f32, f64], CCAssignToStack<8, 8>>
+]>;
+
+// Registers preserved by the Alpha calling convention. Besides driving
+// spill/restore insertion, the generated mask is required by LiveIntervals
+// for calls that survive into optimized machine IR (notably WinEH funclets).
+def CSR_Alpha : CalleeSavedRegs<
+    (add R9, R10, R11, R12, R13, R14,
+         F2, F3, F4, F5, F6, F7, F8, F9)>;
+def CSR_Alpha_NoRegs : CalleeSavedRegs<(add)>;

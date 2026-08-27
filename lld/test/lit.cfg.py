@@ -75,6 +75,7 @@ llvm_config.feature_config(
             "--targets-built",
             {
                 "AArch64": "aarch64",
+                "Alpha": "alpha",
                 "AMDGPU": "amdgpu",
                 "ARM": "arm",
                 "AVR": "avr",
