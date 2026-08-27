@@ -1,3 +1,38 @@
+## Hello! 
+This is my LLVM fork in which I aim to improve compatibility with Microsoft tools broadly.
+
+Work is happening here on the main branch. I update the patch set when I see fit with upstream LLVM, which often sees fixes trickle in for the same work that happens here. A typical rebase averages 3 merge conflicts per week of upstream work.
+
+### Work items done:
+* New program llvm-armasm64. Aims for compatibility with the Microsoft ARM64 assembler (armasm64.exe).
+* Much improved compatibility in llvm-ml64 against Microsoft's AMD64 assembler (ml64.exe).
+* Well-featured C++ EH4 / FH4 support.
+* MSVC-flavored PowerPC, MIPS and Alpha Windows support with legacy __CxxFrameHandler C++ SEH.
+* GNU-flavored PowerPC, MIPS and Alpha Windows assemblers.
+* lld-link compatibility fixes.
+* New program llvm-ms-mc. Aims for compatibility with the Microsoft Message Compiler (mc.exe).
+* Improved compatibility in llvm-rc against Microsoft's Resource Compiler (rc.exe).
+* Misc improvements with MSVC-like template handling
+* Misc improvements with MSVC-like token parsing
+* Misc improvements with MSVC-like SEH
+
+### What is tested:
+* Removing all references to Clang in ReactOS and fully pretending to be MSVC and successfully assembling, compiling, linking and running AMD64 ReactOS, with the full suite of tools (llvm-ms-mc, llvm-rc, llvm-ml64, lld-link, clang-cl, ...)
+* Compiling and running userspace Windows SDK sample programs from the Alpha and MIPS SDKs and running them on emulated machines
+
+### What is NOT tested:
+* Utilizing the llvm-armasm64 assembler in real-world programs
+* Anything related to PowerPC
+
+### Items to be worked on in the future
+* llvm-ms-asaxp as the Microsoft-flavored Alpha assembler.
+* llvm-ms-asmips as the Microsoft-flavored MIPS assembler.
+* llvm-ms-asppc as the Microsoft-flavored PowerPC assembler.
+And any other items that come up in my work/interests.
+
+### Disclaimer.
+These improvements are highly assisted by LLM. However I have done my best in ensuring excellent input and testing where possible. My goal here is to leave everyone with a much better fork to work with than nothing at all. Feel free to file bugs or feature requests.
+
 # The LLVM Compiler Infrastructure
 
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/llvm/llvm-project/badge)](https://securityscorecards.dev/viewer/?uri=github.com/llvm/llvm-project)
