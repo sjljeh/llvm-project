@@ -52,14 +52,23 @@ static bool usesPPCWindowsEH(const AsmPrinter &Asm) {
          Asm.MAI.getWinEHEncodingType() == WinEH::EncodingType::PPC;
 }
 
+static bool usesAlphaWindowsEH(const AsmPrinter &Asm) {
+  WinEH::EncodingType Encoding = Asm.MAI.getWinEHEncodingType();
+  return Asm.TM.getTargetTriple().isAlpha() &&
+         (Encoding == WinEH::EncodingType::Alpha ||
+          Encoding == WinEH::EncodingType::Alpha64);
+}
+
 static bool usesLegacyRISCWindowsEH(const AsmPrinter &Asm) {
-  return usesMIPSWindowsEH(Asm) || usesPPCWindowsEH(Asm);
+  return usesMIPSWindowsEH(Asm) || usesPPCWindowsEH(Asm) ||
+         usesAlphaWindowsEH(Asm);
 }
 
 WinException::WinException(AsmPrinter *A) : EHStreamer(A) {
   // MSVC's EH tables are always composed of 32-bit words. All known
   // modern architectures use an imagerel32 relocation to refer to symbols.
-  // 32-bit x86 and historical Windows MIPS and PowerPC use absolute pointers.
+  // 32-bit x86 and historical Windows Alpha, MIPS, and PowerPC use absolute
+  // pointers.
   useImageRel32 = A->TM.getTargetTriple().getArch() != Triple::x86 &&
                   !usesLegacyRISCWindowsEH(*A);
   isAArch64 = Asm->TM.getTargetTriple().isAArch64();
@@ -1095,7 +1104,9 @@ void WinException::emitCXXFrameHandler3Table(
   const bool IsMIPSEH =
       isLegacyMSVCCXXPersonality(F) && usesMIPSWindowsEH(*Asm);
   const bool IsPPCEH = isLegacyMSVCCXXPersonality(F) && usesPPCWindowsEH(*Asm);
-  const bool IsLegacyRISCEH = IsMIPSEH || IsPPCEH;
+  const bool IsAlphaEH =
+      isLegacyMSVCCXXPersonality(F) && usesAlphaWindowsEH(*Asm);
+  const bool IsLegacyRISCEH = IsMIPSEH || IsPPCEH || IsAlphaEH;
 
   struct LegacyCatchFuncInfo {
     const MachineBasicBlock *Entry;

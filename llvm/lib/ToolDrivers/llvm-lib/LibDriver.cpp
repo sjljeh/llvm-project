@@ -169,7 +169,9 @@ static Expected<COFF::MachineTypes> getCOFFFileMachine(MemoryBufferRef MB) {
     return Obj.takeError();
 
   uint16_t Machine = (*Obj)->getMachine();
-  if (Machine != COFF::IMAGE_FILE_MACHINE_I386 &&
+  if (Machine != COFF::IMAGE_FILE_MACHINE_ALPHA &&
+      Machine != COFF::IMAGE_FILE_MACHINE_ALPHA64 &&
+      Machine != COFF::IMAGE_FILE_MACHINE_I386 &&
       Machine != COFF::IMAGE_FILE_MACHINE_AMD64 &&
       Machine != COFF::IMAGE_FILE_MACHINE_R4000 &&
       Machine != COFF::IMAGE_FILE_MACHINE_ARMNT && !COFF::isAnyArm64(Machine)) {
@@ -187,6 +189,8 @@ static Expected<COFF::MachineTypes> getBitcodeFileMachine(MemoryBufferRef MB) {
 
   Triple T(*TripleStr);
   switch (T.getArch()) {
+  case Triple::alpha:
+    return COFF::IMAGE_FILE_MACHINE_ALPHA64;
   case Triple::x86:
     return COFF::IMAGE_FILE_MACHINE_I386;
   case Triple::x86_64:

@@ -625,6 +625,10 @@ void LinkerDriver::parseDirectives(InputFile *file) {
     case OPT_alternatename:
       file->symtab.parseAlternateName(arg->getValue());
       break;
+    case OPT_comment:
+      // Legacy MSVC CRT objects use /comment metadata in .drectve. It does not
+      // affect the link.
+      break;
     case OPT_arm64xsameaddress:
       if (file->symtab.isEC())
         parseSameAddress(arg->getValue());
@@ -798,6 +802,11 @@ void LinkerDriver::setMachine(MachineTypes machine) {
   assert(machine != IMAGE_FILE_MACHINE_UNKNOWN);
 
   ctx.config.machine = machine;
+
+  if ((machine == IMAGE_FILE_MACHINE_ALPHA ||
+       machine == IMAGE_FILE_MACHINE_ALPHA64) &&
+      ctx.config.align == 4096)
+    ctx.config.align = 8192;
 
   if (!isArm64EC(machine)) {
     ctx.symtab.machine = machine;

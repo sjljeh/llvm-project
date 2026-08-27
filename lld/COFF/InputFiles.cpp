@@ -600,7 +600,15 @@ void ObjFile::initializeSymbols() {
   for (uint32_t i = 0; i < numSymbols; ++i) {
     COFFSymbolRef coffSym = check(coffObj->getSymbol(i));
     bool prevailingComdat;
-    if (coffSym.isUndefined()) {
+    if ((getMachineType() == IMAGE_FILE_MACHINE_ALPHA ||
+         getMachineType() == IMAGE_FILE_MACHINE_ALPHA64) &&
+        !coffSym.isExternal() &&
+        coffSym.getSectionNumber() == COFF::IMAGE_SYM_UNDEFINED &&
+        coffSym.getValue() == 0 && coffSym.getNumberOfAuxSymbols() == 0 &&
+        !coffSym.isSection()) {
+      // VC4 Alpha objects can contain stale static undefined symbol records.
+      symbols[i] = nullptr;
+    } else if (coffSym.isUndefined()) {
       symbols[i] = createUndefined(coffSym, false);
     } else if (coffSym.isWeakExternal()) {
       auto aux = coffSym.getAux<coff_aux_weak_external>();
@@ -927,15 +935,21 @@ std::optional<Symbol *> ObjFile::createDefined(
       prevailing = true;
     }
 
-    if (def->Selection < (int)IMAGE_COMDAT_SELECT_NODUPLICATES ||
+    COMDATType selection =
+        ((getMachineType() == IMAGE_FILE_MACHINE_ALPHA ||
+          getMachineType() == IMAGE_FILE_MACHINE_ALPHA64) &&
+         !sym.isExternal() && def->Selection == 0)
+            ? IMAGE_COMDAT_SELECT_NODUPLICATES
+            : (COMDATType)def->Selection;
+
+    if (selection < IMAGE_COMDAT_SELECT_NODUPLICATES ||
         // Intentionally ends at IMAGE_COMDAT_SELECT_LARGEST: link.exe
         // doesn't understand IMAGE_COMDAT_SELECT_NEWEST either.
-        def->Selection > (int)IMAGE_COMDAT_SELECT_LARGEST) {
+        selection > IMAGE_COMDAT_SELECT_LARGEST) {
       Fatal(ctx) << "unknown comdat type "
                  << std::to_string((int)def->Selection) << " for " << getName()
                  << " in " << toString(this);
     }
-    COMDATType selection = (COMDATType)def->Selection;
 
     if (leader->isCOMDAT)
       handleComdatSelection(sym, selection, prevailing, leader, def);
@@ -1487,6 +1501,8 @@ MachineTypes BitcodeFile::getMachineType(const llvm::lto::InputFile *obj) {
     return AMD64;
   case Triple::x86:
     return I386;
+  case Triple::alpha:
+    return IMAGE_FILE_MACHINE_ALPHA64;
   case Triple::arm:
   case Triple::thumb:
     return ARMNT;

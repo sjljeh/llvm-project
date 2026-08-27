@@ -6218,6 +6218,11 @@ bool Sema::BuiltinVAStart(unsigned BuiltinID, CallExpr *TheCall) {
   if (checkVAStartABI(*this, BuiltinID, Fn))
     return true;
 
+  const llvm::Triple &TT = Context.getTargetInfo().getTriple();
+  bool IsMicrosoftAlphaVAStart =
+      BuiltinID == Builtin::BI__builtin_va_start && TT.isAlpha() &&
+      TT.isWindowsMSVCEnvironment();
+
   if (BuiltinID == Builtin::BI__builtin_c23_va_start) {
     // This builtin requires one argument (the va_list), allows two arguments,
     // but diagnoses more than two arguments. e.g.,
@@ -6229,6 +6234,13 @@ bool Sema::BuiltinVAStart(unsigned BuiltinID, CallExpr *TheCall) {
     // with a warning, but it doesn't seem like a useful behavior to allow.
     if (checkArgCountRange(TheCall, 1, 2))
       return true;
+  } else if (IsMicrosoftAlphaVAStart) {
+    // Microsoft headers pass a third flag which distinguishes
+    // stdarg from varargs initialization. Clang supports the stdarg form, but
+    // must accept the historical calling convention used by those headers.
+    // The two-argument form remains valid for Clang's own headers.
+    if (checkArgCountRange(TheCall, 2, 3))
+      return true;
   } else {
     // In C23 mode, va_start only needs one argument. However, the builtin still
     // requires two arguments (which matches the behavior of the GCC builtin),
@@ -6237,8 +6249,13 @@ bool Sema::BuiltinVAStart(unsigned BuiltinID, CallExpr *TheCall) {
       return true;
   }
 
-  // Type-check the first argument normally.
-  if (checkBuiltinArgument(*this, TheCall, 0))
+  // Microsoft declares their own structurally compatible va_list
+  // rather than spelling __builtin_va_list. Leave the lvalue unconverted so
+  // CodeGen can pass its address to llvm.va_start.
+  bool IsLegacyMicrosoftAlphaVAList =
+      IsMicrosoftAlphaVAStart && TheCall->getNumArgs() == 3;
+  if (!IsLegacyMicrosoftAlphaVAList &&
+      checkBuiltinArgument(*this, TheCall, 0))
     return true;
 
   // Check that the current function is variadic, and get its last parameter.

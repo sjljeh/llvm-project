@@ -37,6 +37,7 @@ class SectionChunk;
 
 // Short aliases.
 static const auto AMD64 = llvm::COFF::IMAGE_FILE_MACHINE_AMD64;
+static const auto ALPHA = llvm::COFF::IMAGE_FILE_MACHINE_ALPHA;
 static const auto ARM64 = llvm::COFF::IMAGE_FILE_MACHINE_ARM64;
 static const auto ARM64EC = llvm::COFF::IMAGE_FILE_MACHINE_ARM64EC;
 static const auto ARM64X = llvm::COFF::IMAGE_FILE_MACHINE_ARM64X;

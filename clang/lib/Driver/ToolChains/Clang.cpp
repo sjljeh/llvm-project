@@ -8890,6 +8890,21 @@ void Clang::AddClangCLArgs(const ArgList &Args, types::ID InputType,
       CmdArgs.push_back("-sys-header-deps");
   }
 
+  if (Arg *A = Args.getLastArg(options::OPT__SLASH_QA)) {
+    StringRef Value = A->getValue();
+    if (Value.equals_insensitive("ieee0")) {
+      A->claim();
+      CmdArgs.push_back("-ffp-exception-behavior=ignore");
+      CmdArgs.push_back("-fdenormal-fp-math=positive-zero");
+    } else if (Value.equals_insensitive("ieee") ||
+               Value.equals_insensitive("ieee1") ||
+               Value.equals_insensitive("ieee2")) {
+      A->claim();
+      CmdArgs.push_back("-ffp-exception-behavior=strict");
+      CmdArgs.push_back("-fdenormal-fp-math=ieee");
+    }
+  }
+
   // This controls whether or not we emit RTTI data for polymorphic types.
   if (Args.hasFlag(options::OPT__SLASH_GR_, options::OPT__SLASH_GR,
                    /*Default=*/false))

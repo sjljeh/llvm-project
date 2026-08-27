@@ -5609,6 +5609,8 @@ def mmcu_EQ : Joined<["-"], "mmcu=">, Group<m_Group>;
 def msim : Flag<["-"], "msim">, Group<m_Group>;
 def mfix_and_continue : Flag<["-"], "mfix-and-continue">, Group<clang_ignored_m_Group>;
 def mieee_fp : Flag<["-"], "mieee-fp">, Group<clang_ignored_m_Group>;
+def mtaso : Flag<["-"], "mtaso">, Group<m_Group>,
+  HelpText<"Constrain Alpha code to the low address space">;
 def minline_all_stringops : Flag<["-"], "minline-all-stringops">, Group<clang_ignored_m_Group>;
 def mno_inline_all_stringops : Flag<["-"], "mno-inline-all-stringops">, Group<clang_ignored_m_Group>;
 } // let Flags = [TargetSpecific]
@@ -9446,6 +9448,8 @@ def _SLASH_Qvec : CLFlag<"Qvec">,
   HelpText<"Enable the loop vectorization passes">, Alias<fvectorize>;
 def _SLASH_Qvec_ : CLFlag<"Qvec-">,
   HelpText<"Disable the loop vectorization passes">, Alias<fno_vectorize>;
+def _SLASH_QA : CLCompileJoined<"QA">,
+  HelpText<"Alpha-specific CPU options">;
 def _SLASH_QM : CLCompileJoined<"QM">,
   HelpText<"MIPS-specific CPU options">;
 def _SLASH_QP : CLCompileJoined<"QP">,

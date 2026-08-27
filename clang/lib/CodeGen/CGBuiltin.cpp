@@ -3328,6 +3328,11 @@ RValue CodeGenFunction::EmitBuiltinExpr(const GlobalDecl GD, unsigned BuiltinID,
   case Builtin::BI__va_start:
   case Builtin::BI__builtin_c23_va_start:
   case Builtin::BI__builtin_va_end:
+    if (BuiltinID == Builtin::BI__builtin_va_start &&
+        CGM.getTarget().getTriple().isAlpha() &&
+        CGM.getTarget().getTriple().isWindowsMSVCEnvironment() &&
+        E->getNumArgs() == 3)
+      CurFn->addFnAttr("alpha-ms-va-list");
     EmitVAStartEnd(BuiltinID == Builtin::BI__va_start
                        ? EmitScalarExpr(E->getArg(0))
                        : EmitVAListRef(E->getArg(0)).emitRawPointer(*this),

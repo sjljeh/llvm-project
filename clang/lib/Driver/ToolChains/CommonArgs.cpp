@@ -742,6 +742,34 @@ static std::string getLanaiTargetCPU(const ArgList &Args) {
   return "";
 }
 
+static std::string getClangCLAlphaTargetCPU(const Driver &D,
+                                            const ArgList &Args) {
+  const Arg *A = Args.getLastArg(options::OPT__SLASH_QA);
+  if (!A)
+    return "";
+
+  StringRef Value = A->getValue();
+  if (Value.equals_insensitive("ieee") || Value.equals_insensitive("ieee0") ||
+      Value.equals_insensitive("ieee1") || Value.equals_insensitive("ieee2"))
+    return "";
+
+  A->claim();
+  std::string CPU = llvm::StringSwitch<std::string>(Value.lower())
+                        .Case("21064", "ev4")
+                        .Case("21064a", "ev4")
+                        .Case("21066", "ev4")
+                        .Case("21066a", "ev4")
+                        .Case("21068", "ev4")
+                        .Case("21164", "ev5")
+                        .Case("21164a", "ev56")
+                        .Case("21164pc", "pca56")
+                        .Case("21264", "ev6")
+                        .Default("");
+  if (CPU.empty())
+    D.Diag(diag::err_drv_invalid_value) << A->getAsString(Args) << Value;
+  return CPU;
+}
+
 static std::string getClangCLMipsTargetCPU(const Driver &D,
                                            const ArgList &Args) {
   const Arg *A = Args.getLastArg(options::OPT__SLASH_QM);
@@ -812,6 +840,9 @@ std::string tools::getCPUName(const Driver &D, const ArgList &Args,
   switch (T.getArch()) {
   default:
     return "";
+
+  case llvm::Triple::alpha:
+    return getClangCLAlphaTargetCPU(D, Args);
 
   case llvm::Triple::aarch64:
   case llvm::Triple::aarch64_32:
@@ -980,6 +1011,10 @@ void tools::getTargetFeatures(const Driver &D, const llvm::Triple &Triple,
   case llvm::Triple::wasm32:
   case llvm::Triple::wasm64:
     getWebAssemblyTargetFeatures(D, Triple, Args, Features);
+    break;
+  case llvm::Triple::alpha:
+    if (Args.hasArg(options::OPT_mtaso))
+      Features.push_back("+taso");
     break;
   case llvm::Triple::sparc:
   case llvm::Triple::sparcel:

@@ -80,6 +80,9 @@ void visualstudio::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back("-machine:arm64x");
   else if (TC.getTriple().isWindowsArm64EC())
     CmdArgs.push_back("-machine:arm64ec");
+  else if (TC.getTriple().isAlpha())
+    CmdArgs.push_back(Args.hasArg(options::OPT_mtaso) ? "-machine:alpha"
+                                                       : "-machine:alpha64");
 
   if (const Arg *A = Args.getLastArg(options::OPT_fveclib)) {
     StringRef V = A->getValue();
@@ -593,7 +596,8 @@ MSVCToolChain::getDefaultUnwindTableLevel(const ArgList &Args) const {
   // the ones that are actually implemented.
   if (getArch() == llvm::Triple::x86_64 || getArch() == llvm::Triple::arm ||
       getArch() == llvm::Triple::thumb || getArch() == llvm::Triple::aarch64 ||
-      getArch() == llvm::Triple::mips || getArch() == llvm::Triple::mipsel)
+      getArch() == llvm::Triple::alpha || getArch() == llvm::Triple::mips ||
+      getArch() == llvm::Triple::mipsel)
     return UnwindTableLevel::Asynchronous;
 
   return UnwindTableLevel::None;

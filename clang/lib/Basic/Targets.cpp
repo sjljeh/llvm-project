@@ -14,6 +14,7 @@
 #include "Targets.h"
 
 #include "Targets/AArch64.h"
+#include "Targets/Alpha.h"
 #include "Targets/AMDGPU.h"
 #include "Targets/ARC.h"
 #include "Targets/ARM.h"
@@ -42,6 +43,7 @@
 #include "Targets/Xtensa.h"
 #include "clang/Basic/Diagnostic.h"
 #include "clang/Basic/DiagnosticFrontend.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/TargetParser/Triple.h"
 
@@ -134,6 +136,26 @@ std::unique_ptr<TargetInfo> AllocateTarget(const llvm::Triple &Triple,
 
   case llvm::Triple::lanai:
     return std::make_unique<LanaiTargetInfo>(Triple, Opts);
+
+  case llvm::Triple::alpha:
+    if (llvm::is_contained(Opts.FeaturesAsWritten, "+taso") ||
+        llvm::is_contained(Opts.Features, "+taso")) {
+      if (os == llvm::Triple::Win32) {
+        if (Triple.isKnownWindowsMSVCEnvironment())
+          return std::make_unique<MicrosoftAlphaTargetInfo>(Triple, Opts);
+        return std::make_unique<WindowsAlphaTargetInfo>(Triple, Opts);
+      }
+      if (os == llvm::Triple::UEFI)
+        return std::make_unique<WindowsAlphaTargetInfo>(Triple, Opts);
+    }
+    if (os == llvm::Triple::Win32) {
+      if (Triple.isKnownWindowsMSVCEnvironment())
+        return std::make_unique<MicrosoftAlpha64TargetInfo>(Triple, Opts);
+      return std::make_unique<WindowsAlpha64TargetInfo>(Triple, Opts);
+    }
+    if (os == llvm::Triple::UEFI)
+      return std::make_unique<WindowsAlpha64TargetInfo>(Triple, Opts);
+    return std::make_unique<AlphaTargetInfo>(Triple, Opts);
 
   case llvm::Triple::aarch64_32:
     if (Triple.isOSDarwin())

@@ -42,6 +42,7 @@ def no_color_diagnostics: Flag<["--"], "no-color-diagnostics">,
 def color_diagnostics_eq: Joined<["--"], "color-diagnostics=">,
     HelpText<"Use colors in diagnostics (default: auto)">,
     MetaVarName<"[auto,always,never]">;
+def comment : P_priv<"comment">;
 def defaultlib : P<"defaultlib", "Add the library to the list of input files">;
 def delayload : P<"delayload", "Delay loaded DLL name">;
 def diasdkdir : P<"diasdkdir", "Set the location of the DIA SDK">;
