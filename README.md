@@ -15,6 +15,7 @@ Work is happening here on the main branch. I update the patch set when I see fit
 * Misc improvements with MSVC-like template handling
 * Misc improvements with MSVC-like token parsing
 * Misc improvements with MSVC-like SEH
+* Clang-cl gains many MSVC intrinsics
 
 ### What is tested:
 * Removing all references to Clang in ReactOS and fully pretending to be MSVC and successfully assembling, compiling, linking and running AMD64 ReactOS, with the full suite of tools (llvm-ms-mc, llvm-rc, llvm-ml64, lld-link, clang-cl, ...)
@@ -27,7 +28,7 @@ Work is happening here on the main branch. I update the patch set when I see fit
 ### Items to be worked on in the future
 * llvm-ms-asaxp as the Microsoft-flavored Alpha assembler.
 * llvm-ms-asmips as the Microsoft-flavored MIPS assembler.
-* llvm-ms-asppc as the Microsoft-flavored PowerPC assembler.
+* llvm-ms-asppc as the Microsoft-flavored PowerPC assembler.  
 And any other items that come up in my work/interests.
 
 ### Disclaimer.
