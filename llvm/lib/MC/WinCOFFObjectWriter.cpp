@@ -825,7 +825,10 @@ void WinCOFFWriter::assignFileOffsets() {
         if (!((Header.Machine == COFF::IMAGE_FILE_MACHINE_R4000 &&
                Relocation.Data.Type == COFF::IMAGE_REL_MIPS_PAIR) ||
               (Header.Machine == COFF::IMAGE_FILE_MACHINE_POWERPC &&
-               Relocation.Data.Type == COFF::IMAGE_REL_PPC_PAIR))) {
+               Relocation.Data.Type == COFF::IMAGE_REL_PPC_PAIR) ||
+              ((Header.Machine == COFF::IMAGE_FILE_MACHINE_ALPHA ||
+                Header.Machine == COFF::IMAGE_FILE_MACHINE_ALPHA64) &&
+               Relocation.Data.Type == COFF::IMAGE_REL_ALPHA_PAIR))) {
           Relocation.Data.SymbolTableIndex = Relocation.Symb->getIndex();
         }
       }
@@ -1066,13 +1069,19 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
           Reloc.Data.Type == COFF::IMAGE_REL_MIPS_SECRELHI)) ||
         (Header.Machine == COFF::IMAGE_FILE_MACHINE_POWERPC &&
          (Reloc.Data.Type == COFF::IMAGE_REL_PPC_REFHI ||
-          Reloc.Data.Type == COFF::IMAGE_REL_PPC_SECRELHI))) {
-      // MIPS and PowerPC HI relocations must be followed by a PAIR. The pair's
+          Reloc.Data.Type == COFF::IMAGE_REL_PPC_SECRELHI)) ||
+        ((Header.Machine == COFF::IMAGE_FILE_MACHINE_ALPHA ||
+          Header.Machine == COFF::IMAGE_FILE_MACHINE_ALPHA64) &&
+         Reloc.Data.Type == COFF::IMAGE_REL_ALPHA_REFHI)) {
+      // MIPS, PowerPC, and Alpha HI relocations must be followed by a PAIR. The pair's
       // symbol-table-index field stores the signed low 16-bit addend.
       auto RelocPair = Reloc;
-      RelocPair.Data.Type = Header.Machine == COFF::IMAGE_FILE_MACHINE_R4000
-                                ? COFF::IMAGE_REL_MIPS_PAIR
-                                : COFF::IMAGE_REL_PPC_PAIR;
+      if (Header.Machine == COFF::IMAGE_FILE_MACHINE_R4000)
+        RelocPair.Data.Type = COFF::IMAGE_REL_MIPS_PAIR;
+      else if (Header.Machine == COFF::IMAGE_FILE_MACHINE_POWERPC)
+        RelocPair.Data.Type = COFF::IMAGE_REL_PPC_PAIR;
+      else
+        RelocPair.Data.Type = COFF::IMAGE_REL_ALPHA_PAIR;
       RelocPair.Data.SymbolTableIndex = FixedValue & 0xffff;
       Sec->Relocations.push_back(RelocPair);
     }

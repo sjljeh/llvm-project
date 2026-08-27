@@ -2759,25 +2759,34 @@ void Writer::writeSections() {
   uint8_t *buf = buffer->getBufferStart();
   for (OutputSection *sec : ctx.outputSections) {
     uint8_t *secBuf = buf + sec->getFileOff();
-    // Fill gaps between functions in .text with INT3 instructions
-    // instead of leaving as NUL bytes (which can be interpreted as
-    // ADD instructions). Only fill the gaps between chunks. Most
-    // chunks overwrite it anyway, but uninitialized data chunks
-    // merged into a code section don't.
+    // Fill gaps between functions in .text with trap/NOP instructions instead
+    // of leaving NUL bytes, which may decode as instructions.
     if ((sec->header.Characteristics & IMAGE_SCN_CNT_CODE) &&
-        (ctx.config.machine == AMD64 || ctx.config.machine == I386)) {
+        (ctx.config.machine == AMD64 || ctx.config.machine == I386 ||
+         ctx.config.machine == ALPHA ||
+         ctx.config.machine == IMAGE_FILE_MACHINE_ALPHA64)) {
       uint32_t prevEnd = 0;
       uint32_t rawSize = sec->getRawSize();
+      auto fillCodeGap = [&](uint32_t begin, uint32_t end) {
+        if (ctx.config.machine == ALPHA ||
+            ctx.config.machine == IMAGE_FILE_MACHINE_ALPHA64) {
+          assert((begin % 4) == 0 && (end % 4) == 0);
+          for (uint32_t i = begin; i + 4 <= end; i += 4)
+            write32le(secBuf + i, 0x2ffe0000);
+          return;
+        }
+        memset(secBuf + begin, 0xCC, end - begin);
+      };
       for (Chunk *c : sec->chunks) {
         uint32_t off = c->getRVA() - sec->getRVA();
         // Chunks without data (e.g., .bss) have virtual addresses beyond
         // rawSize; stop filling when we reach the end of raw data.
         if (off >= rawSize)
           break;
-        memset(secBuf + prevEnd, 0xCC, off - prevEnd);
+        fillCodeGap(prevEnd, off);
         prevEnd = std::min(off + static_cast<uint32_t>(c->getSize()), rawSize);
       }
-      memset(secBuf + prevEnd, 0xCC, rawSize - prevEnd);
+      fillCodeGap(prevEnd, rawSize);
     }
 
     parallelForEach(sec->chunks, [&](Chunk *c) {
@@ -2888,6 +2897,8 @@ void Writer::sortExceptionTables() {
     sortExceptionTable<EntryX64>(pdata);
     break;
   case IMAGE_FILE_MACHINE_POWERPC:
+  case IMAGE_FILE_MACHINE_ALPHA:
+  case IMAGE_FILE_MACHINE_ALPHA64:
   case IMAGE_FILE_MACHINE_R4000:
     sortExceptionTable<EntryRISC>(pdata);
     break;

@@ -61,6 +61,8 @@ void ScalarEnumerationTraits<COFF::MachineTypes>::enumeration(
     IO &IO, COFF::MachineTypes &Value) {
   ECase(IMAGE_FILE_MACHINE_UNKNOWN);
   ECase(IMAGE_FILE_MACHINE_AM33);
+  ECase(IMAGE_FILE_MACHINE_ALPHA);
+  ECase(IMAGE_FILE_MACHINE_ALPHA64);
   ECase(IMAGE_FILE_MACHINE_AMD64);
   ECase(IMAGE_FILE_MACHINE_ARM);
   ECase(IMAGE_FILE_MACHINE_ARMNT);
@@ -200,6 +202,34 @@ void ScalarEnumerationTraits<COFF::RelocationTypesMips>::enumeration(
   ECase(IMAGE_REL_MIPS_JMPADDR16);
   ECase(IMAGE_REL_MIPS_REFWORDNB);
   ECase(IMAGE_REL_MIPS_PAIR);
+}
+
+void ScalarEnumerationTraits<COFF::RelocationTypesAlpha>::enumeration(
+    IO &IO, COFF::RelocationTypesAlpha &Value) {
+  ECase(IMAGE_REL_ALPHA_ABSOLUTE);
+  ECase(IMAGE_REL_ALPHA_REFLONG);
+  ECase(IMAGE_REL_ALPHA_REFQUAD);
+  ECase(IMAGE_REL_ALPHA_GPREL32);
+  ECase(IMAGE_REL_ALPHA_LITERAL);
+  ECase(IMAGE_REL_ALPHA_LITUSE);
+  ECase(IMAGE_REL_ALPHA_GPDISP);
+  ECase(IMAGE_REL_ALPHA_BRADDR);
+  ECase(IMAGE_REL_ALPHA_HINT);
+  ECase(IMAGE_REL_ALPHA_INLINE_REFLONG);
+  ECase(IMAGE_REL_ALPHA_REFHI);
+  ECase(IMAGE_REL_ALPHA_REFLO);
+  ECase(IMAGE_REL_ALPHA_PAIR);
+  ECase(IMAGE_REL_ALPHA_MATCH);
+  ECase(IMAGE_REL_ALPHA_SECTION);
+  ECase(IMAGE_REL_ALPHA_SECREL);
+  ECase(IMAGE_REL_ALPHA_REFLONGNB);
+  ECase(IMAGE_REL_ALPHA_SECRELLO);
+  ECase(IMAGE_REL_ALPHA_SECRELHI);
+  ECase(IMAGE_REL_ALPHA_REFQ3);
+  ECase(IMAGE_REL_ALPHA_REFQ2);
+  ECase(IMAGE_REL_ALPHA_REFQ1);
+  ECase(IMAGE_REL_ALPHA_GPRELLO);
+  ECase(IMAGE_REL_ALPHA_GPRELHI);
 }
 
 void ScalarEnumerationTraits<COFF::RelocationTypesARM>::enumeration(
@@ -448,6 +478,11 @@ void MappingTraits<COFFYAML::Relocation>::mapping(IO &IO,
     IO.mapRequired("Type", NT->Type);
   } else if (H.Machine == COFF::IMAGE_FILE_MACHINE_R4000) {
     MappingNormalization<NType<COFF::RelocationTypesMips>, uint16_t> NT(
+        IO, Rel.Type);
+    IO.mapRequired("Type", NT->Type);
+  } else if (H.Machine == COFF::IMAGE_FILE_MACHINE_ALPHA ||
+             H.Machine == COFF::IMAGE_FILE_MACHINE_ALPHA64) {
+    MappingNormalization<NType<COFF::RelocationTypesAlpha>, uint16_t> NT(
         IO, Rel.Type);
     IO.mapRequired("Type", NT->Type);
   } else if (H.Machine == COFF::IMAGE_FILE_MACHINE_ARMNT) {

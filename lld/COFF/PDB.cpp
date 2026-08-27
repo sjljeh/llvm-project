@@ -1728,6 +1728,8 @@ static uint32_t getSecrelReloc(Triple::ArchType arch) {
     return COFF::IMAGE_REL_AMD64_SECREL;
   case Triple::x86:
     return COFF::IMAGE_REL_I386_SECREL;
+  case Triple::alpha:
+    return COFF::IMAGE_REL_ALPHA_SECREL;
   case Triple::mipsel:
     return COFF::IMAGE_REL_MIPS_SECREL;
   case Triple::ppcle:

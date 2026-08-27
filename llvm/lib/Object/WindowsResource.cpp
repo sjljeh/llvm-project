@@ -995,6 +995,9 @@ void WindowsResourceCOFFWriter::writeFirstSectionRelocations() {
     case Triple::mipsel:
       Reloc->Type = COFF::IMAGE_REL_MIPS_REFWORDNB;
       break;
+    case Triple::alpha:
+      Reloc->Type = COFF::IMAGE_REL_ALPHA_REFLONGNB;
+      break;
     default:
       llvm_unreachable("unknown machine type");
     }

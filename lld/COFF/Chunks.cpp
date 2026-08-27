@@ -123,6 +123,88 @@ static void applySecIdx(uint8_t *off, OutputSection *os,
     add16(off, numOutputSections + 1);
 }
 
+static void applyAlphaBranch(uint8_t *off, uint64_t s, uint64_t p) {
+  uint32_t inst = read32le(off);
+  int64_t addend = SignExtend64<21>(inst & 0x1fffff) * 4;
+  int64_t disp = (int64_t(s) + addend - int64_t(p) - 4) >> 2;
+  if (!isInt<21>(disp)) {
+    error("overflow in Alpha branch relocation");
+    return;
+  }
+  write32le(off, (inst & 0xffe00000) | (uint32_t(disp) & 0x1fffff));
+}
+
+static int64_t getAlphaPairAddend(const SectionChunk *sec,
+                                  const coff_relocation &rel);
+static int64_t getAlphaPairAddend32(const SectionChunk *sec,
+                                    const coff_relocation &rel);
+
+static uint16_t getAlphaRefQ3(uint64_t v) {
+  return ((v + 0x80008000ULL) >> 32) & 0xffff;
+}
+
+static uint16_t getAlphaRefQ2(uint64_t v) {
+  return ((v + 0x8000) >> 16) & 0xffff;
+}
+
+static uint16_t getAlphaRefQ1(uint64_t v) { return v & 0xffff; }
+
+void SectionChunk::applyRelAlpha(uint8_t *off, const coff_relocation &rel,
+                                 OutputSection *os, uint64_t s, uint64_t p,
+                                 uint64_t imageBase) const {
+  switch (rel.Type) {
+  case IMAGE_REL_ALPHA_ABSOLUTE:
+    break;
+  case IMAGE_REL_ALPHA_REFLONG:
+    add32(off, s + imageBase);
+    break;
+  case IMAGE_REL_ALPHA_REFQUAD:
+    add64(off, s + imageBase);
+    break;
+  case IMAGE_REL_ALPHA_BRADDR:
+    applyAlphaBranch(off, s, p);
+    break;
+  case IMAGE_REL_ALPHA_REFHI: {
+    uint64_t v = s + imageBase + (uint64_t(read16le(off)) << 16) +
+                 getAlphaPairAddend(this, rel);
+    write16le(off, ((v + 0x8000) >> 16) & 0xffff);
+    break;
+  }
+  case IMAGE_REL_ALPHA_REFLO:
+    write16le(off, (s + imageBase + read16le(off)) & 0xffff);
+    break;
+  case IMAGE_REL_ALPHA_PAIR:
+    break;
+  case IMAGE_REL_ALPHA_REFQ3: {
+    uint64_t v = s + imageBase + (uint64_t(read16le(off)) << 32) +
+                 getAlphaPairAddend32(this, rel);
+    write16le(off, getAlphaRefQ3(v));
+    break;
+  }
+  case IMAGE_REL_ALPHA_REFQ2: {
+    uint64_t v = s + imageBase + (uint64_t(read16le(off)) << 16) +
+                 getAlphaPairAddend(this, rel);
+    write16le(off, getAlphaRefQ2(v));
+    break;
+  }
+  case IMAGE_REL_ALPHA_REFQ1:
+    write16le(off, getAlphaRefQ1(s + imageBase + read16le(off)));
+    break;
+  case IMAGE_REL_ALPHA_REFLONGNB:
+    add32(off, s);
+    break;
+  case IMAGE_REL_ALPHA_SECTION:
+    applySecIdx(off, os, file->symtab.ctx.outputSections.size());
+    break;
+  case IMAGE_REL_ALPHA_SECREL:
+    applySecRel(this, off, os, s);
+    break;
+  default:
+    error("unsupported relocation type 0x" + Twine::utohexstr(rel.Type) +
+          " in " + toString(file));
+  }
+}
+
 void SectionChunk::applyRelX64(uint8_t *off, uint16_t type, OutputSection *os,
                                uint64_t s, uint64_t p,
                                uint64_t imageBase) const {
@@ -564,6 +646,30 @@ static int64_t getMipsPairAddend(const SectionChunk *sec,
   return SignExtend64<16>(std::next(it)->SymbolTableIndex & 0xffff);
 }
 
+static int64_t getAlphaPairAddend(const SectionChunk *sec,
+                                  const coff_relocation &rel) {
+  for (const coff_relocation &r : sec->getRelocs())
+    if (r.VirtualAddress == rel.VirtualAddress &&
+        r.Type == IMAGE_REL_ALPHA_PAIR)
+      return SignExtend64<16>(r.SymbolTableIndex & 0xffff);
+
+  error("Alpha REFHI relocation without matching PAIR relocation in " +
+        toString(sec->file));
+  return 0;
+}
+
+static int64_t getAlphaPairAddend32(const SectionChunk *sec,
+                                    const coff_relocation &rel) {
+  for (const coff_relocation &r : sec->getRelocs())
+    if (r.VirtualAddress == rel.VirtualAddress &&
+        r.Type == IMAGE_REL_ALPHA_PAIR)
+      return SignExtend64<32>(r.SymbolTableIndex);
+
+  error("Alpha REFQ relocation without matching PAIR relocation in " +
+        toString(sec->file));
+  return 0;
+}
+
 void SectionChunk::applyRelMIPS(uint8_t *off, const coff_relocation &rel,
                                 OutputSection *os, uint64_t s, uint64_t,
                                 uint64_t imageBase) const {
@@ -660,6 +766,8 @@ void SectionChunk::writeTo(uint8_t *buf) const {
   size_t inputSize = getSize();
   for (const coff_relocation &rel : getRelocs()) {
     Triple::ArchType arch = getArch();
+    if (arch == Triple::alpha && rel.Type == IMAGE_REL_ALPHA_PAIR)
+      continue;
     if (arch == Triple::ppcle &&
         ((rel.Type & IMAGE_REL_PPC_TYPEMASK) == IMAGE_REL_PPC_PAIR ||
          (rel.Type & IMAGE_REL_PPC_TYPEMASK) == IMAGE_REL_PPC_IMGLUE))
@@ -681,6 +789,8 @@ void SectionChunk::writeTo(uint8_t *buf) const {
 void SectionChunk::applyRelocation(uint8_t *off,
                                    const coff_relocation &rel) const {
   if (getArch() == Triple::mipsel && rel.Type == IMAGE_REL_MIPS_PAIR)
+    return;
+  if (getArch() == Triple::alpha && rel.Type == IMAGE_REL_ALPHA_PAIR)
     return;
 
   auto *sym = dyn_cast_or_null<Defined>(file->getSymbol(rel.SymbolTableIndex));
@@ -713,6 +823,9 @@ void SectionChunk::applyRelocation(uint8_t *off,
     break;
   case Triple::x86:
     applyRelX86(off, rel.Type, os, s, p, imageBase);
+    break;
+  case Triple::alpha:
+    applyRelAlpha(off, rel, os, s, p, imageBase);
     break;
   case Triple::thumb:
     applyRelARM(off, rel.Type, os, s, p, imageBase);
@@ -802,6 +915,12 @@ static uint8_t getBaserelType(const coff_relocation &rel,
     if (rel.Type == IMAGE_REL_I386_DIR32)
       return IMAGE_REL_BASED_HIGHLOW;
     return IMAGE_REL_BASED_ABSOLUTE;
+  case Triple::alpha:
+    if (rel.Type == IMAGE_REL_ALPHA_REFLONG)
+      return IMAGE_REL_BASED_HIGHLOW;
+    if (rel.Type == IMAGE_REL_ALPHA_REFQUAD)
+      return IMAGE_REL_BASED_DIR64;
+    return IMAGE_REL_BASED_ABSOLUTE;
   case Triple::ppcle:
     if ((rel.Type & IMAGE_REL_PPC_TYPEMASK) == IMAGE_REL_PPC_ADDR64)
       return IMAGE_REL_BASED_DIR64;
@@ -868,6 +987,8 @@ void SectionChunk::getBaserels(std::vector<Baserel> *res) {
   for (const coff_relocation &rel : getRelocs()) {
     if (getArch() == Triple::mipsel && rel.Type == IMAGE_REL_MIPS_PAIR)
       continue;
+    if (getArch() == Triple::alpha && rel.Type == IMAGE_REL_ALPHA_PAIR)
+      continue;
     if (getArch() == Triple::ppcle) {
       uint16_t type = rel.Type & IMAGE_REL_PPC_TYPEMASK;
       if (type == IMAGE_REL_PPC_PAIR || type == IMAGE_REL_PPC_IMGLUE)
@@ -892,6 +1013,25 @@ void SectionChunk::getBaserels(std::vector<Baserel> *res) {
         continue;
       }
       if (rel.Type == IMAGE_REL_MIPS_REFLO) {
+        res->emplace_back(rva + rel.VirtualAddress, IMAGE_REL_BASED_LOW);
+        continue;
+      }
+    }
+
+    if (getArch() == Triple::alpha) {
+      if (rel.Type == IMAGE_REL_ALPHA_REFHI) {
+        ArrayRef<uint8_t> data = getContents();
+        if (rel.VirtualAddress + 2 <= data.size()) {
+          uint16_t hi = read16le(data.data() + rel.VirtualAddress);
+          uint64_t v = cast<Defined>(target)->getRVA() +
+                       file->symtab.ctx.config.imageBase +
+                       (uint64_t(hi) << 16) + getAlphaPairAddend(this, rel);
+          res->emplace_back(rva + rel.VirtualAddress,
+                            IMAGE_REL_BASED_HIGHADJ, v & 0xffff);
+        }
+        continue;
+      }
+      if (rel.Type == IMAGE_REL_ALPHA_REFLO) {
         res->emplace_back(rva + rel.VirtualAddress, IMAGE_REL_BASED_LOW);
         continue;
       }
@@ -979,6 +1119,16 @@ static int getRuntimePseudoRelocSize(uint16_t type, Triple::ArchType arch) {
     switch (type) {
     case IMAGE_REL_I386_DIR32:
     case IMAGE_REL_I386_REL32:
+      return 32;
+    default:
+      return 0;
+    }
+  case Triple::alpha:
+    switch (type) {
+    case IMAGE_REL_ALPHA_REFQUAD:
+      return 64;
+    case IMAGE_REL_ALPHA_REFLONG:
+    case IMAGE_REL_ALPHA_REFLONGNB:
       return 32;
     default:
       return 0;

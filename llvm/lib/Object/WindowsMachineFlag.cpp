@@ -23,6 +23,8 @@ using namespace llvm;
 COFF::MachineTypes llvm::getMachineType(StringRef S) {
   // Flags must be a superset of Microsoft lib.exe /machine flags.
   return StringSwitch<COFF::MachineTypes>(S.lower())
+      .Case("alpha", COFF::IMAGE_FILE_MACHINE_ALPHA)
+      .Case("alpha64", COFF::IMAGE_FILE_MACHINE_ALPHA64)
       .Cases({"x64", "amd64"}, COFF::IMAGE_FILE_MACHINE_AMD64)
       .Cases({"x86", "i386"}, COFF::IMAGE_FILE_MACHINE_I386)
       .Case("arm", COFF::IMAGE_FILE_MACHINE_ARMNT)
@@ -36,6 +38,10 @@ COFF::MachineTypes llvm::getMachineType(StringRef S) {
 
 StringRef llvm::machineToStr(COFF::MachineTypes MT) {
   switch (MT) {
+  case COFF::IMAGE_FILE_MACHINE_ALPHA:
+    return "alpha";
+  case COFF::IMAGE_FILE_MACHINE_ALPHA64:
+    return "alpha64";
   case COFF::IMAGE_FILE_MACHINE_ARMNT:
     return "arm";
   case COFF::IMAGE_FILE_MACHINE_ARM64:
