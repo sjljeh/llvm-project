@@ -34,6 +34,9 @@ LLVM_ABI COFF::MachineTypes getMachineType(StringRef S);
 
 template <typename T> Triple::ArchType getMachineArchType(T machine) {
   switch (machine) {
+  case COFF::IMAGE_FILE_MACHINE_ALPHA:
+  case COFF::IMAGE_FILE_MACHINE_ALPHA64:
+    return llvm::Triple::ArchType::alpha;
   case COFF::IMAGE_FILE_MACHINE_I386:
     return llvm::Triple::ArchType::x86;
   case COFF::IMAGE_FILE_MACHINE_AMD64:

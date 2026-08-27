@@ -20,6 +20,7 @@
 #include "clang/Basic/DiagnosticParse.h"
 #include "clang/Basic/DiagnosticSema.h"
 #include "clang/Basic/Specifiers.h"
+#include "clang/Basic/TargetInfo.h"
 #include "clang/Sema/EnterExpressionEvaluationContext.h"
 #include "clang/Sema/Initialization.h"
 #include "clang/Sema/Lookup.h"
@@ -349,6 +350,7 @@ static bool CheckUnaryTypeTraitTypeCompleteness(Sema &S, TypeTrait UTT,
   case UTT_IsVoid:
   case UTT_IsIntegral:
   case UTT_IsFloatingPoint:
+  case UTT_IsFloat:
   case UTT_IsArray:
   case UTT_IsBoundedArray:
   case UTT_IsPointer:
@@ -670,6 +672,7 @@ static bool EvaluateUnaryTypeTrait(Sema &Self, TypeTrait UTT,
   case UTT_IsIntegral:
     return T->isIntegralType(C);
   case UTT_IsFloatingPoint:
+  case UTT_IsFloat:
     return T->isFloatingType();
   case UTT_IsArray:
     // Zero-sized arrays aren't considered arrays in partial specializations,
@@ -1530,6 +1533,14 @@ ExprResult Sema::BuildTypeTrait(TypeTrait Kind, SourceLocation KWLoc,
                                 SourceLocation RParenLoc) {
   if (!CheckTypeTraitArity(getTypeTraitArity(Kind), KWLoc, Args.size()))
     return ExprError();
+
+  if (Kind == UTT_IsFloat) {
+    const llvm::Triple &TT = Context.getTargetInfo().getTriple();
+    if (!TT.isAlpha() || !TT.isWindowsMSVCEnvironment()) {
+      Diag(KWLoc, diag::err_builtin_target_unsupported);
+      return ExprError();
+    }
+  }
 
   if (Kind <= UTT_Last && !CheckUnaryTypeTraitTypeCompleteness(
                               *this, Kind, KWLoc, Args[0]->getType()))
