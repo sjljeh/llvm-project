@@ -599,6 +599,13 @@ int WinEHStateFnPassImpl::getStateForCall(
     assert(FuncInfo.InvokeStateMap.count(II) && "invoke has no state!");
     return FuncInfo.InvokeStateMap[II];
   }
+
+  // Calls without unwind edges can still fault under asynchronous EH. Use the
+  // state propagated through explicit SEH scopes when it is available.
+  if (auto It = FuncInfo.BlockToStateMap.find(Call.getParent());
+      It != FuncInfo.BlockToStateMap.end())
+    return It->second;
+
   // Possibly throwing call instructions have no actions to take after
   // an unwind. Ensure they are in the -1 state.
   return getBaseStateForBB(BlockColors, FuncInfo, Call.getParent());
