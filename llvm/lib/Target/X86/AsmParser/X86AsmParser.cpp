@@ -449,6 +449,7 @@ private:
     std::optional<unsigned> TmpScale = {};
     int64_t Imm = 0;
     const MCExpr *Sym = nullptr;
+    const MCExpr *SymSubtrahend = nullptr;
     StringRef SymName;
     InfixCalculator IC;
     InlineAsmIdentifierInfo Info;
@@ -464,8 +465,13 @@ private:
     bool IsPIC = false;
     AsmTypeInfo CurType;
 
-    bool setSymRef(const MCExpr *Val, StringRef ID, StringRef &ErrMsg) {
+    bool setSymRef(const MCExpr *Val, StringRef ID, StringRef &ErrMsg,
+                   bool IsSymbolDifference = false) {
       if (Sym) {
+        if (IsSymbolDifference && !SymSubtrahend) {
+          SymSubtrahend = Val;
+          return false;
+        }
         ErrMsg = "cannot use more than one symbol in memory operand";
         return true;
       }
@@ -486,6 +492,7 @@ private:
     MCRegister getIndexReg() const { return IndexReg; }
     unsigned getScale() const { return Scale; }
     const MCExpr *getSym() const { return Sym; }
+    const MCExpr *getSymSubtrahend() const { return SymSubtrahend; }
     StringRef getSymName() const { return SymName; }
     StringRef getType() const { return CurType.Name; }
     unsigned getSize() const { return CurType.Size; }
@@ -883,7 +890,7 @@ private:
     bool onIdentifierExpr(const MCExpr *SymRef, StringRef SymRefName,
                           const InlineAsmIdentifierInfo &IDInfo,
                           const AsmTypeInfo &Type, bool ParsingMSInlineAsm,
-                          StringRef &ErrMsg) {
+                          bool ParsingMasm, StringRef &ErrMsg) {
       // InlineAsm: Treat an enum value as an integer
       if (ParsingMSInlineAsm)
         if (IDInfo.isKind(InlineAsmIdentifierInfo::IK_EnumVal))
@@ -903,7 +910,9 @@ private:
       case IES_INIT:
       case IES_LBRAC:
       case IES_LPAREN:
-        if (setSymRef(SymRef, SymRefName, ErrMsg))
+        bool IsSymbolDifference =
+            ParsingMasm && Sym && State == IES_MINUS && !SymSubtrahend;
+        if (setSymRef(SymRef, SymRefName, ErrMsg, IsSymbolDifference))
           return true;
         // Mark TmpScale as invalid, in case of multiplying by register
         TmpScale = 0;
@@ -912,7 +921,8 @@ private:
         IC.pushOperand(IC_IMM);
         if (ParsingMSInlineAsm)
           Info = IDInfo;
-        setTypeInfo(Type);
+        if (!IsSymbolDifference)
+          setTypeInfo(Type);
         break;
       }
       return false;
@@ -1423,6 +1433,7 @@ public:
   bool parseInstruction(ParseInstructionInfo &Info, StringRef Name,
                         SMLoc NameLoc, OperandVector &Operands) override;
 
+  bool setCodeMode(unsigned Mode) override;
   bool ParseDirective(AsmToken DirectiveID) override;
 };
 } // end anonymous namespace
@@ -2205,7 +2216,7 @@ bool X86AsmParser::ParseIntelExpression(IntelExprStateMachine &SM, SMLoc &End) {
         if (ParseIntelInlineAsmIdentifier(Val, Identifier, Info, false, End))
           return true;
         else if (SM.onIdentifierExpr(Val, Identifier, Info, FieldInfo.Type,
-                                     true, ErrMsg))
+                                      true, false, ErrMsg))
           return Error(SM.getErrorLoc(IdentLoc), ErrMsg);
         break;
       }
@@ -2246,7 +2257,7 @@ bool X86AsmParser::ParseIntelExpression(IntelExprStateMachine &SM, SMLoc &End) {
       if (getParser().parsePrimaryExpr(Val, End, &FieldInfo.Type)) {
         return Error(Tok.getLoc(), "Unexpected identifier!");
       } else if (SM.onIdentifierExpr(Val, Identifier, Info, FieldInfo.Type,
-                                     false, ErrMsg)) {
+                                      false, Parser.isParsingMasm(), ErrMsg)) {
         return Error(SM.getErrorLoc(IdentLoc), ErrMsg);
       }
       break;
@@ -2271,7 +2282,8 @@ bool X86AsmParser::ParseIntelExpression(IntelExprStateMachine &SM, SMLoc &End) {
           InlineAsmIdentifierInfo Info;
           AsmTypeInfo Type;
           if (SM.onIdentifierExpr(Val, Identifier, Info, Type,
-                                  isParsingMSInlineAsm(), ErrMsg))
+                                  isParsingMSInlineAsm(),
+                                  Parser.isParsingMasm(), ErrMsg))
             return Error(SM.getErrorLoc(Loc), ErrMsg);
           End = consumeToken();
         } else {
@@ -2839,6 +2851,8 @@ bool X86AsmParser::parseIntelOperand(OperandVector &Operands, StringRef Name) {
 
   int64_t Imm = SM.getImm();
   const MCExpr *Disp = SM.getSym();
+  if (const MCExpr *Subtrahend = SM.getSymSubtrahend())
+    Disp = MCBinaryExpr::createSub(Disp, Subtrahend, getContext());
   const MCExpr *ImmDisp = MCConstantExpr::create(Imm, getContext());
   if (Disp && Imm)
     Disp = MCBinaryExpr::createAdd(Disp, ImmDisp, getContext());
@@ -5099,42 +5113,60 @@ bool X86AsmParser::parseDirectiveEven(SMLoc L) {
   return false;
 }
 
-/// ParseDirectiveCode
-///  ::= .code16 | .code32 | .code64
-bool X86AsmParser::ParseDirectiveCode(StringRef IDVal, SMLoc L) {
-  MCAsmParser &Parser = getParser();
+bool X86AsmParser::setCodeMode(unsigned Mode) {
   Code16GCC = false;
-  if (IDVal == ".code16") {
-    Parser.Lex();
+  switch (Mode) {
+  case 16:
     if (!is16BitMode()) {
       SwitchMode(X86::Is16Bit);
       getTargetStreamer().emitCode16();
     }
-  } else if (IDVal == ".code16gcc") {
-    // .code16gcc parses as if in 32-bit mode, but emits code in 16-bit mode.
-    Parser.Lex();
-    Code16GCC = true;
-    if (!is16BitMode()) {
-      SwitchMode(X86::Is16Bit);
-      getTargetStreamer().emitCode16();
-    }
-  } else if (IDVal == ".code32") {
-    Parser.Lex();
+    return false;
+  case 32:
     if (!is32BitMode()) {
       SwitchMode(X86::Is32Bit);
       getTargetStreamer().emitCode32();
     }
-  } else if (IDVal == ".code64") {
-    Parser.Lex();
+    return false;
+  case 64:
     if (!is64BitMode()) {
       SwitchMode(X86::Is64Bit);
       getTargetStreamer().emitCode64();
     }
+    return false;
+  default:
+    return true;
+  }
+}
+
+/// ParseDirectiveCode
+///  ::= .code16 | .code32 | .code64
+bool X86AsmParser::ParseDirectiveCode(StringRef IDVal, SMLoc L) {
+  MCAsmParser &Parser = getParser();
+  unsigned Mode;
+  if (IDVal == ".code16") {
+    Parser.Lex();
+    Mode = 16;
+  } else if (IDVal == ".code16gcc") {
+    // .code16gcc parses as if in 32-bit mode, but emits code in 16-bit mode.
+    Parser.Lex();
+    if (setCodeMode(16))
+      llvm_unreachable("unsupported X86 code mode");
+    Code16GCC = true;
+    return false;
+  } else if (IDVal == ".code32") {
+    Parser.Lex();
+    Mode = 32;
+  } else if (IDVal == ".code64") {
+    Parser.Lex();
+    Mode = 64;
   } else {
     Error(L, "unknown directive " + IDVal);
     return false;
   }
 
+  if (setCodeMode(Mode))
+    llvm_unreachable("unsupported X86 code mode");
   return false;
 }
 

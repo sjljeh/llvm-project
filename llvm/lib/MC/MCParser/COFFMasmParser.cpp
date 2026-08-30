@@ -19,6 +19,7 @@
 #include "llvm/MC/MCSymbolCOFF.h"
 #include "llvm/MC/SectionKind.h"
 #include "llvm/Support/SMLoc.h"
+#include "llvm/TargetParser/Triple.h"
 #include <cstdint>
 
 using namespace llvm;
@@ -197,7 +198,10 @@ class COFFMasmParser : public MCAsmParserExtension {
     // typedef
   }
 
-  bool parseSectionDirectiveCode(StringRef, SMLoc) {
+  bool parseSectionDirectiveCode(StringRef, SMLoc Loc) {
+    unsigned CodeMode = getContext().getTargetTriple().isArch64Bit() ? 64 : 32;
+    if (getParser().getTargetParser().setCodeMode(CodeMode))
+      return Error(Loc, "unsupported code mode");
     return parseSectionSwitch(".text", COFF::IMAGE_SCN_CNT_CODE |
                                            COFF::IMAGE_SCN_MEM_EXECUTE |
                                            COFF::IMAGE_SCN_MEM_READ);
@@ -280,6 +284,7 @@ bool COFFMasmParser::parseDirectiveSegment(StringRef Directive, SMLoc Loc) {
   // Default flags are used only if no characteristics are set.
   bool DefaultCharacteristics = true;
   unsigned Flags = 0;
+  unsigned CodeMode = 0;
   // "obsolete" according to the documentation, but still supported.
   bool Readonly = false;
   while (getLexer().isNot(AsmToken::EndOfStatement)) {
@@ -334,6 +339,14 @@ bool COFFMasmParser::parseDirectiveSegment(StringRef Directive, SMLoc Loc) {
               "Expected (string) following ALIAS in SEGMENT directive");
       } else if (Keyword.equals_insensitive("readonly")) {
         Readonly = true;
+      } else if (Keyword.equals_insensitive("use16")) {
+        CodeMode = 16;
+      } else if (Keyword.equals_insensitive("use32")) {
+        CodeMode = 32;
+      } else if (Keyword.equals_insensitive("use64")) {
+        CodeMode = 64;
+      } else if (Keyword.equals_insensitive("public")) {
+        // Same-named COFF sections are combined by default.
       } else {
         unsigned Characteristic =
             StringSwitch<unsigned>(Keyword)
@@ -379,6 +392,9 @@ bool COFFMasmParser::parseDirectiveSegment(StringRef Directive, SMLoc Loc) {
   if (Readonly) {
     Flags &= ~COFF::IMAGE_SCN_MEM_WRITE;
   }
+
+  if (CodeMode && getParser().getTargetParser().setCodeMode(CodeMode))
+    return Error(Loc, "unsupported code mode in SEGMENT directive");
 
   MCSection *Section = getContext().getCOFFSection(SectionName, Flags, "",
                                                    (COFF::COMDATType)(0));
