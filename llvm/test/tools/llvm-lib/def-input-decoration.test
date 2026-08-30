@@ -1,0 +1,23 @@
+# RUN: rm -rf %t && split-file %s %t
+# RUN: llvm-mc -filetype=obj -triple=i686-windows-msvc %t/stub.s -o %t/stub.obj
+# RUN: llvm-lib /machine:x86 /def:%t/test.def /out:%t/test.lib %t/stub.obj
+# RUN: llvm-readobj %t/test.lib | FileCheck %s
+
+# CHECK:      File: test.dll
+# CHECK-NEXT: Format: COFF-import-file-i386
+# CHECK-NEXT: Type: code
+# CHECK-NEXT: Name type: undecorate
+# CHECK-NEXT: Export name: func
+# CHECK-NEXT: Symbol: __imp__func@4
+# CHECK-NEXT: Symbol: _func@4
+
+#--- test.def
+LIBRARY test.dll
+EXPORTS
+        func=stub
+
+#--- stub.s
+        .text
+        .globl  _stub@4
+_stub@4:
+        retl    $4

@@ -12,14 +12,17 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/ToolDrivers/llvm-lib/LibDriver.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/BinaryFormat/COFF.h"
 #include "llvm/BinaryFormat/Magic.h"
 #include "llvm/Bitcode/BitcodeReader.h"
+#include "llvm/IR/LLVMContext.h"
 #include "llvm/Object/ArchiveWriter.h"
 #include "llvm/Object/COFF.h"
 #include "llvm/Object/COFFModuleDefinition.h"
+#include "llvm/Object/SymbolicFile.h"
 #include "llvm/Object/WindowsMachineFlag.h"
 #include "llvm/Option/Arg.h"
 #include "llvm/Option/ArgList.h"
@@ -317,6 +320,79 @@ static void appendFile(std::vector<NewArchiveMember> &Members,
   Members.emplace_back(MB);
 }
 
+static Error collectDefinedSymbols(MemoryBufferRef MB, LLVMContext &Context,
+                                   StringSet<> &Symbols) {
+  file_magic Magic = identify_magic(MB.getBuffer());
+  if (Magic == file_magic::archive) {
+    Error Err = Error::success();
+    object::Archive Archive(MB, Err);
+    if (Err)
+      return Err;
+
+    for (auto &C : Archive.children(Err)) {
+      Expected<MemoryBufferRef> ChildMB = C.getMemoryBufferRef();
+      if (!ChildMB)
+        return ChildMB.takeError();
+      if (Error E = collectDefinedSymbols(*ChildMB, Context, Symbols))
+        return E;
+    }
+    return Err;
+  }
+
+  if (Magic != file_magic::coff_object && Magic != file_magic::bitcode &&
+      Magic != file_magic::coff_import_library)
+    return Error::success();
+
+  Expected<std::unique_ptr<SymbolicFile>> Obj =
+      SymbolicFile::createSymbolicFile(MB, Magic, &Context);
+  if (!Obj)
+    return Obj.takeError();
+
+  for (BasicSymbolRef Sym : (*Obj)->symbols()) {
+    Expected<uint32_t> Flags = Sym.getFlags();
+    if (!Flags)
+      return Flags.takeError();
+    if (!(*Flags & BasicSymbolRef::SF_Global) ||
+        (*Flags & BasicSymbolRef::SF_Undefined))
+      continue;
+
+    SmallString<128> Name;
+    raw_svector_ostream OS(Name);
+    if (Error E = Sym.printName(OS))
+      return E;
+    Symbols.insert(Name);
+  }
+  return Error::success();
+}
+
+static StringRef findMangledSymbol(StringRef Name, const StringSet<> &Symbols,
+                                   COFF::MachineTypes Machine) {
+  if (auto It = Symbols.find(Name); It != Symbols.end())
+    return It->getKey();
+
+  auto FindByPrefix = [&Symbols](const Twine &Prefix) -> StringRef {
+    std::string PrefixStr = Prefix.str();
+    for (const auto &Symbol : Symbols)
+      if (Symbol.getKey().starts_with(PrefixStr))
+        return Symbol.getKey();
+    return {};
+  };
+
+  if (Machine != COFF::IMAGE_FILE_MACHINE_I386)
+    return FindByPrefix("?" + Name + "@@Y");
+  if (!Name.starts_with("_"))
+    return {};
+  if (StringRef Symbol = FindByPrefix(Name + "@"); !Symbol.empty())
+    return Symbol;
+  if (StringRef Symbol = FindByPrefix("@" + Name.drop_front() + "@");
+      !Symbol.empty())
+    return Symbol;
+  if (StringRef Symbol = FindByPrefix(Name.drop_front() + "@@");
+      !Symbol.empty())
+    return Symbol;
+  return FindByPrefix("?" + Name.drop_front() + "@@Y");
+}
+
 int llvm::libDriverMain(ArrayRef<const char *> ArgsArr) {
   BumpPtrAllocator Alloc;
   StringSaver Saver(Alloc);
@@ -371,6 +447,8 @@ int llvm::libDriverMain(ArrayRef<const char *> ArgsArr) {
         std::string(" (from '/machine:") + Arg->getValue() + "' flag)";
   }
 
+  std::vector<StringRef> SearchPaths = getSearchPaths(&Args, Saver);
+
   // create an import library
   if (Args.hasArg(OPT_deffile)) {
 
@@ -402,6 +480,27 @@ int llvm::libDriverMain(ArrayRef<const char *> ArgsArr) {
                    << errorToErrorCode(Def.takeError()).message();
       return 1;
     }
+
+    // Input objects provide decorations omitted from names in the def file.
+    StringSet<> Symbols;
+    LLVMContext Context;
+    for (auto *Arg : Args.filtered(OPT_INPUT)) {
+      std::string Path = findInputFile(Arg->getValue(), SearchPaths);
+      if (Path.empty()) {
+        llvm::errs() << Arg->getValue() << ": no such file or directory\n";
+        return 1;
+      }
+
+      ErrorOr<std::unique_ptr<MemoryBuffer>> MOrErr = MemoryBuffer::getFile(
+          Path, /*IsText=*/false, /*RequiresNullTerminator=*/false);
+      fatalOpenError(errorCodeToError(MOrErr.getError()), Path);
+      fatalOpenError(collectDefinedSymbols((*MOrErr)->getMemBufferRef(), Context,
+                                           Symbols),
+                     Path);
+    }
+    for (COFFShortExport &Export : Def->Exports)
+      Export.SymbolName =
+          findMangledSymbol(Export.Name, Symbols, LibMachine).str();
 
     std::vector<COFFShortExport> NativeExports;
     std::string OutputFile = Def->OutputFile;
@@ -459,8 +558,6 @@ int llvm::libDriverMain(ArrayRef<const char *> ArgsArr) {
     doList(Args);
     return 0;
   }
-
-  std::vector<StringRef> SearchPaths = getSearchPaths(&Args, Saver);
 
   std::vector<std::unique_ptr<MemoryBuffer>> MBs;
   StringSet<> Seen;
