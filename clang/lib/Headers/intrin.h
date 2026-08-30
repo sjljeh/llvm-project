@@ -146,7 +146,9 @@ unsigned char _bittestandreset(long *, long);
 unsigned char _bittestandset(long *, long);
 void __cdecl _disable(void);
 void __cdecl _enable(void);
+#ifdef __i386__
 long _InterlockedAddLargeStatistic(__int64 volatile *_Addend, long _Value);
+#endif
 unsigned char _interlockedbittestandreset(long volatile *, long);
 unsigned char _interlockedbittestandset(long volatile *, long);
 void *_InterlockedCompareExchangePointer_HLEAcquire(void *volatile *, void *,

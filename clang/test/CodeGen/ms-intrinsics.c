@@ -363,6 +363,16 @@ long test_InterlockedExchangeAdd(long volatile *value, long mask) {
 // CHECK:   ret i32 [[RESULT:%[0-9]+]]
 // CHECK: }
 
+#if defined(__i386__)
+long test_InterlockedAddLargeStatistic(__int64 volatile *value, long increment) {
+  return _InterlockedAddLargeStatistic(value, increment);
+}
+// CHECK-I386-LABEL: define{{.*}}i32 @test_InterlockedAddLargeStatistic
+// CHECK-I386: call void asm sideeffect
+// CHECK-I386-SAME: "r,ir,~{memory},~{dirflag},~{fpsr},~{flags}"
+// CHECK-I386: ret i32 %increment
+#endif
+
 char test_InterlockedExchangeSub8(char volatile *value, char mask) {
   return _InterlockedExchangeSub8(value, mask);
 }
