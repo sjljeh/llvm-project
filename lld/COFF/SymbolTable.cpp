@@ -1013,16 +1013,19 @@ std::vector<Symbol *> SymbolTable::getSymsWithPrefix(StringRef prefix) {
   return syms;
 }
 
-Symbol *SymbolTable::findMangle(StringRef name) {
-  if (Symbol *sym = find(name)) {
-    if (auto *u = dyn_cast<Undefined>(sym)) {
-      // We're specifically looking for weak aliases that ultimately resolve to
-      // defined symbols, hence the call to getWeakAlias() instead of just using
-      // the weakAlias member variable. This matches link.exe's behavior.
-      if (Symbol *weakAlias = u->getWeakAlias())
-        return weakAlias;
-    } else {
-      return sym;
+Symbol *SymbolTable::findMangle(StringRef name, bool includeExact) {
+  if (includeExact) {
+    if (Symbol *sym = find(name)) {
+      if (auto *u = dyn_cast<Undefined>(sym)) {
+        // We're specifically looking for weak aliases that ultimately resolve
+        // to defined symbols, hence the call to getWeakAlias() instead of just
+        // using the weakAlias member variable. This matches link.exe's
+        // behavior.
+        if (Symbol *weakAlias = u->getWeakAlias())
+          return weakAlias;
+      } else {
+        return sym;
+      }
     }
   }
 

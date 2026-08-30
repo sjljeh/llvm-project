@@ -88,7 +88,7 @@ public:
   // mangled symbol. This function tries to find a mangled name
   // for U from the symbol table, and if found, set the symbol as
   // a weak alias for U.
-  Symbol *findMangle(StringRef name);
+  Symbol *findMangle(StringRef name, bool includeExact = true);
   StringRef mangleMaybe(Symbol *s);
 
   // Symbol names are mangled by prepending "_" on x86.
