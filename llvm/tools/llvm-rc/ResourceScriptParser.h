@@ -104,6 +104,9 @@ private:
   Expected<SmallVector<RCInt, 8>> readIntsWithCommas(size_t MinCount,
                                                      size_t MaxCount);
 
+  // Read a block of integer and string data elements.
+  Expected<std::vector<IntOrString>> parseDataBlock();
+
   // Read an unknown number of flags preceded by commas. Each correct flag
   // has an entry in FlagDesc array of length NumFlags. In case i-th
   // flag (0-based) has been read, the result is OR-ed with FlagValues[i].
