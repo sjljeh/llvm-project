@@ -3739,6 +3739,12 @@ Value *CodeGenFunction::EmitX86BuiltinExpr(unsigned BuiltinID,
     CI->setAttributes(NoReturnAttr);
     return CI;
   }
+  case X86::BI__nop: {
+    llvm::FunctionType *FTy = llvm::FunctionType::get(VoidTy, false);
+    llvm::InlineAsm *IA =
+        llvm::InlineAsm::get(FTy, "nop", "", /*hasSideEffects=*/true);
+    return Builder.CreateCall(IA);
+  }
   case X86::BI__addgsdword: {
     Value *Offset = Builder.CreateZExtOrTrunc(Ops[0], Int64Ty);
     Value *Data = Builder.CreateZExtOrTrunc(Ops[1], Int32Ty);
@@ -3761,6 +3767,18 @@ Value *CodeGenFunction::EmitX86BuiltinExpr(unsigned BuiltinID,
         IntTy, Ptr, getContext().getTypeAlignInChars(E->getType()));
     Load->setVolatile(true);
     return Load;
+  }
+  case X86::BI__writefsbyte:
+  case X86::BI__writefsword:
+  case X86::BI__writefsdword:
+  case X86::BI__writefsqword: {
+    Value *Ptr = Builder.CreateIntToPtr(
+        Ops[0], llvm::PointerType::get(getLLVMContext(), 257));
+    StoreInst *Store = Builder.CreateAlignedStore(
+        Ops[1], Ptr,
+        getContext().getTypeAlignInChars(E->getArg(1)->getType()));
+    Store->setVolatile(true);
+    return Store;
   }
   case X86::BI__readgsbyte:
   case X86::BI__readgsword:

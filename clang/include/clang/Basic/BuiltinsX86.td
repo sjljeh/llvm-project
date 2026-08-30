@@ -4254,6 +4254,7 @@ let Header = "intrin.h", Languages = "ALL_MS_LANGUAGES", Attributes = [NoThrow, 
   def _disable : X86LibBuiltin<"void()">;
   def _enable : X86LibBuiltin<"void()">;
   def __halt : X86LibBuiltin<"void()">;
+  def __nop : X86LibBuiltin<"void()">;
   def __cpuid : X86LibBuiltin<"void(int *, int)">;
   def __cpuidex : X86LibBuiltin<"void(int *, int, int)">;
   def __wbinvd : X86LibBuiltin<"void()">;
@@ -4319,6 +4320,10 @@ let Header = "intrin.h", Languages = "ALL_MS_LANGUAGES", Attributes = [NoThrow, 
   def __readfsword : X86LibBuiltin<"unsigned short(msuint32_t)">;
   def __readfsdword : X86LibBuiltin<"msuint32_t(msuint32_t)">;
   def __readfsqword : X86LibBuiltin<"unsigned long long int(msuint32_t)">;
+  def __writefsbyte : X86LibBuiltin<"void(msuint32_t, unsigned char)">;
+  def __writefsword : X86LibBuiltin<"void(msuint32_t, unsigned short)">;
+  def __writefsdword : X86LibBuiltin<"void(msuint32_t, msuint32_t)">;
+  def __writefsqword : X86LibBuiltin<"void(msuint32_t, unsigned long long int)">;
   def __readgsbyte : X86LibBuiltin<"unsigned char(msuint32_t)">;
   def __readgsword : X86LibBuiltin<"unsigned short(msuint32_t)">;
   def __readgsdword : X86LibBuiltin<"msuint32_t(msuint32_t)">;
