@@ -1,4 +1,6 @@
 ; RUN: llvm-ml -filetype=s %s /Fo - | FileCheck %s
+; RUN: llvm-ml %s /Fo %t.obj
+; RUN: llvm-objdump -s --section=EXEC_SEG %t.obj | FileCheck %s --check-prefix=EXEC
 
 .data
 
@@ -112,5 +114,15 @@ field_positions:
 
   ret
 struct_org_test ENDP
+
+EXEC_SEG SEGMENT PARA PUBLIC USE32 READ WRITE EXECUTE DISCARD
+  nop
+  ALIGN 16
+  sti
+  ret
+EXEC_SEG ENDS
+; EXEC:      Contents of section EXEC_SEG:
+; EXEC-NEXT:  0000 90909090 90909090 90909090 90909090
+; EXEC-NEXT:  0010 fbc3
 
 end
