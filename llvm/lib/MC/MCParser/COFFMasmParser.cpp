@@ -132,7 +132,7 @@ class COFFMasmParser : public MCAsmParserExtension {
     // Miscellaneous directives
     addDirectiveHandler<&COFFMasmParser::parseDirectiveAlias>("alias");
     addDirectiveHandler<&COFFMasmParser::IgnoreDirective>("assume");
-    // .fpo
+    addDirectiveHandler<&COFFMasmParser::IgnoreDirective>(".fpo");
     addDirectiveHandler<&COFFMasmParser::parseDirectiveIncludelib>(
         "includelib");
     addDirectiveHandler<&COFFMasmParser::parseDirectiveOption>("option");
