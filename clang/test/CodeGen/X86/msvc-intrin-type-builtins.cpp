@@ -1,5 +1,5 @@
 // RUN: %clang_cc1 -triple x86_64-pc-windows-msvc -fms-extensions \
-// RUN:   -fms-compatibility -ast-dump -fsyntax-only %s | \
+// RUN:   -fms-compatibility -fsyntax-only -ast-dump %s | \
 // RUN:   FileCheck %s --check-prefix=AST
 // RUN: %clang_cc1 -triple x86_64-pc-windows-msvc -fms-extensions \
 // RUN:   -fms-compatibility -emit-llvm -o - %s | FileCheck %s --check-prefix=IR
@@ -22,6 +22,13 @@ typedef union __declspec(intrin_type) __declspec(align(16)) __m128i {
 } __m128i;
 
 typedef __declspec(align(1)) __m128i __m128i_u;
+
+typedef union __declspec(intrin_type) __declspec(align(32)) __m256i {
+  char i8[32];
+  short i16[16];
+  int i32[8];
+  long long i64[4];
+} __m256i;
 
 extern "C" {
 __m128 _mm_load_ss(float const *);
@@ -49,6 +56,12 @@ __m128i _mm_unpackhi_epi8(__m128i, __m128i);
 __m128i _mm_unpacklo_epi16(__m128i, __m128i);
 __m128i _mm_unpacklo_epi8(__m128i, __m128i);
 __m128i _mm_xor_si128(__m128i, __m128i);
+
+__m256i _mm256_cmpeq_epi16(__m256i, __m256i);
+__m256i _mm256_cmpeq_epi8(__m256i, __m256i);
+int _mm256_movemask_epi8(__m256i);
+__m256i _mm256_setzero_si256(void);
+void _mm256_zeroupper(void);
 }
 
 // AST: FunctionDecl {{.*}} _mm_load_ss
@@ -56,6 +69,10 @@ __m128i _mm_xor_si128(__m128i, __m128i);
 // AST: FunctionDecl {{.*}} _mm_sqrt_sd
 // AST: BuiltinAttr {{.*}} Implicit
 // AST: FunctionDecl {{.*}} _mm_xor_si128
+// AST: BuiltinAttr {{.*}} Implicit
+// AST: FunctionDecl {{.*}} _mm256_cmpeq_epi8
+// AST: BuiltinAttr {{.*}} Implicit
+// AST: FunctionDecl {{.*}} _mm256_zeroupper
 // AST: BuiltinAttr {{.*}} Implicit
 
 extern "C" {
@@ -107,6 +124,35 @@ int test_movemask(__m128i a) { return _mm_movemask_epi8(a); }
 __m128i test_cvtsi32(int a) { return _mm_cvtsi32_si128(a); }
 __m128i test_setzero_si128() { return _mm_setzero_si128(); }
 
+__m256i test_mm256_cmpeq_epi8(__m256i a, __m256i b) {
+  return _mm256_cmpeq_epi8(a, b);
+}
+
+__m256i test_mm256_cmpeq_epi16(__m256i a, __m256i b) {
+  return _mm256_cmpeq_epi16(a, b);
+}
+
+int test_mm256_movemask_epi8(__m256i a) {
+  return _mm256_movemask_epi8(a);
+}
+
+__m256i test_mm256_setzero_si256() { return _mm256_setzero_si256(); }
+
+void test_mm256_zeroupper() { _mm256_zeroupper(); }
+
+static __forceinline int wrapped_mm256_ops(__m256i a, __m256i b) {
+  return _mm256_movemask_epi8(_mm256_cmpeq_epi8(a, b));
+}
+
+__declspec(noinline) int test_wrapped_mm256_ops(__m256i a, __m256i b) {
+  return wrapped_mm256_ops(a, b);
+}
+// IR-LABEL: define {{.*}} @test_wrapped_mm256_ops(
+// IR-SAME: #[[AVX2:[0-9]+]] {
+// IR: icmp eq <32 x i8>
+// IR: call{{.*}} i32 @llvm.x86.avx2.pmovmskb
+
 }
 
 // IR-NOT: clang-msvc-required-target-features
+// IR: attributes #[[AVX2]] = {{.*}}"target-features"="{{[^"]*}}+avx2{{[^"]*}}"
