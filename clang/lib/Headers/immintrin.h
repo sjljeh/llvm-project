@@ -147,11 +147,21 @@ _rdpid_u32(void) {
 /// \param __p
 ///    A pointer to a 16-bit memory location to place the random value.
 /// \returns 1 if the value was successfully generated, 0 otherwise.
+#if defined(_MSC_VER) && __has_builtin(_rdrand16_step)
+#ifdef __cplusplus
+extern "C" {
+#endif
+int __cdecl _rdrand16_step(unsigned short *__p);
+#ifdef __cplusplus
+}
+#endif
+#else
 static __inline__ int __attribute__((__always_inline__, __nodebug__, __target__("rdrnd")))
 _rdrand16_step(unsigned short *__p)
 {
   return (int)__builtin_ia32_rdrand16_step(__p);
 }
+#endif
 
 /// Returns a 32-bit hardware-generated random value.
 ///
@@ -162,11 +172,21 @@ _rdrand16_step(unsigned short *__p)
 /// \param __p
 ///    A pointer to a 32-bit memory location to place the random value.
 /// \returns 1 if the value was successfully generated, 0 otherwise.
+#if defined(_MSC_VER) && __has_builtin(_rdrand32_step)
+#ifdef __cplusplus
+extern "C" {
+#endif
+int __cdecl _rdrand32_step(unsigned int *__p);
+#ifdef __cplusplus
+}
+#endif
+#else
 static __inline__ int __attribute__((__always_inline__, __nodebug__, __target__("rdrnd")))
 _rdrand32_step(unsigned int *__p)
 {
   return (int)__builtin_ia32_rdrand32_step(__p);
 }
+#endif
 
 /// Returns a 64-bit hardware-generated random value.
 ///

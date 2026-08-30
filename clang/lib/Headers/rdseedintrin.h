@@ -38,11 +38,21 @@
 /// \param __p
 ///    Pointer to memory for storing the 16-bit random number.
 /// \returns 1 if a random number was generated, 0 if not.
+#if defined(_MSC_VER) && __has_builtin(_rdseed16_step)
+#ifdef __cplusplus
+extern "C" {
+#endif
+int __cdecl _rdseed16_step(unsigned short *__p);
+#ifdef __cplusplus
+}
+#endif
+#else
 static __inline__ int __DEFAULT_FN_ATTRS
 _rdseed16_step(unsigned short *__p)
 {
   return (int) __builtin_ia32_rdseed16_step(__p);
 }
+#endif
 
 /// Stores a hardware-generated 32-bit random value in the memory at \a __p.
 ///
@@ -65,11 +75,21 @@ _rdseed16_step(unsigned short *__p)
 /// \param __p
 ///    Pointer to memory for storing the 32-bit random number.
 /// \returns 1 if a random number was generated, 0 if not.
+#if defined(_MSC_VER) && __has_builtin(_rdseed32_step)
+#ifdef __cplusplus
+extern "C" {
+#endif
+int __cdecl _rdseed32_step(unsigned int *__p);
+#ifdef __cplusplus
+}
+#endif
+#else
 static __inline__ int __DEFAULT_FN_ATTRS
 _rdseed32_step(unsigned int *__p)
 {
   return (int) __builtin_ia32_rdseed32_step(__p);
 }
+#endif
 
 #ifdef __x86_64__
 /// Stores a hardware-generated 64-bit random value in the memory at \a __p.
