@@ -461,6 +461,10 @@ public:
   /// \param DirectiveID - The token identifying the directive.
   virtual ParseStatus parseDirective(AsmToken DirectiveID);
 
+  /// Switch instruction parsing and emission to the requested code mode.
+  /// Returns true if the target does not support the mode.
+  virtual bool setCodeMode(unsigned) { return true; }
+
   /// Recognize a series of operands of a parsed
   /// instruction as an actual MCInst and emit it to the specified MCStreamer.
   /// This returns false on success and returns true on failure to match.
