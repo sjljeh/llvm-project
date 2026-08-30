@@ -2974,7 +2974,12 @@ void Writer::addBaserels() {
     return;
   std::vector<Baserel> v;
   for (OutputSection *sec : ctx.outputSections) {
-    if (sec->header.Characteristics & IMAGE_SCN_MEM_DISCARDABLE)
+    uint32_t chars = sec->header.Characteristics;
+    // Debug sections can be stripped after linking. Other discardable
+    // sections may contain initialization code or data that needs relocation.
+    if (sec == relocSec ||
+        ((chars & IMAGE_SCN_MEM_DISCARDABLE) &&
+         sec->name.starts_with(".debug")))
       continue;
     llvm::TimeTraceScope timeScope("Base relocations: ", sec->name);
     // Collect all locations for base relocations.
