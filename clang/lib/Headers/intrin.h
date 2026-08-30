@@ -376,7 +376,8 @@ static __inline__ void __outdword(unsigned short port, unsigned long data) {
 #endif
 #endif
 
-#if defined(__i386__) || defined(__x86_64__) || defined(__aarch64__)
+#if (defined(__i386__) || defined(__x86_64__) || defined(__aarch64__)) &&      \
+    (!defined(_MSC_VER) || !__has_builtin(__nop))
 static __inline__ void __DEFAULT_FN_ATTRS __nop(void) {
   __asm__ volatile("nop");
 }
