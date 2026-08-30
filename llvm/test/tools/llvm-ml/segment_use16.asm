@@ -9,10 +9,12 @@ mov si, offset target - base
 target:
 .text ENDS
 
-.code
 mov eax, eax
+
+.code
 
 ; CHECK: .code16
 ; CHECK: .code32
+; CHECK: movl %eax, %eax
 
 END

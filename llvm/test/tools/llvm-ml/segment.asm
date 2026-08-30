@@ -1,4 +1,4 @@
-; RUN: llvm-ml %s /Fo - | llvm-readobj --section-headers - | FileCheck %s
+; RUN: llvm-ml %s /Fo - | llvm-readobj --section-headers --symbols - | FileCheck %s
 
 t1 SEGMENT BYTE
 t1 ENDS
@@ -150,5 +150,19 @@ t17 ENDS
 ; CHECK-DAG: IMAGE_SCN_MEM_WRITE
 ; CHECK-NOT: IMAGE_SCN_CNT_INITIALIZED_DATA
 ; CHECK: }
+
+.code
+before_segment:
+t18 SEGMENT READ WRITE EXECUTE
+inside_segment:
+t18 ENDS
+after_segment:
+; CHECK-LABEL: Name: t18
+; CHECK-LABEL: Name: before_segment
+; CHECK: Section: .text
+; CHECK-LABEL: Name: inside_segment
+; CHECK: Section: t18
+; CHECK-LABEL: Name: after_segment
+; CHECK: Section: .text
 
 END
