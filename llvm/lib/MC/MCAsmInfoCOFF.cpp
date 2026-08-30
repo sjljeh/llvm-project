@@ -57,7 +57,9 @@ MCAsmInfoCOFF::MCAsmInfoCOFF(const MCTargetOptions &Options)
 }
 
 bool MCAsmInfoCOFF::useCodeAlign(const MCSection &Sec) const {
-  return Sec.isText();
+  const auto &COFFSec = static_cast<const MCSectionCOFF &>(Sec);
+  return Sec.isText() ||
+         (COFFSec.getCharacteristics() & COFF::IMAGE_SCN_MEM_EXECUTE);
 }
 
 void MCAsmInfoMicrosoft::anchor() {}
