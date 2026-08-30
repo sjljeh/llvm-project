@@ -43,7 +43,41 @@ long long test__readfsqword(unsigned long Offset) {
 // CHECK-I386:   [[PTR:%[0-9]+]] = inttoptr i32 %inc to ptr addrspace(257)
 // CHECK-I386:   [[VALUE:%[0-9]+]] = load volatile i64, ptr addrspace(257) [[PTR]], align 8
 // CHECK-I386:   ret i64 [[VALUE:%[0-9]+]]
+
+void test__writefsbyte(unsigned long Offset, unsigned char Data) {
+  __writefsbyte(Offset, Data);
+}
+// CHECK-I386-LABEL: define dso_local void @test__writefsbyte
+// CHECK-I386:   [[PTR:%[0-9]+]] = inttoptr i32 %Offset to ptr addrspace(257)
+// CHECK-I386:   store volatile i8 %Data, ptr addrspace(257) [[PTR]], align 1
+
+void test__writefsword(unsigned long Offset, unsigned short Data) {
+  __writefsword(Offset, Data);
+}
+// CHECK-I386-LABEL: define dso_local void @test__writefsword
+// CHECK-I386:   [[PTR:%[0-9]+]] = inttoptr i32 %Offset to ptr addrspace(257)
+// CHECK-I386:   store volatile i16 %Data, ptr addrspace(257) [[PTR]], align 2
+
+void test__writefsdword(unsigned long Offset, unsigned long Data) {
+  __writefsdword(Offset, Data);
+}
+// CHECK-I386-LABEL: define dso_local void @test__writefsdword
+// CHECK-I386:   [[PTR:%[0-9]+]] = inttoptr i32 %Offset to ptr addrspace(257)
+// CHECK-I386:   store volatile i32 %Data, ptr addrspace(257) [[PTR]], align 4
+
+void test__writefsqword(unsigned long Offset, unsigned long long Data) {
+  __writefsqword(Offset, Data);
+}
+// CHECK-I386-LABEL: define dso_local void @test__writefsqword
+// CHECK-I386:   [[PTR:%[0-9]+]] = inttoptr i32 %Offset to ptr addrspace(257)
+// CHECK-I386:   store volatile i64 %Data, ptr addrspace(257) [[PTR]], align 8
 #endif
+
+void test__nop(void) {
+  __nop();
+}
+// CHECK-LABEL: define dso_local void @test__nop
+// CHECK:   call void asm sideeffect "nop", ""()
 
 __int64 test__emul(int a, int b) {
   return __emul(a, b);
