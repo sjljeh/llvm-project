@@ -527,7 +527,9 @@ RcOptions parseRcOptions(ArrayRef<const char *> ArgsArr,
   }
 
   Opts.PrintCmdAndExit = InputArgs.hasArg(OPT__HASH_HASH_HASH);
-  Opts.Triple = getClangClTriple();
+  Opts.Triple = InputArgs.hasArg(OPT_target)
+                    ? InputArgs.getLastArgValue(OPT_target).str()
+                    : getClangClTriple();
   for (const auto *Arg :
        InputArgs.filtered(OPT_includepath, OPT_define, OPT_undef)) {
     switch (Arg->getOption().getID()) {

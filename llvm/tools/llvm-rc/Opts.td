@@ -40,6 +40,10 @@ def codepage : JS<"C", "Set the codepage used for input strings.">;
 
 def dry_run : F<"dry-run", "Don't compile the input; only try to parse it.">;
 
+def target : Joined<["--"], "target=">,
+             HelpText<"Set the target triple for preprocessing.">,
+             Flags<[HelpHidden]>;
+
 def no_preprocess : F<"no-preprocess", "Don't try to preprocess the input file.">;
 
 // Print (but do not run) the commands to run for preprocessing
