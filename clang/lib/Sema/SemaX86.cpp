@@ -537,6 +537,7 @@ static unsigned getMSVCVectorIntrinsicBuiltinID(StringRef Name) {
   return llvm::StringSwitch<unsigned>(Name)
       .Case("_mm_cvtss_f32", X86::BI__builtin_msvc_mm_cvtss_f32)
       .Case("_mm_load_ss", X86::BI__builtin_msvc_mm_load_ss)
+      .Case("_mm_set_ps1", X86::BI__builtin_msvc_mm_set_ps1)
       .Case("_mm_set_ss", X86::BI__builtin_msvc_mm_set_ss)
       .Case("_mm_sqrt_ss", X86::BI__builtin_msvc_mm_sqrt_ss)
       .Case("_mm_store_ss", X86::BI__builtin_msvc_mm_store_ss)
@@ -630,6 +631,7 @@ bool SemaX86::isMSVCVectorIntrinsicRedeclaration(const FunctionDecl *FD,
     break;
   case X86::BI__builtin_msvc_mm_load_ss:
   case X86::BI__builtin_msvc_mm_cvtss_f32:
+  case X86::BI__builtin_msvc_mm_set_ps1:
   case X86::BI__builtin_msvc_mm_set_ss:
   case X86::BI__builtin_msvc_mm_sqrt_ss:
   case X86::BI__builtin_msvc_mm_cvtpd_ps:
@@ -677,6 +679,7 @@ bool SemaX86::isMSVCVectorIntrinsicRedeclaration(const FunctionDecl *FD,
   case X86::BI__builtin_msvc_mm_cvtss_f32:
     Matches = IsFloat(RetTy) && IsM128(FPT->getParamType(0));
     break;
+  case X86::BI__builtin_msvc_mm_set_ps1:
   case X86::BI__builtin_msvc_mm_set_ss:
     Matches = IsM128(RetTy) && IsFloat(FPT->getParamType(0));
     break;

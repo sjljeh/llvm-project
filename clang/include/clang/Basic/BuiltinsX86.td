@@ -146,6 +146,7 @@ let Features = "sse", Attributes = [NoThrow] in {
 let Attributes = [NoThrow, RequiredVectorWidth<128>] in {
   def __builtin_msvc_mm_cvtss_f32 : X86NoPrefixBuiltin<"float(_Vector<4, float>)">;
   def __builtin_msvc_mm_load_ss : X86NoPrefixBuiltin<"_Vector<4, float>(float const *)">;
+  def __builtin_msvc_mm_set_ps1 : X86NoPrefixBuiltin<"_Vector<4, float>(float)">;
   def __builtin_msvc_mm_set_ss : X86NoPrefixBuiltin<"_Vector<4, float>(float)">;
   def __builtin_msvc_mm_sqrt_ss : X86NoPrefixBuiltin<"_Vector<4, float>(_Vector<4, float>)">;
   def __builtin_msvc_mm_store_ss : X86NoPrefixBuiltin<"void(float *, _Vector<4, float>)">;
