@@ -2,6 +2,7 @@
 
 .386p
 .model flat
+assume fs:nothing, gs:nothing
 
 .code
 mov eax, eax
@@ -10,3 +11,4 @@ end
 ; CHECK-NOT: 386p
 ; CHECK-NOT: model
 ; CHECK-NOT: flat
+; CHECK-NOT: assume
