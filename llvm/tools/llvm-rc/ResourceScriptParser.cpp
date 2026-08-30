@@ -549,6 +549,12 @@ RCParser::ParseType RCParser::parseUserDefinedResource(IntOrString Type) {
     break;
   }
 
+  ASSIGN_OR_RETURN(Data, parseDataBlock());
+  return std::make_unique<UserDefinedResource>(Type, std::move(*Data),
+                                               MemoryFlags);
+}
+
+Expected<std::vector<IntOrString>> RCParser::parseDataBlock() {
   RETURN_IF_ERROR(consumeType(Kind::BlockBegin));
   std::vector<IntOrString> Data;
 
@@ -562,8 +568,7 @@ RCParser::ParseType RCParser::parseUserDefinedResource(IntOrString Type) {
     }
   }
 
-  return std::make_unique<UserDefinedResource>(Type, std::move(Data),
-                                               MemoryFlags);
+  return Data;
 }
 
 RCParser::ParseType RCParser::parseVersionInfoResource() {
@@ -635,8 +640,15 @@ Expected<Control> RCParser::parseControl() {
     HelpID = *Val;
   }
 
+  std::vector<IntOrString> CreationData;
+  if (isNextTokenKind(Kind::BlockBegin)) {
+    ASSIGN_OR_RETURN(Data, parseDataBlock());
+    CreationData = std::move(*Data);
+  }
+
   return Control(*ClassResult, Caption, *ID, (*Args)[0], (*Args)[1], (*Args)[2],
-                 (*Args)[3], Style, ExStyle, HelpID, Class);
+                 (*Args)[3], Style, ExStyle, HelpID, Class,
+                 std::move(CreationData));
 }
 
 RCParser::ParseType RCParser::parseBitmapResource() {
