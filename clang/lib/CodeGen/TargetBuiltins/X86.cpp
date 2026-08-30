@@ -13,7 +13,6 @@
 #include "CGBuiltin.h"
 #include "clang/Basic/TargetBuiltins.h"
 #include "clang/CodeGenUtils/TargetUtils.h"
-#include "llvm/ADT/StringExtras.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/IntrinsicsX86.h"
 #include "llvm/TargetParser/X86TargetParser.h"
@@ -21,43 +20,6 @@
 using namespace clang;
 using namespace CodeGen;
 using namespace llvm;
-
-static void addX86TargetFeature(llvm::Function *Fn, StringRef Feature) {
-  if (!Fn)
-    return;
-
-  llvm::SmallVector<StringRef, 8> OldFeatures;
-  llvm::Attribute Attr = Fn->getFnAttribute("target-features");
-  if (Attr.isValid())
-    Attr.getValueAsString().split(OldFeatures, ',');
-
-  llvm::SmallVector<std::string, 8> NewFeatures;
-  std::string PlusFeature = ("+" + Feature).str();
-  std::string MinusFeature = ("-" + Feature).str();
-  bool HasFeature = false;
-  for (StringRef F : OldFeatures) {
-    if (F.empty() || F == MinusFeature)
-      continue;
-    if (F == PlusFeature)
-      HasFeature = true;
-    NewFeatures.push_back(F.str());
-  }
-
-  if (!HasFeature)
-    NewFeatures.push_back(PlusFeature);
-  Fn->removeFnAttr("target-features");
-  Fn->addFnAttr("target-features", llvm::join(NewFeatures, ","));
-
-  llvm::SmallVector<StringRef, 4> RequiredFeatures;
-  llvm::Attribute RequiredAttr =
-      Fn->getFnAttribute("clang-msvc-required-target-features");
-  if (RequiredAttr.isValid())
-    RequiredAttr.getValueAsString().split(RequiredFeatures, ',');
-  if (!llvm::is_contained(RequiredFeatures, StringRef(PlusFeature)))
-    RequiredFeatures.push_back(PlusFeature);
-  Fn->addFnAttr("clang-msvc-required-target-features",
-                llvm::join(RequiredFeatures, ","));
-}
 
 // Convert the mask from an integer type to a vector of i1.
 static Value *getMaskVecValue(CodeGenFunction &CGF, Value *Mask,
@@ -801,7 +763,7 @@ Value *CodeGenFunction::EmitX86BuiltinExpr(unsigned BuiltinID,
   if (std::optional<CodeGenUtils::MSVCIntrin> MsvcIntId =
           CodeGenUtils::translateX86ToMsvcIntrin(BuiltinID)) {
     if (*MsvcIntId == MSVCIntrin::_InterlockedCompareExchange128)
-      addX86TargetFeature(CurFn, "cx16");
+      CGM.addMSVCRequiredTargetFeature(CurFn, "cx16");
     return EmitMSVCBuiltinExpr(*MsvcIntId, E);
   }
 
@@ -833,7 +795,7 @@ Value *CodeGenFunction::EmitX86BuiltinExpr(unsigned BuiltinID,
   };
 
   auto AddMSFeature = [&](StringRef Feature) {
-    addX86TargetFeature(CurFn, Feature);
+    CGM.addMSVCRequiredTargetFeature(CurFn, Feature);
   };
 
   auto EmitScalarSqrt = [&](Value *V, const Twine &Name) -> Value * {
@@ -1019,6 +981,29 @@ Value *CodeGenFunction::EmitX86BuiltinExpr(unsigned BuiltinID,
                    static_cast<int>((Imm >> 6) & 3)};
     return StoreMSVectorResult(Builder.CreateShuffleVector(A, Mask));
   }
+  case X86::BI__builtin_msvc_mm256_setzero_si256:
+    AddMSFeature("avx");
+    return StoreMSVectorResult(
+        llvm::Constant::getNullValue(llvm::FixedVectorType::get(Int64Ty, 4)));
+  case X86::BI__builtin_msvc_mm256_cmpeq_epi8:
+  case X86::BI__builtin_msvc_mm256_cmpeq_epi16: {
+    AddMSFeature("avx2");
+    auto *Ty = BuiltinID == X86::BI__builtin_msvc_mm256_cmpeq_epi8
+                   ? llvm::FixedVectorType::get(Int8Ty, 32)
+                   : llvm::FixedVectorType::get(Builder.getInt16Ty(), 16);
+    Value *Cmp = Builder.CreateICmpEQ(LoadMSVectorArg(0, Ty),
+                                      LoadMSVectorArg(1, Ty));
+    return StoreMSVectorResult(Builder.CreateSExt(Cmp, Ty));
+  }
+  case X86::BI__builtin_msvc_mm256_movemask_epi8: {
+    AddMSFeature("avx2");
+    auto *V32I8 = llvm::FixedVectorType::get(Int8Ty, 32);
+    return Builder.CreateCall(CGM.getIntrinsic(Intrinsic::x86_avx2_pmovmskb),
+                              LoadMSVectorArg(0, V32I8));
+  }
+  case X86::BI__builtin_msvc_mm256_zeroupper:
+    AddMSFeature("avx");
+    return Builder.CreateCall(CGM.getIntrinsic(Intrinsic::x86_avx_vzeroupper));
   }
 
   SmallVector<Value*, 4> Ops;

@@ -243,6 +243,17 @@ let Attributes = [NoThrow, RequiredVectorWidth<128>] in {
   def __builtin_msvc_mm_xor_si128 : X86NoPrefixBuiltin<"_Vector<2, long long int>(_Vector<2, long long int>, _Vector<2, long long int>)">;
 }
 
+let Attributes = [NoThrow, RequiredVectorWidth<256>] in {
+  def __builtin_msvc_mm256_cmpeq_epi16 : X86NoPrefixBuiltin<"_Vector<16, short>(_Vector<16, short>, _Vector<16, short>)">;
+  def __builtin_msvc_mm256_cmpeq_epi8 : X86NoPrefixBuiltin<"_Vector<32, char>(_Vector<32, char>, _Vector<32, char>)">;
+  def __builtin_msvc_mm256_movemask_epi8 : X86NoPrefixBuiltin<"int(_Vector<32, char>)">;
+  def __builtin_msvc_mm256_setzero_si256 : X86NoPrefixBuiltin<"_Vector<4, long long int>()">;
+}
+
+let Attributes = [NoThrow] in {
+  def __builtin_msvc_mm256_zeroupper : X86NoPrefixBuiltin<"void()">;
+}
+
 let Features = "sse2", Attributes = [NoThrow] in {
   def lfence : X86Builtin<"void()">;
 }
