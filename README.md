@@ -28,7 +28,7 @@ Work is happening here on the main branch. I update the patch set when I see fit
 ### Items to be worked on in the future
 * llvm-ms-asaxp as the Microsoft-flavored Alpha assembler.
 * llvm-ms-asmips as the Microsoft-flavored MIPS assembler.
-* llvm-ms-asppc as the Microsoft-flavored PowerPC assembler.  
+* llvm-pasm as the Microsoft-flavored PowerPC assembler.  
 And any other items that come up in my work/interests.
 
 ### Disclaimer.
