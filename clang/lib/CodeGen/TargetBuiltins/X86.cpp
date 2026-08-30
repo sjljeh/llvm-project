@@ -849,6 +849,18 @@ Value *CodeGenFunction::EmitX86BuiltinExpr(unsigned BuiltinID,
   switch (BuiltinID) {
   default:
     break;
+  case X86::BI__builtin_msvc_mm_cvtss_f32: {
+    AddMSFeature("sse");
+    auto *V4F = llvm::FixedVectorType::get(Builder.getFloatTy(), 4);
+    return Builder.CreateExtractElement(LoadMSVectorArg(0, V4F), (uint64_t)0);
+  }
+  case X86::BI__builtin_msvc_mm_set_ss: {
+    AddMSFeature("sse");
+    auto *V4F = llvm::FixedVectorType::get(Builder.getFloatTy(), 4);
+    Value *V = llvm::Constant::getNullValue(V4F);
+    return StoreMSVectorResult(Builder.CreateInsertElement(
+        V, EmitScalarExpr(E->getArg(0)), (uint64_t)0));
+  }
   case X86::BI__builtin_msvc_mm_load_ss: {
     AddMSFeature("sse");
     auto *V4F = llvm::FixedVectorType::get(Builder.getFloatTy(), 4);
@@ -875,6 +887,36 @@ Value *CodeGenFunction::EmitX86BuiltinExpr(unsigned BuiltinID,
     Value *Sqrt = EmitScalarSqrt(Scalar, "sqrtss");
     return StoreMSVectorResult(
         Builder.CreateInsertElement(V, Sqrt, (uint64_t)0));
+  }
+  case X86::BI__builtin_msvc_mm_cvtpd_ps: {
+    AddMSFeature("sse2");
+    auto *V2D = llvm::FixedVectorType::get(Builder.getDoubleTy(), 2);
+    Value *V = LoadMSVectorArg(0, V2D);
+    return StoreMSVectorResult(Builder.CreateCall(
+        CGM.getIntrinsic(Intrinsic::x86_sse2_cvtpd2ps), V));
+  }
+  case X86::BI__builtin_msvc_mm_cvtsd_f64: {
+    AddMSFeature("sse2");
+    auto *V2D = llvm::FixedVectorType::get(Builder.getDoubleTy(), 2);
+    return Builder.CreateExtractElement(LoadMSVectorArg(0, V2D), (uint64_t)0);
+  }
+  case X86::BI__builtin_msvc_mm_cvtss_sd: {
+    AddMSFeature("sse2");
+    auto *V2D = llvm::FixedVectorType::get(Builder.getDoubleTy(), 2);
+    auto *V4F = llvm::FixedVectorType::get(Builder.getFloatTy(), 4);
+    Value *A = LoadMSVectorArg(0, V2D);
+    Value *B = LoadMSVectorArg(1, V4F);
+    Value *Scalar = Builder.CreateFPExt(
+        Builder.CreateExtractElement(B, (uint64_t)0), Builder.getDoubleTy());
+    return StoreMSVectorResult(
+        Builder.CreateInsertElement(A, Scalar, (uint64_t)0));
+  }
+  case X86::BI__builtin_msvc_mm_set_sd: {
+    AddMSFeature("sse2");
+    auto *V2D = llvm::FixedVectorType::get(Builder.getDoubleTy(), 2);
+    Value *V = llvm::Constant::getNullValue(V2D);
+    return StoreMSVectorResult(Builder.CreateInsertElement(
+        V, EmitScalarExpr(E->getArg(0)), (uint64_t)0));
   }
   case X86::BI__builtin_msvc_mm_load_sd: {
     AddMSFeature("sse2");
@@ -2828,17 +2870,29 @@ Value *CodeGenFunction::EmitX86BuiltinExpr(unsigned BuiltinID,
   case X86::BI__builtin_ia32_rdrand16_step:
   case X86::BI__builtin_ia32_rdrand32_step:
   case X86::BI__builtin_ia32_rdrand64_step:
+  case X86::BI_rdrand16_step:
+  case X86::BI_rdrand32_step:
   case X86::BI_rdrand64_step:
   case X86::BI__builtin_ia32_rdseed16_step:
   case X86::BI__builtin_ia32_rdseed32_step:
-  case X86::BI__builtin_ia32_rdseed64_step: {
+  case X86::BI__builtin_ia32_rdseed64_step:
+  case X86::BI_rdseed16_step:
+  case X86::BI_rdseed32_step: {
     Intrinsic::ID ID;
     switch (BuiltinID) {
     default: llvm_unreachable("Unsupported intrinsic!");
     case X86::BI__builtin_ia32_rdrand16_step:
       ID = Intrinsic::x86_rdrand_16;
       break;
+    case X86::BI_rdrand16_step:
+      AddMSFeature("rdrnd");
+      ID = Intrinsic::x86_rdrand_16;
+      break;
     case X86::BI__builtin_ia32_rdrand32_step:
+      ID = Intrinsic::x86_rdrand_32;
+      break;
+    case X86::BI_rdrand32_step:
+      AddMSFeature("rdrnd");
       ID = Intrinsic::x86_rdrand_32;
       break;
     case X86::BI__builtin_ia32_rdrand64_step:
@@ -2851,7 +2905,15 @@ Value *CodeGenFunction::EmitX86BuiltinExpr(unsigned BuiltinID,
     case X86::BI__builtin_ia32_rdseed16_step:
       ID = Intrinsic::x86_rdseed_16;
       break;
+    case X86::BI_rdseed16_step:
+      AddMSFeature("rdseed");
+      ID = Intrinsic::x86_rdseed_16;
+      break;
     case X86::BI__builtin_ia32_rdseed32_step:
+      ID = Intrinsic::x86_rdseed_32;
+      break;
+    case X86::BI_rdseed32_step:
+      AddMSFeature("rdseed");
       ID = Intrinsic::x86_rdseed_32;
       break;
     case X86::BI__builtin_ia32_rdseed64_step:
