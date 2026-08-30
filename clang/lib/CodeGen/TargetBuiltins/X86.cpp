@@ -3317,6 +3317,19 @@ Value *CodeGenFunction::EmitX86BuiltinExpr(unsigned BuiltinID,
     return Store;
   }
 
+  case X86::BI_InterlockedAddLargeStatistic: {
+    llvm::FunctionType *FTy = llvm::FunctionType::get(
+        VoidTy, {Ops[0]->getType(), Ops[1]->getType()}, false);
+    StringRef Asm = "lock addl $1, ($0)\n"
+                    "jae ${:private}interlocked_add_large_statistic${:uid}\n"
+                    "lock adcl $$0, 4($0)\n"
+                    "${:private}interlocked_add_large_statistic${:uid}:";
+    llvm::InlineAsm *IA = llvm::InlineAsm::get(
+        FTy, Asm, "r,ir,~{memory},~{dirflag},~{fpsr},~{flags}",
+        /*hasSideEffects=*/true);
+    Builder.CreateCall(IA, Ops);
+    return Ops[1];
+  }
   case X86::BI__emul:
   case X86::BI__emulu: {
     llvm::Type *Int64Ty = llvm::IntegerType::get(getLLVMContext(), 64);
