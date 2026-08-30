@@ -116,3 +116,20 @@ entry:
   ret i32 %retval
 }
 
+declare ptr @llvm.localaddress()
+declare void @use(ptr)
+
+; llvm.localaddress reads the base pointer in a realigned frame. It must not be
+; mistaken for a base-pointer clobber when the function also has inline asm.
+define void @localaddress_with_base_pointer(i32 %size) {
+; CHECK-LABEL: localaddress_with_base_pointer:
+entry:
+  %local = alloca i32, align 4
+  %var_array = alloca i8, i32 %size, align 16
+  store volatile i32 0, ptr %local, align 4
+  store volatile i8 0, ptr %var_array, align 16
+  call void asm sideeffect "", ""()
+  %local_address = call ptr @llvm.localaddress()
+  call void @use(ptr %local_address)
+  ret void
+}

@@ -4858,26 +4858,31 @@ void X86FrameLowering::spillFPBP(MachineFunction &MF) const {
       bool SpillFP = false, SpillBP = false;
       auto DefMI = MI, KillMI = MI;
       do {
-        SpillFP |= AccessFP;
-        SpillBP |= AccessBP;
+        bool DefFP =
+            FP && MI->findRegisterDefOperandIdx(FP, TRI, false, true) != -1;
+        bool DefBP =
+            BP && MI->findRegisterDefOperandIdx(BP, TRI, false, true) != -1;
+        SpillFP |= DefFP;
+        SpillBP |= DefBP;
 
         // Maintain FPLive and BPLive.
-        if (FPLive && MI->findRegisterDefOperandIdx(FP, TRI, false, true) != -1)
+        if (FPLive && DefFP)
           FPLive = false;
         if (FP && MI->findRegisterUseOperandIdx(FP, TRI, false) != -1)
           FPLive = true;
-        if (BPLive && MI->findRegisterDefOperandIdx(BP, TRI, false, true) != -1)
+        if (BPLive && DefBP)
           BPLive = false;
         if (BP && MI->findRegisterUseOperandIdx(BP, TRI, false) != -1)
           BPLive = true;
 
         DefMI = MI++;
       } while ((MI != ME) &&
-               (FPLive || BPLive ||
-                isFPBPAccess(*MI, FP, BP, TRI, AccessFP, AccessBP)));
+                (FPLive || BPLive ||
+                 isFPBPAccess(*MI, FP, BP, TRI, AccessFP, AccessBP)));
 
-      // Don't need to save/restore if FP is accessed through llvm.frameaddress.
-      if (FPLive && !SpillBP)
+      // Read-only accesses through llvm.frameaddress or llvm.localaddress do
+      // not clobber FP/BP.
+      if (!SpillFP && !SpillBP)
         continue;
 
       // If the bp is clobbered by a call, we should save and restore outside of
