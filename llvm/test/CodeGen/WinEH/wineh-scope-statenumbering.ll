@@ -35,9 +35,49 @@ ehcleanup:
   cleanupret from %1 unwind to caller
 }
 
+define void @copy_in_try(ptr %dst, ptr %src, i32 %size) personality ptr @_except_handler3 {
+entry:
+  ; CHECK-LABEL: define void @copy_in_try(
+  ; CHECK: store i32 0
+  ; CHECK-NEXT: invoke void @llvm.seh.try.begin()
+  invoke void @llvm.seh.try.begin()
+          to label %try unwind label %catch.dispatch
+
+try:
+  ; CHECK: try:
+  ; CHECK-NOT: store i32 -1
+  ; CHECK: call void @llvm.memcpy.p0.p0.i32
+  call void @llvm.memcpy.p0.p0.i32(ptr align 1 %dst, ptr align 1 %src,
+                                   i32 %size, i1 true)
+  ; CHECK: store i32 -1
+  ; CHECK-NEXT: invoke void @llvm.seh.try.end()
+  invoke void @llvm.seh.try.end()
+          to label %done unwind label %catch.dispatch
+
+done:
+  ret void
+
+catch.dispatch:
+  %cs = catchswitch within none [label %catch] unwind to caller
+
+catch:
+  %cp = catchpad within %cs [ptr @filter]
+  catchret from %cp to label %done
+}
+
+define internal i32 @filter() {
+  ret i32 1
+}
+
 declare dso_local i32 @__CxxFrameHandler3(...)
+declare i32 @_except_handler3(...)
 declare dso_local void @llvm.seh.scope.begin() #0
 declare dso_local void @llvm.seh.scope.end() #0
+declare void @llvm.seh.try.begin() #0
+declare void @llvm.seh.try.end() #0
+declare void @llvm.memcpy.p0.p0.i32(ptr noalias nocapture writeonly,
+                                    ptr noalias nocapture readonly, i32,
+                                    i1 immarg) #1
 
 declare dso_local x86_thiscallcc noundef ptr @"??0Destructor@@QAE@PA_N@Z"(ptr noundef nonnull returned align 4 dereferenceable(4) %this, ptr noundef %destructorCalled)
 declare dso_local x86_thiscallcc void @"??1Destructor@@QAE@XZ"(ptr noundef nonnull align 4 dereferenceable(4) %this) #1
