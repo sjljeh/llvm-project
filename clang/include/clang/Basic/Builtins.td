@@ -3185,8 +3185,10 @@ def FastFail : MSLangBuiltin {
   let Prototype = "void(unsigned int)";
 }
 
-// Microsoft library builtins.
-def SetJmpEx : MSLibBuiltin<"setjmpex.h"> {
+// Microsoft setjmp builtin.
+// MSVC recognizes _setjmpex without a declaration and supplies a hidden frame
+// argument on targets other than 32-bit x86.
+def SetJmpEx : MSLangBuiltin {
   let Spellings = ["_setjmpex"];
   let Attributes = [IgnoreSignature, ReturnsTwice];
   let Prototype = "int(jmp_buf)";
