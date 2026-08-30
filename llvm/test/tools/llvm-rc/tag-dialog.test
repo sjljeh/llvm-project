@@ -162,6 +162,26 @@
 ; DIALOG-NEXT:   00C0: 81000000 0000                        |......|
 ; DIALOG-NEXT: )
 
+; DIALOG-DAG: Resource type (int): DIALOG (ID 5)
+; DIALOG-NEXT: Resource name (string): CREATIONDATA
+; DIALOG-NEXT: Data version: 0
+; DIALOG-NEXT: Memory flags: 0x1030
+; DIALOG-NEXT: Language ID: 1033
+; DIALOG-NEXT: Version (major): 0
+; DIALOG-NEXT: Version (minor): 0
+; DIALOG-NEXT: Characteristics: 0
+; DIALOG-NEXT: Data size: 126
+; DIALOG-NEXT: Data: (
+; DIALOG-NEXT:   0000: 0100FFFF 00000000 00000000 00008880  |................|
+; DIALOG-NEXT:   0010: 02000100 02000300 04000000 00000000  |................|
+; DIALOG-NEXT:   0020: 00000000 00000000 00000050 01000200  |...........P....|
+; DIALOG-NEXT:   0030: 03000400 01000000 43006C00 61007300  |........C.l.a.s.|
+; DIALOG-NEXT:   0040: 73000000 41000000 06000100 78563412  |s...A.......xV4.|
+; DIALOG-NEXT:   0050: 00000000 00000000 00000050 05000600  |...........P....|
+; DIALOG-NEXT:   0060: 07000800 02000000 43006C00 61007300  |........C.l.a.s.|
+; DIALOG-NEXT:   0070: 73000000 42000000 04000200 0300      |s...B.........|
+; DIALOG-NEXT: )
+
 
 ; RUN: llvm-rc -no-preprocess /FO %t -- %p/Inputs/tag-dialog-headers.rc
 ; RUN: llvm-readobj %t | FileCheck %s --check-prefix=HEADERS
