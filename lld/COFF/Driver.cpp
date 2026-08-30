@@ -2751,8 +2751,20 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
         for (Export &e : symtab.exports) {
           if (!e.forwardTo.empty())
             continue;
-          e.sym = symtab.addGCRoot(e.name, !e.data);
-          if (e.source != ExportSource::Directives)
+          StringRef rootName = e.name;
+          if (e.source != ExportSource::Directives) {
+            // link.exe infers an x86 decorated export target before extracting
+            // an exact undecorated match from an archive.
+            Symbol *exact = symtab.find(e.name);
+            if (ctx.config.machine == I386 && exact && exact->isLazy()) {
+              if (Symbol *mangled = symtab.findMangle(e.name, false)) {
+                rootName = mangled->getName();
+                e.symbolName = rootName;
+              }
+            }
+          }
+          e.sym = symtab.addGCRoot(rootName, !e.data);
+          if (e.source != ExportSource::Directives && e.symbolName.empty())
             e.symbolName = symtab.mangleMaybe(e.sym);
         }
 
