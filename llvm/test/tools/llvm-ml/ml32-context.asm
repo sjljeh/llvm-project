@@ -5,6 +5,7 @@
 assume fs:nothing, gs:nothing
 
 .code
+.fpo (0, 0, 0, 0, 0, 0)
 mov eax, eax
 end
 
@@ -12,3 +13,4 @@ end
 ; CHECK-NOT: model
 ; CHECK-NOT: flat
 ; CHECK-NOT: assume
+; CHECK-NOT: fpo
