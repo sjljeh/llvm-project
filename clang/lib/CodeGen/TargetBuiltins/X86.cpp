@@ -861,6 +861,11 @@ Value *CodeGenFunction::EmitX86BuiltinExpr(unsigned BuiltinID,
     return StoreMSVectorResult(Builder.CreateInsertElement(
         V, EmitScalarExpr(E->getArg(0)), (uint64_t)0));
   }
+  case X86::BI__builtin_msvc_mm_set_ps1: {
+    AddMSFeature("sse");
+    return StoreMSVectorResult(
+        Builder.CreateVectorSplat(4, EmitScalarExpr(E->getArg(0))));
+  }
   case X86::BI__builtin_msvc_mm_load_ss: {
     AddMSFeature("sse");
     auto *V4F = llvm::FixedVectorType::get(Builder.getFloatTy(), 4);

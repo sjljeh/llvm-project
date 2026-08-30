@@ -38,6 +38,7 @@ int _rdseed32_step(unsigned int *);
 
 float _mm_cvtss_f32(__m128);
 __m128 _mm_load_ss(float const *);
+__m128 _mm_set_ps1(float);
 __m128 _mm_set_ss(float);
 __m128 _mm_sqrt_ss(__m128);
 void _mm_store_ss(float *, __m128);
@@ -84,6 +85,8 @@ void _mm256_zeroupper(void);
 // AST: BuiltinAttr {{.*}} Implicit
 // AST: FunctionDecl {{.*}} _mm_load_ss
 // AST: BuiltinAttr {{.*}} Implicit
+// AST: FunctionDecl {{.*}} _mm_set_ps1
+// AST: BuiltinAttr {{.*}} Implicit
 // AST: FunctionDecl {{.*}} _mm_cvtpd_ps
 // AST: BuiltinAttr {{.*}} Implicit
 // AST: FunctionDecl {{.*}} _mm_sqrt_sd
@@ -118,6 +121,11 @@ __m128 test_set_ss(float a) { return _mm_set_ss(a); }
 // IR-LABEL: define {{.*}} @test_set_ss(
 // IR: insertelement <4 x float>
 // IR-NOT: call {{.*}} @_mm_set_ss
+
+__m128 test_set_ps1(float a) { return _mm_set_ps1(a); }
+// IR-LABEL: define {{.*}} @test_set_ps1(
+// IR: shufflevector <4 x float>
+// IR-NOT: call {{.*}} @_mm_set_ps1
 
 __m128 test_load_ss(float const *p) { return _mm_load_ss(p); }
 // IR-LABEL: define {{.*}} @test_load_ss(
