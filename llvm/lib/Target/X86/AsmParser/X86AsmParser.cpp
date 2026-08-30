@@ -1434,6 +1434,7 @@ public:
                         SMLoc NameLoc, OperandVector &Operands) override;
 
   bool setCodeMode(unsigned Mode) override;
+  unsigned getCodeMode() const override;
   bool ParseDirective(AsmToken DirectiveID) override;
 };
 } // end anonymous namespace
@@ -5160,6 +5161,15 @@ bool X86AsmParser::setCodeMode(unsigned Mode) {
   default:
     return true;
   }
+}
+
+unsigned X86AsmParser::getCodeMode() const {
+  if (is16BitMode())
+    return 16;
+  if (is32BitMode())
+    return 32;
+  assert(is64BitMode() && "expected an X86 code mode");
+  return 64;
 }
 
 /// ParseDirectiveCode
