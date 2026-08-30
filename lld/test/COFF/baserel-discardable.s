@@ -12,6 +12,7 @@
 # CHECK:      VirtualAddress: [[INITDATA_RVA:0x[0-9A-F]+]]
 # CHECK:      IMAGE_SCN_MEM_DISCARDABLE
 # CHECK-NOT:  IMAGE_SCN_MEM_EXECUTE
+# CHECK:      Name: .reloc
 # CHECK:      BaseReloc [
 # CHECK-NEXT:   Entry {
 # CHECK-NEXT:     Type: HIGHLOW
