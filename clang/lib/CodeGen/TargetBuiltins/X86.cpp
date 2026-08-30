@@ -854,6 +854,14 @@ Value *CodeGenFunction::EmitX86BuiltinExpr(unsigned BuiltinID,
     auto *V4F = llvm::FixedVectorType::get(Builder.getFloatTy(), 4);
     return Builder.CreateExtractElement(LoadMSVectorArg(0, V4F), (uint64_t)0);
   }
+  case X86::BI__builtin_msvc_mm_div_ps: {
+    AddMSFeature("sse");
+    CodeGenFunction::CGFPOptionsRAII FPOptsRAII(*this, E);
+    auto *V4F = llvm::FixedVectorType::get(Builder.getFloatTy(), 4);
+    Value *A = LoadMSVectorArg(0, V4F);
+    Value *B = LoadMSVectorArg(1, V4F);
+    return StoreMSVectorResult(Builder.CreateFDiv(A, B, "divps"));
+  }
   case X86::BI__builtin_msvc_mm_set_ss: {
     AddMSFeature("sse");
     auto *V4F = llvm::FixedVectorType::get(Builder.getFloatTy(), 4);
