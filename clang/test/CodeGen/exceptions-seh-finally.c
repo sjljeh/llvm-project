@@ -35,6 +35,20 @@ void basic_finally(void) {
 // CHECK-SAME: [[finally_attrs:#[0-9]+]]
 // CHECK: call {{.*}}void @cleanup()
 
+void load_finally(int *p) {
+  __try {
+    *p = 1;
+  } __finally {
+    cleanup();
+  }
+}
+
+// CHECK-LABEL: define dso_local {{.*}}void @load_finally(
+// CHECK: invoke void @llvm.seh.try.begin()
+// CHECK: store volatile i32 1
+// CHECK: invoke void @llvm.seh.try.end()
+// CHECK: call {{.*}}void @"?fin$0@0@load_finally@@"(
+
 // Mostly check that we don't double emit 'r' which would crash.
 void decl_in_finally(void) {
   __try {

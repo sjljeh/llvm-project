@@ -1955,8 +1955,8 @@ void SelectionDAGISel::SelectAllBasicBlocks(const Function &Fn) {
     ElidedArgCopyInstrs.clear();
   }
 
-  // AsynchEH: Report Block State under -AsynchEH
-  if (Fn.getParent()->getModuleFlag("eh-asynch"))
+  // AsynchEH: report the state of potentially faulting blocks.
+  if (usesAsynchronousEH(Fn))
     reportIPToStateForBlocks(MF);
 
   SP->copyToMachineFrameInfo(MF->getFrameInfo());

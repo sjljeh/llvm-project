@@ -2118,8 +2118,8 @@ void AsmPrinter::emitFunctionBody() {
   int NumInstsInFunction = 0;
   // Only x86 needs this padding; the Arm unwinders back the PC up themselves.
   const Module *M = MMI->getModule();
-  bool NeedsEHaNops =
-      M->getTargetTriple().isX86() && M->getModuleFlag("eh-asynch");
+  bool NeedsEHaNops = M->getTargetTriple().isX86() &&
+                      usesAsynchronousEH(MF->getFunction());
 
   const MCSubtargetInfo *STI = nullptr;
   if (this->MF)
