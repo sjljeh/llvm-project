@@ -61,6 +61,7 @@
 #include "llvm/IR/CallingConv.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Intrinsics.h"
+#include "llvm/IR/Instructions.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/ProfileSummary.h"
@@ -94,6 +95,8 @@ static llvm::cl::opt<bool> LimitedCoverage(
 
 static const char AnnotationSection[] = "llvm.metadata";
 static constexpr auto ErrnoTBAAMDName = "llvm.errno.tbaa";
+static constexpr auto MSVCRequiredTargetFeatures =
+    "clang-msvc-required-target-features";
 
 static CGCXXABI *createCXXABI(CodeGenModule &CGM) {
   switch (CGM.getContext().getCXXABIKind()) {
@@ -1978,6 +1981,8 @@ void CodeGenModule::Release() {
     }
   }
 
+  propagateMSVCRequiredTargetFeatures();
+
   // Emit `!llvm.errno.tbaa`, a module-level metadata that specifies the TBAA
   // for an int access. This allows LLVM to reason about what memory can be
   // accessed by certain library calls that only touch errno.
@@ -2001,6 +2006,88 @@ void CodeGenModule::Release() {
       ErrnoTBAAMD->addOperand(StructTagNode);
     }
   }
+}
+
+bool CodeGenModule::addMSVCRequiredTargetFeature(llvm::Function *Fn,
+                                                 StringRef Feature) {
+  if (!Fn || Feature.empty())
+    return false;
+
+  Feature.consume_front("+");
+  std::string PlusFeature = ("+" + Feature).str();
+  std::string MinusFeature = ("-" + Feature).str();
+
+  SmallVector<StringRef, 8> OldFeatures;
+  llvm::Attribute Attr = Fn->getFnAttribute("target-features");
+  if (Attr.isValid())
+    Attr.getValueAsString().split(OldFeatures, ',');
+
+  SmallVector<std::string, 8> NewFeatures;
+  bool HasFeature = false;
+  for (StringRef F : OldFeatures) {
+    if (F.empty() || F == MinusFeature)
+      continue;
+    if (F == PlusFeature)
+      HasFeature = true;
+    NewFeatures.push_back(F.str());
+  }
+  if (!HasFeature)
+    NewFeatures.push_back(PlusFeature);
+
+  SmallVector<StringRef, 4> OldRequiredFeatures;
+  llvm::Attribute RequiredAttr =
+      Fn->getFnAttribute(MSVCRequiredTargetFeatures);
+  if (RequiredAttr.isValid())
+    RequiredAttr.getValueAsString().split(OldRequiredFeatures, ',');
+
+  SmallVector<std::string, 4> NewRequiredFeatures;
+  bool HasRequiredFeature = false;
+  for (StringRef F : OldRequiredFeatures) {
+    if (F.empty())
+      continue;
+    if (F == PlusFeature)
+      HasRequiredFeature = true;
+    NewRequiredFeatures.push_back(F.str());
+  }
+  if (!HasRequiredFeature)
+    NewRequiredFeatures.push_back(PlusFeature);
+
+  Fn->removeFnAttr("target-features");
+  Fn->addFnAttr("target-features", llvm::join(NewFeatures, ","));
+  Fn->removeFnAttr(MSVCRequiredTargetFeatures);
+  Fn->addFnAttr(MSVCRequiredTargetFeatures,
+                llvm::join(NewRequiredFeatures, ","));
+  return !HasFeature || !HasRequiredFeature;
+}
+
+void CodeGenModule::propagateMSVCRequiredTargetFeatures() {
+  bool Changed;
+  do {
+    Changed = false;
+    for (llvm::Function &Caller : getModule()) {
+      for (llvm::BasicBlock &BB : Caller) {
+        for (llvm::Instruction &I : BB) {
+          auto *Call = llvm::dyn_cast<llvm::CallBase>(&I);
+          llvm::Function *Callee = Call ? Call->getCalledFunction() : nullptr;
+          if (!Callee || !Callee->hasFnAttribute(llvm::Attribute::AlwaysInline))
+            continue;
+
+          llvm::Attribute Required =
+              Callee->getFnAttribute(MSVCRequiredTargetFeatures);
+          if (!Required.isValid())
+            continue;
+
+          SmallVector<StringRef, 4> Features;
+          Required.getValueAsString().split(Features, ',');
+          for (StringRef Feature : Features)
+            Changed |= addMSVCRequiredTargetFeature(&Caller, Feature);
+        }
+      }
+    }
+  } while (Changed);
+
+  for (llvm::Function &F : getModule())
+    F.removeFnAttr(MSVCRequiredTargetFeatures);
 }
 
 void CodeGenModule::EmitOpenCLMetadata() {
@@ -3519,7 +3606,7 @@ void CodeGenModule::setNonAliasAttributes(GlobalDecl GD,
       llvm::AttrBuilder Attrs(F->getContext());
       bool HasTargetAttrs = GetCPUAndFeaturesAttributes(GD, Attrs);
       llvm::Attribute RequiredFeatures =
-          F->getFnAttribute("clang-msvc-required-target-features");
+          F->getFnAttribute(MSVCRequiredTargetFeatures);
       if (RequiredFeatures.isValid()) {
         SmallVector<StringRef, 8> Features;
         llvm::Attribute TargetFeatures = Attrs.getAttribute("target-features");
@@ -3545,6 +3632,8 @@ void CodeGenModule::setNonAliasAttributes(GlobalDecl GD,
             Features.push_back(RequiredFeature);
         }
         Attrs.addAttribute("target-features", llvm::join(Features, ","));
+        Attrs.addAttribute(MSVCRequiredTargetFeatures,
+                           RequiredFeatures.getValueAsString());
         HasTargetAttrs = true;
       }
       if (HasTargetAttrs) {
@@ -3554,13 +3643,12 @@ void CodeGenModule::setNonAliasAttributes(GlobalDecl GD,
         llvm::AttributeMask RemoveAttrs;
         RemoveAttrs.addAttribute("target-cpu");
         RemoveAttrs.addAttribute("target-features");
-        RemoveAttrs.addAttribute("clang-msvc-required-target-features");
+        RemoveAttrs.addAttribute(MSVCRequiredTargetFeatures);
         RemoveAttrs.addAttribute("fmv-features");
         RemoveAttrs.addAttribute("tune-cpu");
         F->removeFnAttrs(RemoveAttrs);
         F->addFnAttrs(Attrs);
       }
-      F->removeFnAttr("clang-msvc-required-target-features");
     }
 
     if (const auto *CSA = D->getAttr<CodeSegAttr>())

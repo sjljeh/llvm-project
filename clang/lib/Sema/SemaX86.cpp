@@ -558,11 +558,19 @@ static unsigned getMSVCVectorIntrinsicBuiltinID(StringRef Name) {
       .Case("_mm_unpacklo_epi16", X86::BI__builtin_msvc_mm_unpacklo_epi16)
       .Case("_mm_unpackhi_epi16", X86::BI__builtin_msvc_mm_unpackhi_epi16)
       .Case("_mm_shuffle_epi32", X86::BI__builtin_msvc_mm_shuffle_epi32)
+      .Case("_mm256_cmpeq_epi8", X86::BI__builtin_msvc_mm256_cmpeq_epi8)
+      .Case("_mm256_cmpeq_epi16", X86::BI__builtin_msvc_mm256_cmpeq_epi16)
+      .Case("_mm256_movemask_epi8",
+            X86::BI__builtin_msvc_mm256_movemask_epi8)
+      .Case("_mm256_setzero_si256",
+            X86::BI__builtin_msvc_mm256_setzero_si256)
+      .Case("_mm256_zeroupper", X86::BI__builtin_msvc_mm256_zeroupper)
       .Default(0);
 }
 
 static bool isMSVCIntrinsicRecord(ASTContext &Context, QualType Ty,
-                                  StringRef ExpectedName) {
+                                  StringRef ExpectedName,
+                                  unsigned ExpectedBitWidth = 128) {
   Ty = Ty.getCanonicalType().getUnqualifiedType();
   const auto *RT = Ty->getAs<RecordType>();
   if (!RT)
@@ -571,7 +579,8 @@ static bool isMSVCIntrinsicRecord(ASTContext &Context, QualType Ty,
   if (!RD->hasAttr<MSIntrinsicTypeAttr>() || RD->getName() != ExpectedName ||
       !RD->isCompleteDefinition())
     return false;
-  return Context.getTypeSize(Ty) == 128 && Context.getTypeAlign(Ty) >= 128;
+  return Context.getTypeSize(Ty) == ExpectedBitWidth &&
+         Context.getTypeAlign(Ty) >= ExpectedBitWidth;
 }
 
 static bool isMSVCIntrinsicRecordPointer(ASTContext &Context, QualType Ty,
@@ -609,6 +618,8 @@ bool SemaX86::isMSVCVectorIntrinsicRedeclaration(const FunctionDecl *FD,
   switch (BuiltinID) {
   case X86::BI__builtin_msvc_mm_setzero_pd:
   case X86::BI__builtin_msvc_mm_setzero_si128:
+  case X86::BI__builtin_msvc_mm256_setzero_si256:
+  case X86::BI__builtin_msvc_mm256_zeroupper:
     ExpectedParams = 0;
     break;
   case X86::BI__builtin_msvc_mm_load_ss:
@@ -617,6 +628,7 @@ bool SemaX86::isMSVCVectorIntrinsicRedeclaration(const FunctionDecl *FD,
   case X86::BI__builtin_msvc_mm_loadu_si128:
   case X86::BI__builtin_msvc_mm_movemask_epi8:
   case X86::BI__builtin_msvc_mm_cvtsi32_si128:
+  case X86::BI__builtin_msvc_mm256_movemask_epi8:
     ExpectedParams = 1;
     break;
   default:
@@ -635,6 +647,9 @@ bool SemaX86::isMSVCVectorIntrinsicRedeclaration(const FunctionDecl *FD,
   };
   auto IsM128i = [&](QualType Ty) {
     return isMSVCIntrinsicRecord(Context, Ty, "__m128i");
+  };
+  auto IsM256i = [&](QualType Ty) {
+    return isMSVCIntrinsicRecord(Context, Ty, "__m256i", 256);
   };
   auto IsInt = [&](QualType Ty) {
     return Context.hasSameUnqualifiedType(Ty, Context.IntTy);
@@ -702,6 +717,20 @@ bool SemaX86::isMSVCVectorIntrinsicRedeclaration(const FunctionDecl *FD,
   case X86::BI__builtin_msvc_mm_shuffle_epi32:
     Matches = IsM128i(RetTy) && IsM128i(FPT->getParamType(0)) &&
               IsInt(FPT->getParamType(1));
+    break;
+  case X86::BI__builtin_msvc_mm256_setzero_si256:
+    Matches = IsM256i(RetTy);
+    break;
+  case X86::BI__builtin_msvc_mm256_zeroupper:
+    Matches = RetTy->isVoidType();
+    break;
+  case X86::BI__builtin_msvc_mm256_movemask_epi8:
+    Matches = IsInt(RetTy) && IsM256i(FPT->getParamType(0));
+    break;
+  case X86::BI__builtin_msvc_mm256_cmpeq_epi8:
+  case X86::BI__builtin_msvc_mm256_cmpeq_epi16:
+    Matches = IsM256i(RetTy) && IsM256i(FPT->getParamType(0)) &&
+              IsM256i(FPT->getParamType(1));
     break;
   default:
     Matches = IsM128i(RetTy) && IsM128i(FPT->getParamType(0)) &&

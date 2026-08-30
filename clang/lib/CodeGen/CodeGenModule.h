@@ -745,6 +745,9 @@ public:
   /// Finalize LLVM code generation.
   void Release();
 
+  /// Record an ISA feature required by an MSVC intrinsic emitted in Fn.
+  bool addMSVCRequiredTargetFeature(llvm::Function *Fn, StringRef Feature);
+
   /// Get the current Atomic options.
   AtomicOptions getAtomicOpts() { return AtomicOpts; }
 
@@ -1990,6 +1993,8 @@ public:
   llvm::GlobalValue *getPFPDeactivationSymbol(const FieldDecl *FD);
 
 private:
+  void propagateMSVCRequiredTargetFeatures();
+
   /// Translate an llvm::abi::ArgInfo (computed by the LLVMABI library) into
   /// the clang ABIArgInfo consumed by the rest of CodeGen. Used by the
   /// experimental ABI lowering path.
