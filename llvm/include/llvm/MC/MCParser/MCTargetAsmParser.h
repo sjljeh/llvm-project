@@ -465,6 +465,9 @@ public:
   /// Returns true if the target does not support the mode.
   virtual bool setCodeMode(unsigned) { return true; }
 
+  /// Return the current code mode, or zero if the target has no code modes.
+  virtual unsigned getCodeMode() const { return 0; }
+
   /// Recognize a series of operands of a parsed
   /// instruction as an actual MCInst and emit it to the specified MCStreamer.
   /// This returns false on success and returns true on failure to match.

@@ -199,8 +199,8 @@ class COFFMasmParser : public MCAsmParserExtension {
   }
 
   bool parseSectionDirectiveCode(StringRef, SMLoc Loc) {
-    unsigned CodeMode = getContext().getTargetTriple().isArch64Bit() ? 64 : 32;
-    if (getParser().getTargetParser().setCodeMode(CodeMode))
+    unsigned Mode = getContext().getTargetTriple().isArch64Bit() ? 64 : 32;
+    if (getParser().getTargetParser().setCodeMode(Mode))
       return Error(Loc, "unsupported code mode");
     return parseSectionSwitch(".text", COFF::IMAGE_SCN_CNT_CODE |
                                            COFF::IMAGE_SCN_MEM_EXECUTE |
@@ -227,6 +227,9 @@ class COFFMasmParser : public MCAsmParserExtension {
   /// Stack of active procedure definitions.
   SmallVector<StringRef, 1> CurrentProcedures;
   SmallVector<bool, 1> CurrentProceduresFramed;
+
+  /// Segment names and the code modes to restore when they end.
+  SmallVector<std::pair<StringRef, unsigned>, 1> CurrentSegments;
 
 public:
   COFFMasmParser() = default;
@@ -393,6 +396,7 @@ bool COFFMasmParser::parseDirectiveSegment(StringRef Directive, SMLoc Loc) {
     Flags &= ~COFF::IMAGE_SCN_MEM_WRITE;
   }
 
+  unsigned PreviousCodeMode = getParser().getTargetParser().getCodeMode();
   if (CodeMode && getParser().getTargetParser().setCodeMode(CodeMode))
     return Error(Loc, "unsupported code mode in SEGMENT directive");
 
@@ -401,6 +405,8 @@ bool COFFMasmParser::parseDirectiveSegment(StringRef Directive, SMLoc Loc) {
   if (Alignment != 0) {
     Section->setAlignment(Align(Alignment));
   }
+  getStreamer().pushSection();
+  CurrentSegments.emplace_back(SegmentName, PreviousCodeMode);
   getStreamer().switchSection(Section);
   return false;
 }
@@ -412,9 +418,21 @@ bool COFFMasmParser::parseDirectiveSegmentEnd(StringRef Directive, SMLoc Loc) {
   if (!getLexer().is(AsmToken::Identifier))
     return TokError("expected identifier in directive");
   SegmentName = getTok().getIdentifier();
-
-  // Ignore; no action necessary.
   Lex();
+
+  if (CurrentSegments.empty())
+    return Error(Loc, "ENDS directive without matching SEGMENT");
+  if (!SegmentName.equals_insensitive(CurrentSegments.back().first))
+    return Error(Loc, "mismatched SEGMENT and ENDS directives");
+
+  unsigned PreviousCodeMode = CurrentSegments.back().second;
+  if (PreviousCodeMode &&
+      PreviousCodeMode != getParser().getTargetParser().getCodeMode() &&
+      getParser().getTargetParser().setCodeMode(PreviousCodeMode))
+    return Error(Loc, "unsupported code mode in ENDS directive");
+  CurrentSegments.pop_back();
+  if (!getStreamer().popSection())
+    llvm_unreachable("missing section saved by SEGMENT directive");
   return false;
 }
 
