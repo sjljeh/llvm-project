@@ -750,13 +750,12 @@ void WinException::emitCSpecificHandlerTable(const MachineFunction *MF) {
 
   OS.emitLabel(TableBegin);
 
-  // Iterate over all the invoke try ranges. Unlike MSVC, LLVM currently only
-  // models exceptions from invokes. LLVM also allows arbitrary reordering of
-  // the code, so our tables end up looking a bit different. Rather than
-  // trying to match MSVC's tables exactly, we emit a denormalized table.  For
-  // each range of invokes in the same state, we emit table entries for all
-  // the actions that would be taken in that state. This means our tables are
-  // slightly bigger, which is OK.
+  // Iterate over all the try ranges. LLVM allows arbitrary reordering of the
+  // code, so our tables end up looking a bit different from MSVC's. Rather
+  // than trying to match MSVC's tables exactly, we emit a denormalized table.
+  // For each range in the same state, emit entries for all the actions that
+  // would be taken in that state. This means our tables are slightly bigger,
+  // which is OK.
   const MCSymbol *LastStartLabel = nullptr;
   int LastEHState = -1;
   // Break out before we enter into a finally funclet.

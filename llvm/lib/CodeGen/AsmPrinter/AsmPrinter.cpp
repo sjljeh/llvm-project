@@ -2097,10 +2097,13 @@ void AsmPrinter::emitFunctionBody() {
   // Print out code for the function.
   bool HasAnyRealCode = false;
   int NumInstsInFunction = 0;
-  // Only x86 needs this padding; the Arm unwinders back the PC up themselves.
+  // The Arm unwinders back the PC up themselves, so they do not need this
+  // padding.
   const Module *M = MMI->getModule();
-  bool NeedsEHaNops =
-      M->getTargetTriple().isX86() && M->getModuleFlag("eh-asynch");
+  const Triple &ModuleTT = M->getTargetTriple();
+  bool NeedsEHaNops = !ModuleTT.isARM() && !ModuleTT.isThumb() &&
+                      !ModuleTT.isAArch64() &&
+                      usesAsynchronousEH(MF->getFunction());
 
   const MCSubtargetInfo *STI = nullptr;
   if (this->MF)

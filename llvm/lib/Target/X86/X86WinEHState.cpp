@@ -568,8 +568,16 @@ static bool isSehScopeEnd(const CallBase &Call) {
   return isIntrinsic(Call, Intrinsic::seh_scope_end);
 }
 
+static bool isSehTryEnd(const CallBase &Call) {
+  return isIntrinsic(Call, Intrinsic::seh_try_end);
+}
+
 static bool isSehScopeBegin(const CallBase &Call) {
   return isIntrinsic(Call, Intrinsic::seh_scope_begin);
+}
+
+static bool isSehTryBegin(const CallBase &Call) {
+  return isIntrinsic(Call, Intrinsic::seh_try_begin);
 }
 
 // Calculate the state a call-site is in.
@@ -577,6 +585,12 @@ int WinEHStateFnPassImpl::getStateForCall(
     DenseMap<BasicBlock *, ColorVector> &BlockColors, WinEHFuncInfo &FuncInfo,
     CallBase &Call) {
   if (auto *II = dyn_cast<InvokeInst>(&Call)) {
+    if (isSehTryEnd(*II)) {
+      auto It = FuncInfo.BlockToStateMap.find(II->getNormalDest());
+      assert(It != FuncInfo.BlockToStateMap.end() &&
+             "SEH try end has no normal destination state");
+      return It->second;
+    }
     if (isSehScopeEnd(*II)) {
       return getBaseStateForBB(BlockColors, FuncInfo, II->getNormalDest());
     }
@@ -669,7 +683,8 @@ static int getSuccState(DenseMap<BasicBlock *, int> &InitialStates, Function &F,
 
 bool WinEHStateFnPassImpl::isStateStoreNeeded(EHPersonality Personality,
                                               CallBase &Call) {
-  if (isSehScopeBegin(Call) || isSehScopeEnd(Call)) {
+  if (isSehScopeBegin(Call) || isSehScopeEnd(Call) || isSehTryBegin(Call) ||
+      isSehTryEnd(Call)) {
     return true;
   }
 
