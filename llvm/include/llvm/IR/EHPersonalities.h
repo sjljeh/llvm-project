@@ -55,6 +55,9 @@ LLVM_ABI StringRef getEHPersonalityName(EHPersonality Pers);
 
 LLVM_ABI EHPersonality getDefaultEHPersonality(const Triple &T);
 
+/// Returns true if asynchronous exception ranges must be emitted for \p F.
+LLVM_ABI bool usesAsynchronousEH(const Function &F);
+
 /// Returns true if this personality function catches asynchronous
 /// exceptions.
 inline bool isAsynchronousEHPersonality(EHPersonality Pers) {

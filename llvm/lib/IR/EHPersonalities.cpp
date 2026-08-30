@@ -114,6 +114,23 @@ EHPersonality llvm::getDefaultEHPersonality(const Triple &T) {
     return EHPersonality::GNU_C;
 }
 
+bool llvm::usesAsynchronousEH(const Function &F) {
+  if (F.getParent()->getModuleFlag("eh-asynch"))
+    return true;
+
+  for (const BasicBlock &BB : F) {
+    for (const Instruction &I : BB) {
+      const auto *CB = dyn_cast<CallBase>(&I);
+      const Function *Callee = CB ? CB->getCalledFunction() : nullptr;
+      if (Callee &&
+          (Callee->getIntrinsicID() == Intrinsic::seh_try_begin ||
+           Callee->getIntrinsicID() == Intrinsic::seh_try_end))
+        return true;
+    }
+  }
+  return false;
+}
+
 bool llvm::canSimplifyInvokeNoUnwind(const Function *F) {
   EHPersonality Personality = classifyEHPersonality(F->getPersonalityFn());
   // We can't simplify any invokes to nounwind functions if the personality

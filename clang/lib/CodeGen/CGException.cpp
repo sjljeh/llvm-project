@@ -1718,13 +1718,10 @@ void CodeGenFunction::EmitSEHTryStmt(const SEHTryStmt &S) {
 
     SEHTryEpilogueStack.push_back(&TryExit);
 
+    EmitRuntimeCallOrInvoke(getSehTryBeginFn(CGM));
     llvm::BasicBlock *TryBB = nullptr;
-    // IsEHa: emit an invoke to _seh_try_begin() runtime for -EHa
-    if (getLangOpts().EHAsynch) {
-      EmitRuntimeCallOrInvoke(getSehTryBeginFn(CGM));
-      if (SEHTryEpilogueStack.size() == 1) // outermost only
-        TryBB = Builder.GetInsertBlock();
-    }
+    if (SEHTryEpilogueStack.size() == 1) // outermost only
+      TryBB = Builder.GetInsertBlock();
 
     EmitStmt(S.getTryBlock());
 
@@ -2558,8 +2555,8 @@ void CodeGenFunction::ExitSEHTryStmt(const SEHTryStmt &S) {
     return;
   }
 
-  // IsEHa: emit an invoke _seh_try_end() to mark end of FT flow
-  if (getLangOpts().EHAsynch && Builder.GetInsertBlock()) {
+  // Mark the end of the fall-through path through the __try.
+  if (Builder.GetInsertBlock()) {
     llvm::FunctionCallee SehTryEnd = getSehTryEndFn(CGM);
     EmitRuntimeCallOrInvoke(SehTryEnd);
   }
@@ -2569,9 +2566,7 @@ void CodeGenFunction::ExitSEHTryStmt(const SEHTryStmt &S) {
   assert(Except && "__try must have __finally xor __except");
   EHCatchScope &CatchScope = cast<EHCatchScope>(*EHStack.begin());
 
-  // Don't emit the __except block if the __try block lacked invokes.
-  // TODO: Model unwind edges from instructions, either with iload / istore or
-  // a try body function.
+  // Don't emit the __except block if the __try block is unreachable.
   if (!CatchScope.hasEHBranches()) {
     // Even though we skip emitting the __except body, diagnose variables
     // with non-trivial destructors that would normally be caught by

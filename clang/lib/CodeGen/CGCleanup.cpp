@@ -786,9 +786,11 @@ void CodeGenFunction::PopCleanupBlock(bool FallthroughIsBranchThrough,
   if (Scope.isEHCleanup())
     cleanupFlags.setIsEHCleanupKind();
 
-  // Under -EHa, invoke seh.scope.end() to mark scope end before dtor
+  // Under -EHa, invoke seh.scope.end() to mark scope end before dtor.
+  // Explicit SEH finally scopes also need a seh.try.end marker.
   bool IsEHa = getLangOpts().EHAsynch && !Scope.isLifetimeMarker();
   bool IsSEHFinallyCleanup = Scope.isSEHFinallyCleanup();
+  bool EmitScopeEnd = IsEHa || IsSEHFinallyCleanup;
   if (!RequiresNormalCleanup) {
     // Mark CPP scope end for passed-by-value Arg temp
     //   per Windows ABI which is "normally" Cleanup in callee
@@ -813,7 +815,7 @@ void CodeGenFunction::PopCleanupBlock(bool FallthroughIsBranchThrough,
         !HasExistingBranches) {
 
       // mark SEH scope end for fall-through flow
-      if (IsEHa && getInvokeDest()) {
+      if (EmitScopeEnd && getInvokeDest()) {
         if (Scope.isSEHFinallyCleanup())
           EmitSehTryScopeEnd();
         else
@@ -855,7 +857,7 @@ void CodeGenFunction::PopCleanupBlock(bool FallthroughIsBranchThrough,
       EmitBlock(NormalEntry);
 
       // intercept normal cleanup to mark SEH scope end
-      if (IsEHa && getInvokeDest()) {
+      if (EmitScopeEnd && getInvokeDest()) {
         if (Scope.isSEHFinallyCleanup())
           EmitSehTryScopeEnd();
         else
@@ -1366,9 +1368,8 @@ void CodeGenFunction::EmitSehCppScopeEnd() {
   EmitSehScope(*this, SehCppScope);
 }
 
-// Invoke a llvm.seh.try.begin at the beginning of a SEH scope for -EHa
+// Invoke a llvm.seh.try.begin at the beginning of a SEH scope.
 void CodeGenFunction::EmitSehTryScopeBegin() {
-  assert(getLangOpts().EHAsynch);
   llvm::FunctionType *FTy =
       llvm::FunctionType::get(CGM.VoidTy, /*isVarArg=*/false);
   llvm::FunctionCallee SehCppScope =
@@ -1376,9 +1377,8 @@ void CodeGenFunction::EmitSehTryScopeBegin() {
   EmitSehScope(*this, SehCppScope);
 }
 
-// Invoke a llvm.seh.try.end at the end of a SEH scope for -EHa
+// Invoke a llvm.seh.try.end at the end of a SEH scope.
 void CodeGenFunction::EmitSehTryScopeEnd() {
-  assert(getLangOpts().EHAsynch);
   llvm::FunctionType *FTy =
       llvm::FunctionType::get(CGM.VoidTy, /*isVarArg=*/false);
   llvm::FunctionCallee SehCppScope =
