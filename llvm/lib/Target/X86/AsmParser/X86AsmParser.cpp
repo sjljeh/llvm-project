@@ -2803,7 +2803,29 @@ bool X86AsmParser::parseIntelOperand(OperandVector &Operands, StringRef Name) {
 
   // Register operand.
   MCRegister RegNo;
-  if (Tok.is(AsmToken::Identifier) && !parseRegister(RegNo, Start, End)) {
+  bool StartsWithBracket = Tok.is(AsmToken::LBrac);
+  if (Parser.isParsingMasm() && StartsWithBracket) {
+    AsmToken LBrac = Tok;
+    AsmToken Lookahead[2];
+    if (getLexer().peekTokens(Lookahead) == 2 &&
+        Lookahead[0].is(AsmToken::Identifier) &&
+        Lookahead[1].is(AsmToken::Colon)) {
+      MCRegister SegmentReg;
+      if (!MatchRegisterByName(SegmentReg, Lookahead[0].getString(),
+                               Lookahead[0].getLoc(),
+                               Lookahead[0].getEndLoc()) &&
+          getX86MCRegisterClass(X86::SEGMENT_REGRegClassID)
+              .contains(SegmentReg)) {
+        Lex(); // Eat '['.
+        Lex(); // Eat the segment register.
+        Lex(); // Eat ':'.
+        getLexer().UnLex(LBrac);
+        RegNo = SegmentReg;
+      }
+    }
+  }
+  if (!StartsWithBracket && Tok.is(AsmToken::Identifier) &&
+      !parseRegister(RegNo, Start, End)) {
     if (RegNo == X86::RIP)
       return Error(Start, "rip can only be used as a base register");
     // A Register followed by ':' is considered a segment override
@@ -2847,7 +2869,7 @@ bool X86AsmParser::parseIntelOperand(OperandVector &Operands, StringRef Name) {
     return true;
 
   if (isParsingMSInlineAsm())
-    RewriteIntelExpression(SM, Start, Tok.getLoc());
+    RewriteIntelExpression(SM, Start, Parser.getTok().getLoc());
 
   int64_t Imm = SM.getImm();
   const MCExpr *Disp = SM.getSym();
