@@ -4788,11 +4788,12 @@ bool X86AsmParser::matchAndEmitIntelInstruction(
   if (Mnemonic == "push" && Operands.size() == 2) {
     auto *X86Op = static_cast<X86Operand *>(Operands[1].get());
     if (X86Op->isImm()) {
-      // If it's not a constant fall through and let remainder take care of it.
       const auto *CE = dyn_cast<MCConstantExpr>(X86Op->getImm());
       unsigned Size = getPointerWidth();
-      if (CE &&
-          (isIntN(Size, CE->getValue()) || isUIntN(Size, CE->getValue()))) {
+      // Symbolic immediates also need an explicit default width so relaxation
+      // can select an encoding with a representable relocation.
+      if (!CE || isIntN(Size, CE->getValue()) ||
+          isUIntN(Size, CE->getValue())) {
         SmallString<16> Tmp;
         Tmp += Base;
         Tmp += (is64BitMode())
