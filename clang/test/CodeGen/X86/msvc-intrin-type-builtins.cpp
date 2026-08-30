@@ -31,11 +31,22 @@ typedef union __declspec(intrin_type) __declspec(align(32)) __m256i {
 } __m256i;
 
 extern "C" {
+int _rdrand16_step(unsigned short *);
+int _rdrand32_step(unsigned int *);
+int _rdseed16_step(unsigned short *);
+int _rdseed32_step(unsigned int *);
+
+float _mm_cvtss_f32(__m128);
 __m128 _mm_load_ss(float const *);
+__m128 _mm_set_ss(float);
 __m128 _mm_sqrt_ss(__m128);
 void _mm_store_ss(float *, __m128);
 
+__m128 _mm_cvtpd_ps(__m128d);
+double _mm_cvtsd_f64(__m128d);
+__m128d _mm_cvtss_sd(__m128d, __m128);
 __m128d _mm_load_sd(double const *);
+__m128d _mm_set_sd(double);
 __m128d _mm_setzero_pd(void);
 __m128d _mm_sqrt_sd(__m128d, __m128d);
 void _mm_store_sd(double *, __m128d);
@@ -64,7 +75,16 @@ __m256i _mm256_setzero_si256(void);
 void _mm256_zeroupper(void);
 }
 
+#pragma intrinsic(_rdrand16_step)
+#pragma intrinsic(_rdrand32_step)
+#pragma intrinsic(_rdseed16_step)
+#pragma intrinsic(_rdseed32_step)
+
+// AST: FunctionDecl {{.*}} _mm_cvtss_f32
+// AST: BuiltinAttr {{.*}} Implicit
 // AST: FunctionDecl {{.*}} _mm_load_ss
+// AST: BuiltinAttr {{.*}} Implicit
+// AST: FunctionDecl {{.*}} _mm_cvtpd_ps
 // AST: BuiltinAttr {{.*}} Implicit
 // AST: FunctionDecl {{.*}} _mm_sqrt_sd
 // AST: BuiltinAttr {{.*}} Implicit
@@ -76,6 +96,28 @@ void _mm256_zeroupper(void);
 // AST: BuiltinAttr {{.*}} Implicit
 
 extern "C" {
+
+int test_rdrand16(unsigned short *p) { return _rdrand16_step(p); }
+int test_rdrand32(unsigned int *p) { return _rdrand32_step(p); }
+int test_rdseed16(unsigned short *p) { return _rdseed16_step(p); }
+int test_rdseed32(unsigned int *p) { return _rdseed32_step(p); }
+
+// IR-LABEL: define {{.*}} @test_rdrand32(
+// IR: call { i32, i32 } @llvm.x86.rdrand.32()
+// IR-NOT: call {{.*}} @_rdrand32_step
+// IR-LABEL: define {{.*}} @test_rdseed32(
+// IR: call { i32, i32 } @llvm.x86.rdseed.32()
+// IR-NOT: call {{.*}} @_rdseed32_step
+
+float test_cvtss_f32(__m128 a) { return _mm_cvtss_f32(a); }
+// IR-LABEL: define {{.*}} float @test_cvtss_f32(
+// IR: extractelement <4 x float>
+// IR-NOT: call {{.*}} @_mm_cvtss_f32
+
+__m128 test_set_ss(float a) { return _mm_set_ss(a); }
+// IR-LABEL: define {{.*}} @test_set_ss(
+// IR: insertelement <4 x float>
+// IR-NOT: call {{.*}} @_mm_set_ss
 
 __m128 test_load_ss(float const *p) { return _mm_load_ss(p); }
 // IR-LABEL: define {{.*}} @test_load_ss(
@@ -91,6 +133,26 @@ __m128 test_sqrt_ss(__m128 a) { return _mm_sqrt_ss(a); }
 // IR-LABEL: define {{.*}} @test_sqrt_ss(
 // IR: call float @llvm.sqrt.f32
 // IR-NOT: call {{.*}} @_mm_sqrt_ss
+
+__m128 test_cvtpd_ps(__m128d a) { return _mm_cvtpd_ps(a); }
+// IR-LABEL: define {{.*}} @test_cvtpd_ps(
+// IR: call <4 x float> @llvm.x86.sse2.cvtpd2ps
+// IR-NOT: call {{.*}} @_mm_cvtpd_ps
+
+double test_cvtsd_f64(__m128d a) { return _mm_cvtsd_f64(a); }
+// IR-LABEL: define {{.*}} double @test_cvtsd_f64(
+// IR: extractelement <2 x double>
+// IR-NOT: call {{.*}} @_mm_cvtsd_f64
+
+__m128d test_cvtss_sd(__m128d a, __m128 b) { return _mm_cvtss_sd(a, b); }
+// IR-LABEL: define {{.*}} @test_cvtss_sd(
+// IR: fpext float {{.*}} to double
+// IR-NOT: call {{.*}} @_mm_cvtss_sd
+
+__m128d test_set_sd(double a) { return _mm_set_sd(a); }
+// IR-LABEL: define {{.*}} @test_set_sd(
+// IR: insertelement <2 x double>
+// IR-NOT: call {{.*}} @_mm_set_sd
 
 __m128d test_load_sd(double const *p) { return _mm_load_sd(p); }
 void test_store_sd(double *p, __m128d a) { _mm_store_sd(p, a); }
