@@ -381,6 +381,36 @@ void ResourceFileWriter::writeRCInt(RCInt Value) {
     writeInt<uint16_t>(Value);
 }
 
+Error ResourceFileWriter::writeDataElements(ArrayRef<IntOrString> Data,
+                                            StringRef Context) {
+  for (const auto &Elem : Data) {
+    if (Elem.isInt()) {
+      RETURN_IF_ERROR(checkRCInt(Elem.getInt(), Twine("Number in ") + Context));
+      writeRCInt(Elem.getInt());
+      continue;
+    }
+
+    SmallVector<UTF16, 128> ProcessedString;
+    bool IsLongString;
+    RETURN_IF_ERROR(processString(
+        Elem.getString(), NullHandlingMethod::UserResource, IsLongString,
+        ProcessedString, Params.CodePage, Params.UseCodePageForEscapes));
+
+    for (auto Ch : ProcessedString) {
+      if (IsLongString) {
+        writeInt(Ch);
+        continue;
+      }
+
+      RETURN_IF_ERROR(checkNumberFits<uint8_t>(
+          Ch, Twine("Character in narrow string in ") + Context));
+      writeInt<uint8_t>(Ch);
+    }
+  }
+
+  return Error::success();
+}
+
 Error ResourceFileWriter::appendFile(StringRef Filename) {
   bool IsLong;
   stripQuotes(Filename, IsLong);
@@ -1028,8 +1058,14 @@ Error ResourceFileWriter::writeSingleDialogControl(const Control &Ctl,
   RETURN_IF_ERROR(checkIntOrString(Ctl.Title, "Control reference ID"));
   RETURN_IF_ERROR(writeIntOrString(Ctl.Title));
 
-  // # bytes of extra creation data count. Don't pass any.
-  writeInt<uint16_t>(0);
+  // The creation data is prefixed by its size in bytes.
+  uint64_t DataSizeLoc = writeInt<uint16_t>(0);
+  uint64_t DataLoc = tell();
+  RETURN_IF_ERROR(writeDataElements(Ctl.CreationData, "control creation data"));
+  uint64_t DataSize = tell() - DataLoc;
+  RETURN_IF_ERROR(
+      checkNumberFits<uint16_t>(DataSize, "Control creation data size"));
+  writeObjectAt(ulittle16_t(DataSize), DataSizeLoc);
 
   return Error::success();
 }
@@ -1336,33 +1372,7 @@ Error ResourceFileWriter::writeUserDefinedBody(const RCResource *Base) {
   if (Res->IsFileResource)
     return appendFile(Res->FileLoc);
 
-  for (auto &Elem : Res->Contents) {
-    if (Elem.isInt()) {
-      RETURN_IF_ERROR(
-          checkRCInt(Elem.getInt(), "Number in user-defined resource"));
-      writeRCInt(Elem.getInt());
-      continue;
-    }
-
-    SmallVector<UTF16, 128> ProcessedString;
-    bool IsLongString;
-    RETURN_IF_ERROR(processString(
-        Elem.getString(), NullHandlingMethod::UserResource, IsLongString,
-        ProcessedString, Params.CodePage, Params.UseCodePageForEscapes));
-
-    for (auto Ch : ProcessedString) {
-      if (IsLongString) {
-        writeInt(Ch);
-        continue;
-      }
-
-      RETURN_IF_ERROR(checkNumberFits<uint8_t>(
-          Ch, "Character in narrow string in user-defined resource"));
-      writeInt<uint8_t>(Ch);
-    }
-  }
-
-  return Error::success();
+  return writeDataElements(Res->Contents, "user-defined resource");
 }
 
 // --- VersionInfoResourceResource helpers. --- //

@@ -210,6 +210,7 @@ private:
   Error writeIntOrString(const IntOrString &Data);
 
   void writeRCInt(RCInt);
+  Error writeDataElements(ArrayRef<IntOrString> Data, StringRef Context);
 
   Error appendFile(StringRef Filename);
 

@@ -695,6 +695,7 @@ public:
   std::optional<IntWithNotMask> Style;
   std::optional<uint32_t> ExtStyle, HelpID;
   IntOrString Class;
+  std::vector<IntOrString> CreationData;
 
   // Control classes as described in DLGITEMTEMPLATEEX documentation.
   //
@@ -719,10 +720,12 @@ public:
           uint32_t PosX, uint32_t PosY, uint32_t ItemWidth, uint32_t ItemHeight,
           std::optional<IntWithNotMask> ItemStyle,
           std::optional<uint32_t> ExtItemStyle,
-          std::optional<uint32_t> CtlHelpID, IntOrString CtlClass)
+          std::optional<uint32_t> CtlHelpID, IntOrString CtlClass,
+          std::vector<IntOrString> &&CtlCreationData)
       : Type(CtlType), Title(CtlTitle), ID(CtlID), X(PosX), Y(PosY),
         Width(ItemWidth), Height(ItemHeight), Style(ItemStyle),
-        ExtStyle(ExtItemStyle), HelpID(CtlHelpID), Class(CtlClass) {}
+        ExtStyle(ExtItemStyle), HelpID(CtlHelpID), Class(CtlClass),
+        CreationData(std::move(CtlCreationData)) {}
 
   static const StringMap<CtlInfo> SupportedCtls;
 

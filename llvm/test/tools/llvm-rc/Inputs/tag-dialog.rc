@@ -57,3 +57,7 @@ ArgsOld DIALOG 1, 2, 3, 4 {
   EDITTEXT 30, 31, 32, 33, 34, 35, 36
 }
 
+CreationData DIALOGEX 1, 2, 3, 4 {
+  CONTROL "A", 1, "Class", 0, 1, 2, 3, 4 { 1, 0x12345678L }
+  CONTROL "B", 2, "Class", 0, 5, 6, 7, 8 { 2, 3 }
+}
