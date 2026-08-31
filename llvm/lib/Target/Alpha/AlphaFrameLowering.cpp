@@ -13,6 +13,7 @@
 
 #include "AlphaFrameLowering.h"
 #include "AlphaInstrInfo.h"
+#include "AlphaSubtarget.h"
 #include "AlphaMachineFunctionInfo.h"
 #include "llvm/IR/Function.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
@@ -80,8 +81,14 @@ void AlphaFrameLowering::emitPrologue(MachineFunction &MF,
   if (FP)
     NumBytes += 8; //reserve space for the old FP
 
-  // Do we need to allocate space on the stack?
-  if (NumBytes == 0) return;
+  // Leaf functions still need a prologue-end label in their Windows runtime
+  // function record, even when the label is the function entry.
+  if (NumBytes == 0) {
+    if (MF.hasWinCFI())
+      BuildMI(MBB, MBBI, dl, TII.get(Alpha::SEH_PrologEnd))
+          .setMIFlag(MachineInstr::FrameSetup);
+    return;
+  }
 
   unsigned StackAlign = getStackAlign().value();
   NumBytes = (NumBytes+StackAlign-1)/StackAlign*StackAlign;
@@ -92,13 +99,19 @@ void AlphaFrameLowering::emitPrologue(MachineFunction &MF,
   // adjust stack pointer: r30 -= numbytes
   NumBytes = -NumBytes;
   if (NumBytes >= Alpha::IMM_LOW) {
-    BuildMI(MBB, MBBI, dl, TII.get(Alpha::LDA), Alpha::R30).addImm(NumBytes)
-      .addReg(Alpha::R30);
+    BuildMI(MBB, MBBI, dl, TII.get(Alpha::LDA), Alpha::R30)
+        .addImm(NumBytes)
+        .addReg(Alpha::R30)
+        .setMIFlag(MachineInstr::FrameSetup);
   } else if (getUpper16(NumBytes) >= Alpha::IMM_LOW) {
     BuildMI(MBB, MBBI, dl, TII.get(Alpha::LDAH), Alpha::R30)
-      .addImm(getUpper16(NumBytes)).addReg(Alpha::R30);
+        .addImm(getUpper16(NumBytes))
+        .addReg(Alpha::R30)
+        .setMIFlag(MachineInstr::FrameSetup);
     BuildMI(MBB, MBBI, dl, TII.get(Alpha::LDA), Alpha::R30)
-      .addImm(getLower16(NumBytes)).addReg(Alpha::R30);
+        .addImm(getLower16(NumBytes))
+        .addReg(Alpha::R30)
+        .setMIFlag(MachineInstr::FrameSetup);
   } else {
     report_fatal_error("Too big a stack frame at " + Twine(NumBytes));
   }
@@ -106,12 +119,46 @@ void AlphaFrameLowering::emitPrologue(MachineFunction &MF,
   // Now if we need to, save the old FP and set the new
   if (FP) {
     BuildMI(MBB, MBBI, dl, TII.get(Alpha::STQ))
-      .addReg(Alpha::R15).addImm(0).addReg(Alpha::R30);
+        .addReg(Alpha::R15)
+        .addImm(0)
+        .addReg(Alpha::R30)
+        .setMIFlag(MachineInstr::FrameSetup);
     // This must be the last instr in the prolog
     BuildMI(MBB, MBBI, dl, TII.get(Alpha::BISr), Alpha::R15)
-      .addReg(Alpha::R30).addReg(Alpha::R30);
+        .addReg(Alpha::R30)
+        .addReg(Alpha::R30)
+        .setMIFlag(MachineInstr::FrameSetup);
   }
 
+  if (MF.hasWinCFI()) {
+    // The NT Alpha unwinder decodes the prologue instructions themselves.
+    // Include the callee-save stores that PEI inserted before emitPrologue.
+    MachineBasicBlock::iterator PrologEnd = MBB.begin();
+    while (PrologEnd != MBB.end() &&
+           PrologEnd->getFlag(MachineInstr::FrameSetup))
+      ++PrologEnd;
+
+    // WinEH may save the return address directly without representing it as
+    // callee-saved information.  This is one of the canonical prologue forms
+    // decoded by the NT Alpha unwinder.
+    while (PrologEnd != MBB.end() && PrologEnd->getOpcode() == Alpha::STQ &&
+           PrologEnd->getOperand(0).isReg() &&
+           PrologEnd->getOperand(0).getReg() == Alpha::R26) {
+      PrologEnd->setFlag(MachineInstr::FrameSetup);
+      ++PrologEnd;
+    }
+
+    BuildMI(MBB, PrologEnd, dl, TII.get(Alpha::SEH_PrologEnd))
+        .setMIFlag(MachineInstr::FrameSetup);
+  }
+}
+
+void AlphaFrameLowering::processFunctionBeforeFrameFinalized(
+    MachineFunction &MF, RegScavenger *) const {
+  const AlphaSubtarget &STI = MF.getSubtarget<AlphaSubtarget>();
+  if (STI.getTargetTriple().isOSWindows() &&
+      (MF.getFunction().needsUnwindTableEntry() || MF.hasEHFunclets()))
+    MF.setHasWinCFI(true);
 }
 
 void AlphaFrameLowering::emitEpilogue(MachineFunction &MF,
@@ -153,4 +200,49 @@ void AlphaFrameLowering::emitEpilogue(MachineFunction &MF,
       report_fatal_error("Too big a stack frame at " + Twine(NumBytes));
     }
   }
+}
+
+bool AlphaFrameLowering::spillCalleeSavedRegisters(
+    MachineBasicBlock &MBB, MachineBasicBlock::iterator MI,
+    ArrayRef<CalleeSavedInfo> CSI,
+    const TargetRegisterInfo *TRI) const {
+  const TargetInstrInfo &TII = *MBB.getParent()->getSubtarget().getInstrInfo();
+
+  for (const CalleeSavedInfo &CS : CSI) {
+    MCRegister Reg = CS.getReg();
+    if (CS.isSpilledToReg()) {
+      BuildMI(MBB, MI, DebugLoc(), TII.get(TargetOpcode::COPY), CS.getDstReg())
+          .addReg(Reg, getKillRegState(true))
+          .setMIFlag(MachineInstr::FrameSetup);
+      continue;
+    }
+
+    const TargetRegisterClass *RC = TRI->getMinimalPhysRegClass(Reg);
+    TII.storeRegToStackSlot(MBB, MI, Reg, true, CS.getFrameIdx(), RC,
+                            Register(), MachineInstr::FrameSetup);
+  }
+  return true;
+}
+
+bool AlphaFrameLowering::restoreCalleeSavedRegisters(
+    MachineBasicBlock &MBB, MachineBasicBlock::iterator MI,
+    MutableArrayRef<CalleeSavedInfo> CSI,
+    const TargetRegisterInfo *TRI) const {
+  const TargetInstrInfo &TII = *MBB.getParent()->getSubtarget().getInstrInfo();
+
+  for (size_t I = CSI.size(); I != 0; --I) {
+    const CalleeSavedInfo &CS = CSI[I - 1];
+    MCRegister Reg = CS.getReg();
+    if (CS.isSpilledToReg()) {
+      BuildMI(MBB, MI, DebugLoc(), TII.get(TargetOpcode::COPY), Reg)
+          .addReg(CS.getDstReg(), getKillRegState(true))
+          .setMIFlag(MachineInstr::FrameDestroy);
+      continue;
+    }
+
+    const TargetRegisterClass *RC = TRI->getMinimalPhysRegClass(Reg);
+    TII.loadRegFromStackSlot(MBB, MI, Reg, CS.getFrameIdx(), RC, Register(),
+                            MachineInstr::FrameDestroy);
+  }
+  return true;
 }

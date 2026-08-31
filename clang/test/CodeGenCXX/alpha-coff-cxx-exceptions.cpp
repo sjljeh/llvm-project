@@ -21,6 +21,9 @@ int alpha_try_catch() {
 // ASM-LABEL: "?alpha_try_catch@@YAHXZ":
 // ASM: .seh_proc "?alpha_try_catch@@YAHXZ"
 // ASM: .seh_handler __CxxFrameHandler, @unwind, @except
+// ASM: lda $30,-{{[0-9]+}}($30)
+// ASM-NEXT: stq $26,{{[0-9]+}}($30)
+// ASM-NEXT: .seh_endprologue
 // ASM: .seh_handlerdata
 // ASM: "$cppxdata$?alpha_try_catch@@YAHXZ":
 // ASM: .long 429065504

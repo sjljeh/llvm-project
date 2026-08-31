@@ -48,6 +48,10 @@ namespace {
     }
     void printInstruction(const MachineInstr *MI, raw_ostream &O);
     void emitInstruction(const MachineInstr *MI) override {
+      if (MI->getOpcode() == Alpha::SEH_PrologEnd) {
+        OutStreamer->emitWinCFIEndProlog();
+        return;
+      }
       if (MI->getOpcode() == Alpha::CATCHRET) {
         const MachineBasicBlock *TargetMBB = MI->getOperand(0).getMBB();
         const MCSymbol *TargetSym = TargetMBB->isEHContTarget()
@@ -186,6 +190,9 @@ void AlphaAsmPrinter::printOp(const MachineOperand &MO, raw_ostream &O) {
 /// EmitFunctionBodyStart - Targets can override this to emit stuff before
 /// the first basic block in the function.
 void AlphaAsmPrinter::emitFunctionBodyStart() {
+  for (MachineBasicBlock &MBB : *MF)
+    if (!MBB.isEntryBlock())
+      MBB.setLabelMustBeEmitted();
 }
 
 /// EmitFunctionBodyEnd - Targets can override this to emit stuff after
