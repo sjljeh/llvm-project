@@ -367,14 +367,23 @@ void SectionChunk::applyRelPPC(uint8_t *off, const coff_relocation &rel,
   case IMAGE_REL_PPC_ADDR14:
     applyPPCAddr14(off, va + (readPPC32(off, isLE) & 0x0000fffc), isLE);
     break;
-  case IMAGE_REL_PPC_REL24:
-    applyPPCAddr24(off, static_cast<int64_t>(s) - static_cast<int64_t>(p),
-                   isLE);
+  case IMAGE_REL_PPC_REL24: {
+    // Microsoft PowerPC branch relocations are relative to the beginning of
+    // the input section contribution. The assembler biases the signed addend
+    // by the relocation's offset within that contribution.
+    int64_t sectionStart =
+        static_cast<int64_t>(p) - static_cast<int64_t>(rel.VirtualAddress);
+    int64_t addend = SignExtend64<26>(readPPC32(off, isLE) & 0x03fffffc);
+    applyPPCAddr24(off, static_cast<int64_t>(s) - sectionStart + addend, isLE);
     break;
-  case IMAGE_REL_PPC_REL14:
-    applyPPCAddr14(off, static_cast<int64_t>(s) - static_cast<int64_t>(p),
-                   isLE);
+  }
+  case IMAGE_REL_PPC_REL14: {
+    int64_t sectionStart =
+        static_cast<int64_t>(p) - static_cast<int64_t>(rel.VirtualAddress);
+    int64_t addend = SignExtend64<16>(readPPC32(off, isLE) & 0x0000fffc);
+    applyPPCAddr14(off, static_cast<int64_t>(s) - sectionStart + addend, isLE);
     break;
+  }
   case IMAGE_REL_PPC_TOCREL16:
     if (std::optional<uint64_t> tocRVA = getPPCTocRVA(this)) {
       int64_t v = static_cast<int64_t>(s) - static_cast<int64_t>(*tocRVA) +

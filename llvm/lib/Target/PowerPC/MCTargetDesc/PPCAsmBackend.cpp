@@ -230,10 +230,27 @@ void PPCAsmBackend::applyFixup(const MCFragment &F, const MCFixup &Fixup,
     Target.setAddSym(nullptr);
   if (IsResolved && shouldForceRelocation(Fixup, Target))
     IsResolved = false;
-  if (!IsResolved)
+  MCFixupKind Kind = Fixup.getKind();
+  if (!IsResolved) {
     Asm->getWriter().recordRelocation(F, Fixup, Target, Value);
 
-  MCFixupKind Kind = Fixup.getKind();
+    // Microsoft PowerPC COFF branch relocations are relative to the start of
+    // the input section contribution, rather than to the relocation address.
+    // Bias the encoded addend by the relocation's section offset so that LINK
+    // computes S + A - P. Resolved branches already contain that value.
+    if (TT.isOSBinFormatCOFF()) {
+      switch ((unsigned)Kind) {
+      case PPC::fixup_ppc_br24:
+      case PPC::fixup_ppc_br24_notoc:
+      case PPC::fixup_ppc_brcond14:
+        Value -= Asm->getFragmentOffset(F) + Fixup.getOffset();
+        break;
+      default:
+        break;
+      }
+    }
+  }
+
   if (mc::isRelocation(Kind))
     return;
   Value = adjustFixupValue(getContext(), Fixup, Kind, Value);
