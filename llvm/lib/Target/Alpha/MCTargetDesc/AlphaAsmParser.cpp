@@ -120,6 +120,25 @@ public:
     return ParseStatus::NoMatch;
   }
 
+  bool ParseDirective(AsmToken DirectiveID) override {
+    StringRef Directive = DirectiveID.getString();
+    bool IsProcedureMetadata =
+        StringSwitch<bool>(Directive.lower())
+            .Cases({".aent", ".ent", ".end", ".edata"}, true)
+            .Cases({".eflag", ".fmask", ".frame", ".livereg"}, true)
+            .Cases({".prologue", ".save_ra"}, true);
+    if (!IsProcedureMetadata)
+      return true;
+
+    // The 32-bit NT object streamer derives runtime-function records from
+    // .seh directives. Accept legacy ASAXP procedure metadata for source
+    // compatibility until its Alpha64 procedure-descriptor form is modeled.
+    while (getLexer().isNot(AsmToken::EndOfStatement) &&
+           getLexer().isNot(AsmToken::Eof))
+      getParser().Lex();
+    return parseEndOfStatement();
+  }
+
   bool parseInstruction(ParseInstructionInfo &Info, StringRef Name,
                         SMLoc NameLoc, OperandVector &Operands) override {
     Operands.push_back(AlphaOperand::createToken(Name, NameLoc));
@@ -136,11 +155,16 @@ public:
                           .Case("mull", Alpha::MULLr)
                           .Case("mulq", Alpha::MULQr)
                           .Case("and", Alpha::ANDr)
+                          .Case("bic", Alpha::BICr)
                           .Case("bis", Alpha::BISr)
                           .Case("xor", Alpha::XORr)
+                          .Case("srl", Alpha::SRLr)
                           .Case("zapnot", Alpha::ZAPNOTi)
                           .Case("cmpeq", Alpha::CMPEQ)
+                          .Case("cmplt", Alpha::CMPLT)
+                          .Case("cmpult", Alpha::CMPULT)
                           .Case("cmoveq", Alpha::CMOVEQr)
+                          .Case("extwl", Alpha::EXTWL)
                           .Case("beq", Alpha::BEQ)
                           .Case("bne", Alpha::BNE)
                           .Case("br", Alpha::BR)
@@ -149,6 +173,7 @@ public:
                           .Case("ldah", Alpha::LDAH)
                           .Case("ldl", Alpha::LDL)
                           .Case("ldq", Alpha::LDQ)
+                          .Case("ldq_u", Alpha::LDQ_U)
                           .Case("ldt", Alpha::LDT)
                           .Case("stl", Alpha::STL)
                           .Case("stq", Alpha::STQ)
@@ -159,9 +184,17 @@ public:
     if (!Opcode)
       return Error(NameLoc, "Alpha instruction parsing is not implemented");
 
-    if (Opcode == Alpha::UNOP || Opcode == Alpha::MB || Opcode == Alpha::WMB ||
-        Opcode == Alpha::RETDAG)
+    if (Opcode == Alpha::UNOP || Opcode == Alpha::MB || Opcode == Alpha::WMB)
       return parseEndOfStatement();
+
+    if (Opcode == Alpha::RETDAG) {
+      // ASAXP accepts ret, ret $31,($26), and ret $31,($26),1. RETDAG has
+      // those architectural defaults encoded, so consume optional operands.
+      while (getLexer().isNot(AsmToken::EndOfStatement) &&
+             getLexer().isNot(AsmToken::Eof))
+        getParser().Lex();
+      return parseEndOfStatement();
+    }
 
     if (Opcode == Alpha::CALL_PAL)
       return parsePALInstruction(Operands);
@@ -175,9 +208,12 @@ public:
     if (Opcode == Alpha::ADDLr || Opcode == Alpha::ADDQr ||
         Opcode == Alpha::SUBLr || Opcode == Alpha::SUBQr ||
         Opcode == Alpha::MULLr || Opcode == Alpha::MULQr ||
-        Opcode == Alpha::ANDr || Opcode == Alpha::BISr ||
-        Opcode == Alpha::XORr || Opcode == Alpha::ZAPNOTi ||
-        Opcode == Alpha::CMPEQ || Opcode == Alpha::CMOVEQr)
+        Opcode == Alpha::ANDr || Opcode == Alpha::BICr ||
+        Opcode == Alpha::BISr || Opcode == Alpha::XORr ||
+        Opcode == Alpha::SRLr || Opcode == Alpha::ZAPNOTi ||
+        Opcode == Alpha::CMPEQ || Opcode == Alpha::CMPLT ||
+        Opcode == Alpha::CMPULT || Opcode == Alpha::CMOVEQr ||
+        Opcode == Alpha::EXTWL)
       return parseOperateInstruction(Operands);
 
     return parseMemoryInstruction(Operands);
@@ -204,11 +240,16 @@ public:
                               .Case("mull", Alpha::MULLr)
                               .Case("mulq", Alpha::MULQr)
                               .Case("and", Alpha::ANDr)
+                              .Case("bic", Alpha::BICr)
                               .Case("bis", Alpha::BISr)
                               .Case("xor", Alpha::XORr)
+                              .Case("srl", Alpha::SRLr)
                               .Case("zapnot", Alpha::ZAPNOTi)
                               .Case("cmpeq", Alpha::CMPEQ)
+                              .Case("cmplt", Alpha::CMPLT)
+                              .Case("cmpult", Alpha::CMPULT)
                               .Case("cmoveq", Alpha::CMOVEQr)
+                              .Case("extwl", Alpha::EXTWL)
                               .Case("beq", Alpha::BEQ)
                               .Case("bne", Alpha::BNE)
                               .Case("br", Alpha::BR)
@@ -217,6 +258,7 @@ public:
                               .Case("ldah", Alpha::LDAH)
                               .Case("ldl", Alpha::LDL)
                               .Case("ldq", Alpha::LDQ)
+                              .Case("ldq_u", Alpha::LDQ_U)
                               .Case("ldt", Alpha::LDT)
                               .Case("stl", Alpha::STL)
                               .Case("stq", Alpha::STQ)
@@ -226,8 +268,10 @@ public:
 
     if (Name == "addl" || Name == "addq" || Name == "subl" ||
         Name == "subq" || Name == "mull" || Name == "mulq" ||
-        Name == "and" || Name == "bis" || Name == "xor" ||
-        Name == "zapnot" || Name == "cmpeq" || Name == "cmoveq") {
+        Name == "and" || Name == "bic" || Name == "bis" ||
+        Name == "xor" || Name == "srl" || Name == "zapnot" ||
+        Name == "cmpeq" || Name == "cmplt" || Name == "cmpult" ||
+        Name == "cmoveq" || Name == "extwl") {
       auto &Src2 = static_cast<AlphaOperand &>(*Operands[2]);
       if (Name == "addl")
         InstOpcode = Src2.isReg() ? Alpha::ADDLr : Alpha::ADDLi;
@@ -243,16 +287,26 @@ public:
         InstOpcode = Src2.isReg() ? Alpha::MULQr : Alpha::MULQi;
       else if (Name == "and")
         InstOpcode = Src2.isReg() ? Alpha::ANDr : Alpha::ANDi;
+      else if (Name == "bic")
+        InstOpcode = Src2.isReg() ? Alpha::BICr : Alpha::BICi;
       else if (Name == "bis")
         InstOpcode = Src2.isReg() ? Alpha::BISr : Alpha::BISi;
       else if (Name == "xor")
         InstOpcode = Src2.isReg() ? Alpha::XORr : Alpha::XORi;
+      else if (Name == "srl")
+        InstOpcode = Src2.isReg() ? Alpha::SRLr : Alpha::SRLi;
       else if (Name == "zapnot")
         InstOpcode = Alpha::ZAPNOTi;
       else if (Name == "cmpeq")
         InstOpcode = Src2.isReg() ? Alpha::CMPEQ : Alpha::CMPEQi;
+      else if (Name == "cmplt")
+        InstOpcode = Src2.isReg() ? Alpha::CMPLT : Alpha::CMPLTi;
+      else if (Name == "cmpult")
+        InstOpcode = Src2.isReg() ? Alpha::CMPULT : Alpha::CMPULTi;
       else if (Name == "cmoveq")
         InstOpcode = Src2.isReg() ? Alpha::CMOVEQr : Alpha::CMOVEQi;
+      else if (Name == "extwl")
+        InstOpcode = Src2.isReg() ? Alpha::EXTWL : Alpha::EXTWLi;
     }
 
     if (Name == "ldah" &&
@@ -278,8 +332,10 @@ public:
     bool IsOperate =
         Name == "addl" || Name == "addq" || Name == "subl" ||
         Name == "subq" || Name == "mull" || Name == "mulq" ||
-        Name == "and" || Name == "bis" || Name == "xor" ||
-        Name == "zapnot" || Name == "cmpeq" || Name == "cmoveq";
+        Name == "and" || Name == "bic" || Name == "bis" ||
+        Name == "xor" || Name == "srl" || Name == "zapnot" ||
+        Name == "cmpeq" || Name == "cmplt" || Name == "cmpult" ||
+        Name == "cmoveq" || Name == "extwl";
     if (IsOperate) {
       AddOperand(3);
       AddOperand(1);
@@ -370,6 +426,26 @@ private:
 
     if (AllowDollarPrefix && getLexer().is(AsmToken::Dollar))
       getParser().Lex();
+
+    // ASAXP supports multi-digit directional labels (1 through 255).
+    if (getLexer().is(AsmToken::Integer) &&
+        getLexer().peekTok().is(AsmToken::Identifier)) {
+      AsmToken Label = getParser().getTok();
+      StringRef Direction = getLexer().peekTok().getString();
+      if (Direction == "f" || Direction == "b") {
+        int64_t Number = Label.getIntVal();
+        if (Number < 1 || Number > 255)
+          return Error(StartLoc, "directional label must be between 1 and 255");
+        getParser().Lex();
+        MCSymbol *Symbol = getContext().getDirectionalLocalSymbol(
+            Number, Direction == "b");
+        const MCExpr *Expr = MCSymbolRefExpr::create(Symbol, getContext());
+        SMLoc EndLoc = getParser().getTok().getEndLoc();
+        getParser().Lex();
+        Operands.push_back(AlphaOperand::createExpr(Expr, StartLoc, EndLoc));
+        return false;
+      }
+    }
 
     // Numeric branch operands in the established GNU-style syntax are encoded
     // instruction displacements, not byte-address expressions.
