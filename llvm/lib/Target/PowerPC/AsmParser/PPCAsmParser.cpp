@@ -12,6 +12,7 @@
 #include "PPCInstrInfo.h"
 #include "TargetInfo/PowerPCTargetInfo.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/BinaryFormat/COFF.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInst.h"
@@ -125,6 +126,7 @@ class PPCAsmParser : public MCTargetAsmParser {
   bool parseOperand(OperandVector &Operands);
 
   bool parseDirectiveWord(unsigned Size, AsmToken ID);
+  bool parseDirectiveFunction(SMLoc L);
   bool parseDirectiveTC(unsigned Size, AsmToken ID);
   bool parseDirectiveMachine(SMLoc L);
   bool parseDirectiveAbiVersion(SMLoc L);
@@ -1753,11 +1755,15 @@ bool PPCAsmParser::parseInstruction(ParseInstructionInfo &Info, StringRef Name,
 bool PPCAsmParser::ParseDirective(AsmToken DirectiveID) {
   StringRef IDVal = DirectiveID.getIdentifier();
   if (IDVal == ".word")
+    parseDirectiveWord(IsPPCWinCOFF ? 4 : 2, DirectiveID);
+  else if (IsPPCWinCOFF && IDVal == ".half")
     parseDirectiveWord(2, DirectiveID);
   else if (IsPPCWinCOFF && IDVal == ".uashort")
     parseDirectiveWord(2, DirectiveID);
   else if (IsPPCWinCOFF && IDVal == ".ualong")
     parseDirectiveWord(4, DirectiveID);
+  else if (IsPPCWinCOFF && IDVal == ".function")
+    parseDirectiveFunction(DirectiveID.getLoc());
   else if (IDVal == ".llong")
     parseDirectiveWord(8, DirectiveID);
   else if (IDVal == ".tc")
@@ -1849,6 +1855,22 @@ ParseStatus PPCAsmParser::tryParseDataDirectiveOperand(StringRef Directive,
     return ParseStatus::Failure;
   getStreamer().emitBytes(Data);
   return ParseStatus::Success;
+}
+
+///  ::= .function symbol
+bool PPCAsmParser::parseDirectiveFunction(SMLoc L) {
+  MCSymbol *Symbol;
+  if (getParser().parseSymbol(Symbol))
+    return Error(L, "expected identifier in '.function' directive");
+  if (parseToken(AsmToken::EndOfStatement))
+    return addErrorSuffix(" in '.function' directive");
+
+  MCStreamer &Streamer = getParser().getStreamer();
+  Streamer.beginCOFFSymbolDef(Symbol);
+  Streamer.emitCOFFSymbolType(COFF::IMAGE_SYM_DTYPE_FUNCTION
+                              << COFF::SCT_COMPLEX_TYPE_SHIFT);
+  Streamer.endCOFFSymbolDef();
+  return false;
 }
 
 ///  ::= .tc [ symbol (, expression)* ]
