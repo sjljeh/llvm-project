@@ -1,0 +1,73 @@
+# RUN: yaml2obj %s -o %t.obj
+# RUN: lld-link /machine:alpha /entry:entry /subsystem:native /nodefaultlib \
+# RUN:   /align:4194304 /verbose /out:%t.exe %t.obj 2>&1 | \
+# RUN:   FileCheck %s --check-prefix=VERBOSE
+# RUN: llvm-readobj --sections --hex-dump=.text --hex-dump=.far \
+# RUN:   --coff-basereloc %t.exe | FileCheck %s --check-prefix=LINKED
+
+# Microsoft LINK emits 16-byte absolute-address thunks for overflowing Alpha
+# BRADDR relocations. Placing target at .far+4 makes its displacement from the
+# first branch exactly +0x400000, just beyond signed 21-word branch reach.
+#
+# The second branch has source addend A=8 encoded as two words in its instruction.
+# It must branch to a separate nearby thunk which jumps to target+8. Both thunks
+# carry HIGHADJ/LOW base relocations so the image remains relocatable.
+
+# The generic counter includes the alignment-padding chunk before the two
+# 16-byte thunks.
+# VERBOSE: Added 3 thunks with margin {{[0-9]+}} in 1 passes
+
+# LINKED:      Name: .text
+# LINKED-NEXT: VirtualSize: 0x30
+# LINKED:      Name: .far
+# LINKED-NEXT: VirtualSize: 0x10
+# LINKED:      Hex dump of section '.text':
+# LINKED-NEXT: {{.*}} 030040d3 060040d3 0000fe2f 0000fe2f
+# LINKED-NEXT: {{.*}} c0009f27 04009c23 0000fc6b 00000000
+# LINKED-NEXT: {{.*}} c0009f27 0c009c23 0000fc6b 00000000
+# LINKED:      Hex dump of section '.far':
+# LINKED-NEXT: {{.*}} 00000000 00000000 00000000 00000000
+# LINKED:      BaseReloc [
+# LINKED:      Type: HIGHADJ
+# LINKED-NEXT: Address: 0x400010
+# LINKED:      Type: LOW
+# LINKED-NEXT: Address: 0x400014
+# LINKED:      Type: HIGHADJ
+# LINKED-NEXT: Address: 0x400020
+# LINKED:      Type: LOW
+# LINKED-NEXT: Address: 0x400024
+
+--- !COFF
+header:
+  Machine:         IMAGE_FILE_MACHINE_ALPHA
+  Characteristics: []
+sections:
+  - Name:            .text
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       16
+    SectionData:     000040D3020040D3
+    Relocations:
+      - VirtualAddress:  0
+        SymbolName:      target
+        Type:            IMAGE_REL_ALPHA_BRADDR # A=0
+      - VirtualAddress:  4
+        SymbolName:      target
+        Type:            IMAGE_REL_ALPHA_BRADDR # A=8
+  - Name:            .far
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       16
+    SectionData:     00000000000000000000000000000000
+symbols:
+  - Name:            entry
+    Value:           0
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_FUNCTION
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+  - Name:            target
+    Value:           4
+    SectionNumber:   2
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_FUNCTION
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+...
