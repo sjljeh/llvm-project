@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=alpha-pc-windows-msvc -mattr=+taso -stop-after=postrapseudos < %s -o - | FileCheck %s
+; RUN: llc -mtriple=alpha-pc-windows-msvc -mattr=+taso -target-abi=taso -stop-after=postrapseudos < %s -o - | FileCheck %s
 
 define i32 @two_step(ptr %p) {
 entry:

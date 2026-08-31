@@ -16,6 +16,7 @@
 #include "AlphaMCAsmInfo.h"
 #include "TargetInfo/AlphaTargetInfo.h"
 #include "llvm/DebugInfo/CodeView/CodeView.h"
+#include "llvm/MC/MCDwarf.h"
 #include "llvm/MC/MCInstrAnalysis.h"
 #include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCRegisterInfo.h"
@@ -124,7 +125,10 @@ static MCAsmInfo *createAlphaMCAsmInfo(const MCRegisterInfo &MRI,
                                        const MCTargetOptions &Options) {
   if (TT.isOSBinFormatCOFF())
     return new AlphaMCAsmInfoMicrosoftCOFF(TT, Options);
-  return new AlphaMCAsmInfo(TT, Options);
+  auto *MAI = new AlphaMCAsmInfo(TT, Options);
+  unsigned SP = MRI.getDwarfRegNum(Alpha::R30, true);
+  MAI->addInitialFrameState(MCCFIInstruction::cfiDefCfa(nullptr, SP, 0));
+  return MAI;
 }
 
 // Force static initialization.

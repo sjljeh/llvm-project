@@ -15,6 +15,8 @@
 #include "AlphaTargetMachine.h"
 #include "llvm/CodeGen/LibcallLoweringInfo.h"
 
+#define DEBUG_TYPE "alpha-subtarget"
+
 #define GET_SUBTARGETINFO_TARGET_DESC
 #define GET_SUBTARGETINFO_CTOR
 #include "AlphaGenSubtargetInfo.inc"

@@ -18,6 +18,10 @@ class MCSymbolELF : public MCSymbol {
   /// symbol has no size this field will be NULL.
   const MCExpr *SymbolSize = nullptr;
 
+  // Target-specific st_other bits.  Most targets use only bits 5..7, but
+  // Alpha also assigns bit 3 (STO_ALPHA_STD_GPLOAD = 0x88).
+  uint8_t Other = 0;
+
 public:
   MCSymbolELF(const MCSymbolTableEntry *Name, bool isTemporary)
       : MCSymbol(Name, isTemporary) {}

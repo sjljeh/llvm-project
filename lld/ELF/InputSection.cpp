@@ -773,6 +773,12 @@ static int64_t getTlsTpOffset(Ctx &ctx, const Symbol &s) {
     return 0;
   switch (ctx.arg.emachine) {
     // Variant 1.
+  case EM_ALPHA:
+  case EM_ALPHA_STD:
+    // Alpha's PAL-maintained thread pointer addresses a TCB immediately
+    // preceding the static TLS image.
+    return s.getVA(ctx, 0) + (tls->p_vaddr & (tls->p_align - 1)) +
+           std::max<uint64_t>(16, tls->p_align);
   case EM_ARM:
   case EM_AARCH64:
     return s.getVA(ctx, 0) + ctx.arg.wordsize * 2 +
@@ -846,6 +852,7 @@ uint64_t InputSectionBase::getRelocTargetVA(Ctx &ctx, const Relocation &r,
     return r.sym->getGotVA(ctx) + a - ctx.in.gotPlt->getVA();
   case R_TLSLD_GOT_OFF:
   case R_GOT_OFF:
+  case RE_ALPHA_GOT_OFF:
     return r.sym->getGotOffset(ctx) + a;
   case RE_AARCH64_GOT_PAGE_PC:
     return getAArch64Page(r.sym->getGotVA(ctx) + a) - getAArch64Page(p);

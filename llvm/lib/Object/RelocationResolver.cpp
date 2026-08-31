@@ -36,6 +36,37 @@ static int64_t getELFAddend(RelocationRef R) {
   return *AddendOrErr;
 }
 
+static bool supportsAlpha(uint64_t Type) {
+  switch (Type) {
+  case ELF::R_ALPHA_NONE:
+  case ELF::R_ALPHA_REFLONG:
+  case ELF::R_ALPHA_REFQUAD:
+  case ELF::R_ALPHA_SREL32:
+  case ELF::R_ALPHA_SREL64:
+    return true;
+  default:
+    return false;
+  }
+}
+
+static uint64_t resolveAlpha(uint64_t Type, uint64_t Offset, uint64_t S,
+                             uint64_t LocData, int64_t Addend) {
+  switch (Type) {
+  case ELF::R_ALPHA_NONE:
+    return LocData;
+  case ELF::R_ALPHA_REFLONG:
+    return (S + Addend) & 0xffffffff;
+  case ELF::R_ALPHA_REFQUAD:
+    return S + Addend;
+  case ELF::R_ALPHA_SREL32:
+    return (S + Addend - Offset) & 0xffffffff;
+  case ELF::R_ALPHA_SREL64:
+    return S + Addend - Offset;
+  default:
+    llvm_unreachable("Invalid relocation type");
+  }
+}
+
 static bool supportsX86_64(uint64_t Type) {
   switch (Type) {
   case ELF::R_X86_64_NONE:
@@ -816,6 +847,8 @@ getRelocationResolver(const ObjectFile &Obj) {
   } else if (Obj.isELF()) {
     if (Obj.getBytesInAddress() == 8) {
       switch (Obj.getArch()) {
+      case Triple::alpha:
+        return {supportsAlpha, resolveAlpha};
       case Triple::x86_64:
         return {supportsX86_64, resolveX86_64};
       case Triple::aarch64:

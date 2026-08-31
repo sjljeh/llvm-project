@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=alpha-pc-windows-msvc -mattr=+taso < %s | FileCheck %s
+; RUN: llc -mtriple=alpha-pc-windows-msvc -mattr=+taso -target-abi=taso < %s | FileCheck %s
 
 declare i64 @llvm.ctpop.i64(i64)
 

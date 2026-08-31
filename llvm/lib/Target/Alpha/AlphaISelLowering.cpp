@@ -12,21 +12,21 @@
 //===----------------------------------------------------------------------===//
 
 #include "AlphaISelLowering.h"
-#include "AlphaTargetMachine.h"
 #include "AlphaMachineFunctionInfo.h"
+#include "AlphaTargetMachine.h"
 #include "llvm/CodeGen/CallingConvLower.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
-#include "llvm/CodeGen/SelectionDAG.h"
-#include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/PseudoSourceValue.h"
+#include "llvm/CodeGen/SelectionDAG.h"
 #include "llvm/CodeGen/TargetLoweringObjectFileImpl.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/Function.h"
-#include "llvm/IR/Module.h"
 #include "llvm/IR/Intrinsics.h"
+#include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -237,6 +237,14 @@ const char *AlphaTargetLowering::getTargetNodeName(unsigned Opcode) const {
   case AlphaISD::GPRelHi: return "Alpha::GPRelHi";
   case AlphaISD::GPRelLo: return "Alpha::GPRelLo";
   case AlphaISD::RelLit: return "Alpha::RelLit";
+  case AlphaISD::TPRelHi:
+    return "Alpha::TPRelHi";
+  case AlphaISD::TPRelLo:
+    return "Alpha::TPRelLo";
+  case AlphaISD::GOTTPRel:
+    return "Alpha::GOTTPRel";
+  case AlphaISD::RDUNIQUE:
+    return "Alpha::RDUNIQUE";
   case AlphaISD::GlobalRetAddr: return "Alpha::GlobalRetAddr";
   case AlphaISD::CALL:   return "Alpha::CALL";
   case AlphaISD::DivCall: return "Alpha::DivCall";
@@ -709,8 +717,37 @@ SDValue AlphaTargetLowering::LowerOperation(SDValue Op,
     SDValue Lo = DAG.getNode(AlphaISD::GPRelLo, dl, MVT::i64, CPI, Hi);
     return Lo;
   }
-  case ISD::GlobalTLSAddress:
-    llvm_unreachable("TLS not implemented for Alpha.");
+  case ISD::GlobalTLSAddress: {
+    GlobalAddressSDNode *GSDN = cast<GlobalAddressSDNode>(Op);
+    const GlobalValue *GV = GSDN->getGlobal();
+    MachineFunction &MF = DAG.getMachineFunction();
+    if (!MF.getTarget().getTargetTriple().isOSBinFormatELF()) {
+      DAG.getContext()->diagnose(DiagnosticInfoUnsupported(
+          MF.getFunction(), "Alpha TLS is supported only for ELF",
+          dl.getDebugLoc()));
+      return DAG.getPOISON(MVT::i64);
+    }
+
+    TLSModel::Model Model = getTargetMachine().getTLSModel(GV);
+    SDValue GA =
+        DAG.getTargetGlobalAddress(GV, dl, MVT::i64, GSDN->getOffset());
+    SDValue TP = DAG.getNode(AlphaISD::RDUNIQUE, dl, MVT::i64);
+    if (Model == TLSModel::LocalExec) {
+      SDValue Hi = DAG.getNode(AlphaISD::TPRelHi, dl, MVT::i64, GA, TP);
+      return DAG.getNode(AlphaISD::TPRelLo, dl, MVT::i64, GA, Hi);
+    }
+    if (Model == TLSModel::InitialExec) {
+      SDValue TPOff = DAG.getNode(AlphaISD::GOTTPRel, dl, MVT::i64, GA,
+                                  DAG.getGLOBAL_OFFSET_TABLE(MVT::i64));
+      return DAG.getNode(ISD::ADD, dl, MVT::i64, TP, TPOff);
+    }
+
+    DAG.getContext()->diagnose(DiagnosticInfoUnsupported(
+        MF.getFunction(),
+        "Alpha ELF general-dynamic and local-dynamic TLS are not supported",
+        dl.getDebugLoc()));
+    return DAG.getPOISON(MVT::i64);
+  }
   case ISD::GlobalAddress: {
     GlobalAddressSDNode *GSDN = cast<GlobalAddressSDNode>(Op);
     const GlobalValue *GV = GSDN->getGlobal();

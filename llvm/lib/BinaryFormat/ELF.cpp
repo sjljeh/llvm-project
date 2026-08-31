@@ -317,6 +317,7 @@ StringRef ELF::convertEMachineToArchName(uint16_t EMachine) {
   case EM_ARM:
     return "arm";
   case EM_ALPHA:
+  case EM_ALPHA_STD:
     return "alpha";
   case EM_SH:
     return "sh";

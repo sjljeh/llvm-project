@@ -1,5 +1,5 @@
-; RUN: llc -mtriple=alpha-pc-windows-msvc -mattr=+taso -stop-after=postrapseudos < %s -o - | FileCheck %s --check-prefix=MIR
-; RUN: llc -mtriple=alpha-pc-windows-msvc -mattr=+taso -filetype=obj < %s | llvm-readobj --hex-dump=.text - | FileCheck %s --check-prefix=OBJ
+; RUN: llc -mtriple=alpha-pc-windows-msvc -mattr=+taso -target-abi=taso -stop-after=postrapseudos < %s -o - | FileCheck %s --check-prefix=MIR
+; RUN: llc -mtriple=alpha-pc-windows-msvc -mattr=+taso -target-abi=taso -filetype=obj < %s | llvm-readobj --hex-dump=.text - | FileCheck %s --check-prefix=OBJ
 
 define i32 @select_reg(i32 %cond, i32 %truev, i32 %falsev) {
 entry:

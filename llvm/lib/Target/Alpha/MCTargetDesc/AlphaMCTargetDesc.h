@@ -30,6 +30,7 @@ class MCStreamer;
 class MCTargetOptions;
 class StringRef;
 class Target;
+class Triple;
 
 MCAsmBackend *createAlphaAsmBackend(const Target &T,
                                     const MCSubtargetInfo &STI,
@@ -41,6 +42,8 @@ MCCodeEmitter *createAlphaMCCodeEmitter(const MCInstrInfo &MCII,
 
 std::unique_ptr<MCObjectTargetWriter>
 createAlphaWinCOFFObjectWriter(unsigned Machine);
+std::unique_ptr<MCObjectTargetWriter>
+createAlphaELFObjectWriter(const Triple &TT);
 
 MCStreamer *createAlphaWinCOFFStreamer(MCContext &C,
                                        std::unique_ptr<MCAsmBackend> &&AB,
@@ -52,10 +55,55 @@ void initLLVMToCVRegMapping(MCRegisterInfo *MRI);
 void registerAlphaAsmParser();
 
 namespace Alpha {
+enum Specifier : uint16_t {
+  S_None = 0,
+  S_LITERAL,
+  S_LITUSE_ADDR,
+  S_LITUSE_BASE,
+  S_LITUSE_BYTOFF,
+  S_LITUSE_JSR,
+  S_LITUSE_TLSGD,
+  S_LITUSE_TLSLDM,
+  S_LITUSE_JSRDIRECT,
+  S_GPDISP,
+  S_GPRELHIGH,
+  S_GPRELLOW,
+  S_GPREL16,
+  S_GPREL32,
+  S_BRSGP,
+  S_TLSGD,
+  S_TLSLDM,
+  S_GOTDTPREL,
+  S_DTPRELHI,
+  S_DTPRELLO,
+  S_DTPREL16,
+  S_GOTTPREL,
+  S_TPRELHI,
+  S_TPRELLO,
+  S_TPREL16,
+};
+
 enum Fixups {
   fixup_Alpha_Branch = FirstTargetFixupKind,
   fixup_Alpha_REFHI,
   fixup_Alpha_REFLO,
+  fixup_Alpha_LITERAL,
+  fixup_Alpha_LITUSE,
+  fixup_Alpha_GPDISP,
+  fixup_Alpha_BRSGP,
+  fixup_Alpha_HINT,
+  fixup_Alpha_GPREL16,
+  fixup_Alpha_TLSGD,
+  fixup_Alpha_TLSLDM,
+  fixup_Alpha_GOTDTPREL,
+  fixup_Alpha_DTPRELHI,
+  fixup_Alpha_DTPRELLO,
+  fixup_Alpha_DTPREL16,
+  fixup_Alpha_GOTTPREL,
+  fixup_Alpha_TPRELHI,
+  fixup_Alpha_TPRELLO,
+  fixup_Alpha_TPREL16,
+  NumTargetFixupKinds
 };
 }
 

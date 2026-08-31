@@ -1,6 +1,6 @@
-; RUN: llc -mtriple=alpha-pc-windows-msvc -mattr=+taso -stop-after=finalize-isel < %s -o - | FileCheck %s --check-prefix=MIR
-; RUN: llc -mtriple=alpha-pc-windows-msvc -mattr=+taso -filetype=obj < %s | llvm-readobj --relocations - | FileCheck %s --check-prefix=OBJ
-; RUN: llc -mtriple=alpha-pc-windows-msvc -mattr=+taso -filetype=obj < %s | llvm-readobj --hex-dump=.text - | FileCheck %s --check-prefix=HEX
+; RUN: llc -mtriple=alpha-pc-windows-msvc -mattr=+taso -target-abi=taso -stop-after=finalize-isel < %s -o - | FileCheck %s --check-prefix=MIR
+; RUN: llc -mtriple=alpha-pc-windows-msvc -mattr=+taso -target-abi=taso -filetype=obj < %s | llvm-readobj --relocations - | FileCheck %s --check-prefix=OBJ
+; RUN: llc -mtriple=alpha-pc-windows-msvc -mattr=+taso -target-abi=taso -filetype=obj < %s | llvm-readobj --hex-dump=.text - | FileCheck %s --check-prefix=HEX
 
 declare ptr @malloc(i64)
 declare i64 @callee(ptr, i64, i64, i64, i64, i64)

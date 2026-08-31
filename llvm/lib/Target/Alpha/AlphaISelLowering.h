@@ -36,6 +36,9 @@ namespace llvm {
       /// RetLit - Literal Relocation of a Global
       RelLit,
 
+      /// Alpha ELF TLS address materialization.
+      TPRelHi, TPRelLo, GOTTPRel, RDUNIQUE,
+
       /// GlobalRetAddr - used to restore the return address
       GlobalRetAddr,
 

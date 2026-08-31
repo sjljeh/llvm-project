@@ -69,38 +69,38 @@ def R30 : GPR<30, "$30">, DwarfRegNum<[30]>;
 def R31 : GPR<31, "$31">, DwarfRegNum<[31]>;
 
 // Floating-point registers
-def F0  : FPR< 0,  "$f0">, DwarfRegNum<[33]>;
-def F1  : FPR< 1,  "$f1">, DwarfRegNum<[34]>;
-def F2  : FPR< 2,  "$f2">, DwarfRegNum<[35]>;
-def F3  : FPR< 3,  "$f3">, DwarfRegNum<[36]>;
-def F4  : FPR< 4,  "$f4">, DwarfRegNum<[37]>;
-def F5  : FPR< 5,  "$f5">, DwarfRegNum<[38]>;
-def F6  : FPR< 6,  "$f6">, DwarfRegNum<[39]>;
-def F7  : FPR< 7,  "$f7">, DwarfRegNum<[40]>;
-def F8  : FPR< 8,  "$f8">, DwarfRegNum<[41]>;
-def F9  : FPR< 9,  "$f9">, DwarfRegNum<[42]>;
-def F10 : FPR<10, "$f10">, DwarfRegNum<[43]>;
-def F11 : FPR<11, "$f11">, DwarfRegNum<[44]>;
-def F12 : FPR<12, "$f12">, DwarfRegNum<[45]>;
-def F13 : FPR<13, "$f13">, DwarfRegNum<[46]>;
-def F14 : FPR<14, "$f14">, DwarfRegNum<[47]>;
-def F15 : FPR<15, "$f15">, DwarfRegNum<[48]>;
-def F16 : FPR<16, "$f16">, DwarfRegNum<[49]>;
-def F17 : FPR<17, "$f17">, DwarfRegNum<[50]>;
-def F18 : FPR<18, "$f18">, DwarfRegNum<[51]>;
-def F19 : FPR<19, "$f19">, DwarfRegNum<[52]>;
-def F20 : FPR<20, "$f20">, DwarfRegNum<[53]>;
-def F21 : FPR<21, "$f21">, DwarfRegNum<[54]>;
-def F22 : FPR<22, "$f22">, DwarfRegNum<[55]>;
-def F23 : FPR<23, "$f23">, DwarfRegNum<[56]>;
-def F24 : FPR<24, "$f24">, DwarfRegNum<[57]>;
-def F25 : FPR<25, "$f25">, DwarfRegNum<[58]>;
-def F26 : FPR<26, "$f26">, DwarfRegNum<[59]>;
-def F27 : FPR<27, "$f27">, DwarfRegNum<[60]>;
-def F28 : FPR<28, "$f28">, DwarfRegNum<[61]>;
-def F29 : FPR<29, "$f29">, DwarfRegNum<[62]>;
-def F30 : FPR<30, "$f30">, DwarfRegNum<[63]>;
-def F31 : FPR<31, "$f31">, DwarfRegNum<[64]>;
+def F0  : FPR< 0,  "$f0">, DwarfRegNum<[32]>;
+def F1  : FPR< 1,  "$f1">, DwarfRegNum<[33]>;
+def F2  : FPR< 2,  "$f2">, DwarfRegNum<[34]>;
+def F3  : FPR< 3,  "$f3">, DwarfRegNum<[35]>;
+def F4  : FPR< 4,  "$f4">, DwarfRegNum<[36]>;
+def F5  : FPR< 5,  "$f5">, DwarfRegNum<[37]>;
+def F6  : FPR< 6,  "$f6">, DwarfRegNum<[38]>;
+def F7  : FPR< 7,  "$f7">, DwarfRegNum<[39]>;
+def F8  : FPR< 8,  "$f8">, DwarfRegNum<[40]>;
+def F9  : FPR< 9,  "$f9">, DwarfRegNum<[41]>;
+def F10 : FPR<10, "$f10">, DwarfRegNum<[42]>;
+def F11 : FPR<11, "$f11">, DwarfRegNum<[43]>;
+def F12 : FPR<12, "$f12">, DwarfRegNum<[44]>;
+def F13 : FPR<13, "$f13">, DwarfRegNum<[45]>;
+def F14 : FPR<14, "$f14">, DwarfRegNum<[46]>;
+def F15 : FPR<15, "$f15">, DwarfRegNum<[47]>;
+def F16 : FPR<16, "$f16">, DwarfRegNum<[48]>;
+def F17 : FPR<17, "$f17">, DwarfRegNum<[49]>;
+def F18 : FPR<18, "$f18">, DwarfRegNum<[50]>;
+def F19 : FPR<19, "$f19">, DwarfRegNum<[51]>;
+def F20 : FPR<20, "$f20">, DwarfRegNum<[52]>;
+def F21 : FPR<21, "$f21">, DwarfRegNum<[53]>;
+def F22 : FPR<22, "$f22">, DwarfRegNum<[54]>;
+def F23 : FPR<23, "$f23">, DwarfRegNum<[55]>;
+def F24 : FPR<24, "$f24">, DwarfRegNum<[56]>;
+def F25 : FPR<25, "$f25">, DwarfRegNum<[57]>;
+def F26 : FPR<26, "$f26">, DwarfRegNum<[58]>;
+def F27 : FPR<27, "$f27">, DwarfRegNum<[59]>;
+def F28 : FPR<28, "$f28">, DwarfRegNum<[60]>;
+def F29 : FPR<29, "$f29">, DwarfRegNum<[61]>;
+def F30 : FPR<30, "$f30">, DwarfRegNum<[62]>;
+def F31 : FPR<31, "$f31">, DwarfRegNum<[63]>;
 
   // //#define FP    $15
   // //#define RA    $26
@@ -110,6 +110,8 @@ def F31 : FPR<31, "$f31">, DwarfRegNum<[64]>;
   // $28 is undefined after any and all calls
 
 /// Register classes
+def R0RC : RegisterClass<"Alpha", [i64], 64, (add R0)>;
+
 def GPRC : RegisterClass<"Alpha", [i64], 64, (add
      // Volatile
      R0, R1, R2, R3, R4, R5, R6, R7, R8, R16, R17, R18, R19, R20, R21, R22,

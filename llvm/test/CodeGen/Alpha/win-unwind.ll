@@ -1,5 +1,5 @@
-; RUN: llc -mtriple=alpha-pc-windows-msvc -mattr=+taso -filetype=asm %s -o - | FileCheck %s
-; RUN: llc -mtriple=alpha-pc-windows-msvc -mattr=+taso -filetype=obj %s -o %t.obj
+; RUN: llc -mtriple=alpha-pc-windows-msvc -mattr=+taso -target-abi=taso -filetype=asm %s -o - | FileCheck %s
+; RUN: llc -mtriple=alpha-pc-windows-msvc -mattr=+taso -target-abi=taso -filetype=obj %s -o %t.obj
 ; RUN: llvm-readobj --sections --relocations --hex-dump=.pdata %t.obj | FileCheck %s --check-prefix=OBJ
 
 declare i64 @callee(i64)
@@ -21,7 +21,7 @@ entry:
 ; Alpha runtime-function records contain five absolute 32-bit fields:
 ; begin, end, exception handler, handler data, and prologue end.
 ; OBJ: Name: .pdata
-; OBJ: RawDataSize: 20
+; OBJ: RawDataSize: 0x14
 ; OBJ:      RelocationCount: 3
 ; OBJ:      0x0 IMAGE_REL_ALPHA_REFLONG .text
 ; OBJ:      0x4 IMAGE_REL_ALPHA_REFLONG .text

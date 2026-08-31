@@ -254,7 +254,8 @@ public:
     // EM_S390 and ELF::EM_ALPHA platforms use 8-bytes entries in SHT_HASH
     // sections. This violates the ELF specification.
     if (Obj.getHeader().e_machine == ELF::EM_S390 ||
-        Obj.getHeader().e_machine == ELF::EM_ALPHA)
+        Obj.getHeader().e_machine == ELF::EM_ALPHA ||
+        Obj.getHeader().e_machine == ELF::EM_ALPHA_STD)
       return 8;
     return 4;
   }
@@ -1190,6 +1191,7 @@ constexpr EnumStringDef<unsigned, 2> ElfMachineTypeDefs[] = {
   ENUM_ENT(EM_RH32,          "TRW RH-32"),
   ENUM_ENT(EM_RCE,           "Motorola RCE"),
   ENUM_ENT(EM_ARM,           "ARM"),
+  ENUM_ENT(EM_ALPHA_STD,     "EM_ALPHA_STD"),
   ENUM_ENT(EM_ALPHA,         "EM_ALPHA"),
   ENUM_ENT(EM_SH,            "Hitachi SH"),
   ENUM_ENT(EM_SPARCV9,       "Sparc v9"),
