@@ -102,6 +102,7 @@ constexpr EnumStringDef<MCAsmInfo::AtSpecifierKind> COFFAtSpecifierDefs[] = {
     {{"ha"}, PPC::S_HA},
     {{"h"}, PPC::S_HI},
     {{"l"}, PPC::S_LO},
+    {{"<<ifglue>>"}, PPC::S_IFGLUE},
     {{"IMGREL"}, MCSymbolRefExpr::VK_COFF_IMGREL32},
 };
 constexpr auto coffAtSpecifiers = BUILD_ENUM_STRINGS(COFFAtSpecifierDefs);
