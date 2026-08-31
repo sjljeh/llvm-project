@@ -39,6 +39,10 @@ class MCSectionCOFF final : public MCSection {
   /// not notionally part of the section.
   mutable unsigned WinCFISectionID = ~0U;
 
+  /// Whether the section should use the linker's machine-dependent default
+  /// alignment when its MC alignment remains one byte.
+  bool OmitAlignment = false;
+
   /// The COMDAT symbol of this section. Only valid if this is a COMDAT section.
   /// Two COMDAT sections are merged if they have the same COMDAT symbol.
   MCSymbol *COMDATSymbol;
@@ -71,6 +75,8 @@ public:
   LLVM_ABI bool shouldOmitSectionDirective(StringRef Name) const;
 
   unsigned getCharacteristics() const { return Characteristics; }
+  bool shouldOmitAlignment() const { return OmitAlignment; }
+  void setOmitAlignment() { OmitAlignment = true; }
   MCSymbol *getCOMDATSymbol() const { return COMDATSymbol; }
   int getSelection() const { return Selection; }
 
