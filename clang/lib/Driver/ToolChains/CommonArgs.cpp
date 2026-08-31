@@ -744,6 +744,11 @@ static std::string getLanaiTargetCPU(const ArgList &Args) {
 
 static std::string getClangCLAlphaTargetCPU(const Driver &D,
                                             const ArgList &Args) {
+  if (const Arg *A = Args.getLastArg(options::OPT_mcpu_EQ)) {
+    A->claim();
+    return A->getValue();
+  }
+
   const Arg *A = Args.getLastArg(options::OPT__SLASH_QA);
   if (!A)
     return "";
