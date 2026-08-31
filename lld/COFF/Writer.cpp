@@ -547,6 +547,9 @@ bool Writer::createThunks(OutputSection *os, int margin) {
         file->getCOFFObj()->getRelocations(sc->header);
     for (size_t j = 0, e = originalRelocs.size(); j < e; ++j) {
       const coff_relocation &rel = originalRelocs[j];
+      if (machine == IMAGE_FILE_MACHINE_ALPHA &&
+          rel.Type != IMAGE_REL_ALPHA_BRADDR)
+        continue;
       if (machine == IMAGE_FILE_MACHINE_POWERPC) {
         uint16_t type = rel.Type & IMAGE_REL_PPC_TYPEMASK;
         if (type == IMAGE_REL_PPC_PAIR || type == IMAGE_REL_PPC_IMGLUE)
@@ -687,6 +690,9 @@ bool Writer::verifyRanges(const std::vector<Chunk *> chunks) {
 
     ArrayRef<coff_relocation> relocs = sc->getRelocs();
     for (const coff_relocation &rel : relocs) {
+      if (machine == IMAGE_FILE_MACHINE_ALPHA &&
+          rel.Type != IMAGE_REL_ALPHA_BRADDR)
+        continue;
       if (machine == IMAGE_FILE_MACHINE_POWERPC) {
         uint16_t type = rel.Type & IMAGE_REL_PPC_TYPEMASK;
         if (type == IMAGE_REL_PPC_PAIR || type == IMAGE_REL_PPC_IMGLUE)
