@@ -34,6 +34,7 @@
 #include "clang/Basic/HLSLRuntime.h"
 #include "clang/Basic/PartialDiagnostic.h"
 #include "clang/Basic/SourceManager.h"
+#include "clang/Basic/TargetBuiltins.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Lex/HeaderSearch.h" // TODO: Sema shouldn't depend on Lex
 #include "clang/Lex/Lexer.h" // TODO: Extract static functions to fix layering.
@@ -4532,6 +4533,13 @@ bool Sema::MergeFunctionDecl(FunctionDecl *New, NamedDecl *&OldD, Scope *S,
   // declaration, then at the very least we should use a specialized note.
   unsigned BuiltinID;
   if (Old->isImplicit() && (BuiltinID = Old->getBuiltinID())) {
+    // The NT PowerPC headers declare this builtin with the actual TEB pointer
+    // type, which is more specific than the void pointer used by the builtin
+    // table.
+    if (BuiltinID == PPC::BI__builtin_get_gpr13 &&
+        Context.getTargetInfo().getTriple().isOSWindows())
+      return MergeCompatibleFunctionDecls(New, Old, S, MergeTypeWithOld);
+
     // If it's actually a library-defined builtin function like 'malloc'
     // or 'printf', just warn about the incompatible redeclaration.
     if (Context.BuiltinInfo.isPredefinedLibFunction(BuiltinID)) {
