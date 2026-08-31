@@ -55,12 +55,29 @@ AlphaTargetMachine::AlphaTargetMachine(
     : CodeGenTargetMachineImpl(T, getDataLayoutForTriple(TT, FS), TT, CPU, FS,
                                Options, getEffectiveRelocModel(RM),
                                getEffectiveCodeModel(CM, CodeModel::Small), OL),
-      TLOF(createTLOF(TT)),
-      Subtarget(TT, CPU, FS, *this) {
+      TLOF(createTLOF(TT)) {
   initAsmInfo();
 }
 
 AlphaTargetMachine::~AlphaTargetMachine() = default;
+
+const AlphaSubtarget *
+AlphaTargetMachine::getSubtargetImpl(const Function &F) const {
+  Attribute CPUAttr = F.getFnAttribute("target-cpu");
+  Attribute FSAttr = F.getFnAttribute("target-features");
+  std::string CPU =
+      CPUAttr.isValid() ? CPUAttr.getValueAsString().str() : TargetCPU;
+  std::string FS =
+      FSAttr.isValid() ? FSAttr.getValueAsString().str() : TargetFS;
+
+  std::string Key = CPU;
+  Key.push_back('\0');
+  Key += FS;
+  auto &I = SubtargetMap[Key];
+  if (!I)
+    I = std::make_unique<AlphaSubtarget>(TargetTriple, CPU, FS, *this);
+  return I.get();
+}
 
 namespace {
 class AlphaPassConfig : public TargetPassConfig {
@@ -89,7 +106,6 @@ public:
 
   void addPreEmitPass() override {
     addPass(createAlphaLLRPPass(getAlphaTargetMachine()));
-    addPass(createAlphaBranchSelectionPass());
   }
 };
 } // end anonymous namespace

@@ -1,9 +1,8 @@
 //===- AlphaSubtarget.cpp - Alpha Subtarget Information ---------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -23,19 +22,19 @@
 using namespace llvm;
 
 AlphaSubtarget::AlphaSubtarget(const Triple &TT, StringRef CPU,
-                               StringRef FS, AlphaTargetMachine &TM)
-  : AlphaGenSubtargetInfo(TT, CPU, /*TuneCPU=*/CPU, FS), HasCT(false),
-    IsTASO(false),
-    InstrInfo(*this), FrameLowering(*this), TLInfo(TM, *this), TSInfo() {
+                               StringRef FS, const AlphaTargetMachine &TM)
+    : AlphaGenSubtargetInfo(TT, CPU, /*TuneCPU=*/CPU, FS), HasCT(false),
+      IsTASO(false), InstrInfo(initializeSubtargetDependencies(CPU, FS)),
+      FrameLowering(*this), TLInfo(TM, *this), TSInfo() {}
+
+AlphaSubtarget &
+AlphaSubtarget::initializeSubtargetDependencies(StringRef CPU, StringRef FS) {
   std::string CPUName = std::string(CPU);
   if (CPUName.empty())
     CPUName = "generic";
 
-  // Parse features string.
   ParseSubtargetFeatures(CPUName, CPUName, FS);
-
-  // Initialize scheduling itinerary for the specified CPU.
-  InstrItins = getInstrItineraryForCPU(CPUName);
+  return *this;
 }
 
 void AlphaSubtarget::initLibcallLoweringInfo(
