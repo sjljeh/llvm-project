@@ -135,10 +135,14 @@ AlphaTargetLowering::AlphaTargetLowering(const TargetMachine &TM,
   setOperationAction(ISD::FP_TO_UINT, MVT::i64, Expand);
   setOperationAction(ISD::FP_TO_SINT, MVT::i64, Custom);
 
-  if (!STI.hasCT()) {
-    setOperationAction(ISD::CTPOP    , MVT::i64  , Expand);
-    setOperationAction(ISD::CTTZ     , MVT::i64  , Expand);
-    setOperationAction(ISD::CTLZ     , MVT::i64  , Expand);
+  if (STI.hasCT()) {
+    setOperationAction(ISD::CTPOP, MVT::i64, Legal);
+    setOperationAction(ISD::CTTZ, MVT::i64, Legal);
+    setOperationAction(ISD::CTLZ, MVT::i64, Legal);
+  } else {
+    setOperationAction(ISD::CTPOP, MVT::i64, Expand);
+    setOperationAction(ISD::CTTZ, MVT::i64, Expand);
+    setOperationAction(ISD::CTLZ, MVT::i64, Expand);
   }
   setOperationAction(ISD::BSWAP    , MVT::i64, Expand);
   setOperationAction(ISD::ROTL     , MVT::i64, Expand);
