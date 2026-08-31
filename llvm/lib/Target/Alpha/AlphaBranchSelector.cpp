@@ -41,6 +41,7 @@ FunctionPass *llvm::createAlphaBranchSelectionPass() {
 }
 
 bool AlphaBSel::runOnMachineFunction(MachineFunction &Fn) {
+  bool Changed = false;
 
   for (MachineFunction::iterator MFI = Fn.begin(), E = Fn.end(); MFI != E;
        ++MFI) {
@@ -58,9 +59,10 @@ bool AlphaBSel::runOnMachineFunction(MachineFunction &Fn) {
         const TargetInstrInfo *TII = Fn.getSubtarget().getInstrInfo();
         MBBI->setDesc(TII->get(MBBI->getOperand(0).getImm()));
         MBBI->removeOperand(0);
+        Changed = true;
       }
     }
   }
   
-  return true;
+  return Changed;
 }
