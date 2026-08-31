@@ -299,6 +299,9 @@ def EXTWL    : OForm< 0x12, 0x16, "EXTWL $RA,$RB,$RC",
                       [(set GPRC:$RC, (and (srl GPRC:$RA, (shl GPRC:$RB, 3)), 65535))], s_ishf>;
 def EXTLL    : OForm< 0x12, 0x26, "EXTLL $RA,$RB,$RC", 
                       [(set GPRC:$RC, (and (srl GPRC:$RA, (shl GPRC:$RB, 3)), 4294967295))], s_ishf>;
+def EXTBLi   : OFormL<0x12, 0x06, "EXTBL $RA,$L,$RC", [], s_ishf>;
+def EXTWLi   : OFormL<0x12, 0x16, "EXTWL $RA,$L,$RC", [], s_ishf>;
+def EXTLLi   : OFormL<0x12, 0x26, "EXTLL $RA,$L,$RC", [], s_ishf>;
 def SEXTB    : OForm2<0x1C, 0x00, "sextb $RB,$RC", 
                       [(set GPRC:$RC, (sext_inreg GPRC:$RB, i8))], s_ishf>;
 def SEXTW    : OForm2<0x1C, 0x01, "sextw $RB,$RC", 
@@ -458,6 +461,7 @@ def JSR_COROUTINE : MbrForm< 0x1A, 0x03, (ins GPRC:$RD, GPRC:$RS, s14imm:$DISP),
 let OutOperandList = (outs GPRC:$RA), InOperandList = (ins s64imm:$DISP, GPRC:$RB) in {
 def LDQ   : MForm<0x29, 1, "ldq $RA,$DISP($RB)",
                  [(set GPRC:$RA, (load (add GPRC:$RB, immSExt16:$DISP)))], s_ild>;
+def LDQ_U : MForm<0x0B, 1, "ldq_u $RA,$DISP($RB)", [], s_ild>;
 def LDQr  : MForm<0x29, 1, "ldq $RA,$DISP($RB)\t\t!gprellow",
                  [(set GPRC:$RA, (load (Alpha_gprello tglobaladdr:$DISP, GPRC:$RB)))], s_ild>;
 def LDL   : MForm<0x28, 1, "ldl $RA,$DISP($RB)",

@@ -272,6 +272,15 @@ uint32_t AlphaMCCodeEmitter::getBinaryCodeForInstr(
   case Alpha::SRLi:
   case Alpha::SRLr:
     return EncodeOperate(0x12, 0x34);
+  case Alpha::EXTBL:
+  case Alpha::EXTBLi:
+    return EncodeOperate(0x12, 0x06);
+  case Alpha::EXTWL:
+  case Alpha::EXTWLi:
+    return EncodeOperate(0x12, 0x16);
+  case Alpha::EXTLL:
+  case Alpha::EXTLLi:
+    return EncodeOperate(0x12, 0x26);
   case Alpha::S4ADDLr:
   case Alpha::S4ADDLi:
     return EncodeOperate(0x10, 0x02);
@@ -410,6 +419,8 @@ uint32_t AlphaMCCodeEmitter::getBinaryCodeForInstr(
     return EncodeMemFixup(0x28, Alpha::fixup_Alpha_REFLO);
   case Alpha::LDQ:
     return EncodeMem(0x29);
+  case Alpha::LDQ_U:
+    return EncodeMem(0x0b);
   case Alpha::LDQr:
     return EncodeMemFixup(0x29, Alpha::fixup_Alpha_REFLO);
   case Alpha::LDQl:
