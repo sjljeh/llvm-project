@@ -402,6 +402,10 @@ public:
   /// Whether single '<' and '>' tokens are shift operators in expressions.
   virtual bool useSingleAngleBracketShiftOperators() const { return false; }
 
+  /// Whether .align uses a base-two exponent, accepts no fill operands, changes
+  /// only the location counter, and leaves external section alignment alone.
+  virtual bool usePASMAlignDirective() const { return false; }
+
   // Parse an expression in a data directive, possibly with a relocation
   // specifier.
   virtual bool parseDataExpr(const MCExpr *&Res) {
@@ -414,6 +418,12 @@ public:
   /// parser.
   virtual ParseStatus tryParseDataDirectiveOperand(StringRef Directive,
                                                    unsigned Size) {
+    return ParseStatus::NoMatch;
+  }
+
+  /// Try to emit a parsed value using target-specific data byte order.
+  virtual ParseStatus tryEmitDataDirectiveValue(const MCExpr *Value,
+                                                unsigned Size, SMLoc Loc) {
     return ParseStatus::NoMatch;
   }
 

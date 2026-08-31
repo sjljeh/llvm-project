@@ -580,7 +580,8 @@ private:
   bool parseDirectiveSet(StringRef IDVal, AssignmentKind Kind);
   bool parseDirectiveOrg(); // ".org"
   // ".align{,32}", ".p2align{,w,l}"
-  bool parseDirectiveAlign(bool IsPow2, uint8_t ValueSize);
+  bool parseDirectiveAlign(bool IsPow2, uint8_t ValueSize,
+                           bool IsAlignDirective);
   bool parseDirectivePrefAlign();
 
   // ".file", ".line", ".loc", ".loc_label", ".stabs"
@@ -2049,24 +2050,32 @@ bool AsmParser::parseStatement(ParseStatementInfo &Info,
       return parseDirectiveRealValue(IDVal, APFloat::IEEEdouble());
     case DK_ALIGN: {
       bool IsPow2 = !getContext().getAsmInfo().getAlignmentIsInBytes();
-      return parseDirectiveAlign(IsPow2, /*ExprSize=*/1);
+      return parseDirectiveAlign(IsPow2, /*ExprSize=*/1,
+                                 /*IsAlignDirective=*/true);
     }
     case DK_ALIGN32: {
       bool IsPow2 = !getContext().getAsmInfo().getAlignmentIsInBytes();
-      return parseDirectiveAlign(IsPow2, /*ExprSize=*/4);
+      return parseDirectiveAlign(IsPow2, /*ExprSize=*/4,
+                                 /*IsAlignDirective=*/false);
     }
     case DK_BALIGN:
-      return parseDirectiveAlign(/*IsPow2=*/false, /*ExprSize=*/1);
+      return parseDirectiveAlign(/*IsPow2=*/false, /*ExprSize=*/1,
+                                 /*IsAlignDirective=*/false);
     case DK_BALIGNW:
-      return parseDirectiveAlign(/*IsPow2=*/false, /*ExprSize=*/2);
+      return parseDirectiveAlign(/*IsPow2=*/false, /*ExprSize=*/2,
+                                 /*IsAlignDirective=*/false);
     case DK_BALIGNL:
-      return parseDirectiveAlign(/*IsPow2=*/false, /*ExprSize=*/4);
+      return parseDirectiveAlign(/*IsPow2=*/false, /*ExprSize=*/4,
+                                 /*IsAlignDirective=*/false);
     case DK_P2ALIGN:
-      return parseDirectiveAlign(/*IsPow2=*/true, /*ExprSize=*/1);
+      return parseDirectiveAlign(/*IsPow2=*/true, /*ExprSize=*/1,
+                                 /*IsAlignDirective=*/false);
     case DK_P2ALIGNW:
-      return parseDirectiveAlign(/*IsPow2=*/true, /*ExprSize=*/2);
+      return parseDirectiveAlign(/*IsPow2=*/true, /*ExprSize=*/2,
+                                 /*IsAlignDirective=*/false);
     case DK_P2ALIGNL:
-      return parseDirectiveAlign(/*IsPow2=*/true, /*ExprSize=*/4);
+      return parseDirectiveAlign(/*IsPow2=*/true, /*ExprSize=*/4,
+                                 /*IsAlignDirective=*/false);
     case DK_PREFALIGN:
       return parseDirectivePrefAlign();
     case DK_ORG:
@@ -3261,6 +3270,12 @@ bool AsmParser::parseDirectiveValue(StringRef IDVal, unsigned Size) {
     if (Result.isFailure() || getTargetParser().parseDataExpr(Value))
       return true;
 
+    Result = getTargetParser().tryEmitDataDirectiveValue(Value, Size, ExprLoc);
+    if (Result.isSuccess())
+      return false;
+    if (Result.isFailure())
+      return true;
+
     // Special case constant expressions to match code generator.
     if (const MCConstantExpr *MCE = dyn_cast<MCConstantExpr>(Value)) {
       assert(Size <= 8 && "Invalid size");
@@ -3470,7 +3485,8 @@ bool AsmParser::parseDirectiveOrg() {
 
 /// parseDirectiveAlign
 ///  ::= {.align, ...} expression [ , expression [ , expression ]]
-bool AsmParser::parseDirectiveAlign(bool IsPow2, uint8_t ValueSize) {
+bool AsmParser::parseDirectiveAlign(bool IsPow2, uint8_t ValueSize,
+                                    bool IsAlignDirective) {
   SMLoc AlignmentLoc = getLexer().getLoc();
   int64_t Alignment;
   SMLoc MaxBytesLoc;
@@ -3478,10 +3494,14 @@ bool AsmParser::parseDirectiveAlign(bool IsPow2, uint8_t ValueSize) {
   int64_t FillExpr = 0;
   int64_t MaxBytesToFill = 0;
   SMLoc FillExprLoc;
+  bool IsPASMAlign =
+      IsAlignDirective && getTargetParser().usePASMAlignDirective();
 
   auto parseAlign = [&]() -> bool {
     if (parseAbsoluteExpression(Alignment))
       return true;
+    if (IsPASMAlign)
+      return parseEOL();
     if (parseOptionalToken(AsmToken::Comma)) {
       // The fill expression can be omitted while specifying a maximum number of
       // alignment bytes, e.g:
@@ -3513,6 +3533,12 @@ bool AsmParser::parseDirectiveAlign(bool IsPow2, uint8_t ValueSize) {
   bool ReturnVal = false;
 
   // Compute alignment in bytes.
+  int64_t AlignmentExponent = Alignment;
+  if (IsPASMAlign && (Alignment < 0 || Alignment > 31)) {
+    ReturnVal |=
+        Error(AlignmentLoc, "expected alignment exponent between 0 and 31");
+    Alignment = std::clamp<int64_t>(Alignment, 0, 31);
+  }
   if (IsPow2) {
     // FIXME: Diagnose overflow.
     if (Alignment >= 32) {
@@ -3564,7 +3590,13 @@ bool AsmParser::parseDirectiveAlign(bool IsPow2, uint8_t ValueSize) {
     return ReturnVal;
   }
 
-  const MCSection *Section = getStreamer().getCurrentSectionOnly();
+  if (IsPASMAlign && !getStreamer().getAssemblerPtr()) {
+    getStreamer().emitRawText(
+        (Twine("\t.align\t") + Twine(AlignmentExponent)).str());
+    return ReturnVal;
+  }
+
+  MCSection *Section = getStreamer().getCurrentSectionOnly();
   assert(Section && "must have section to emit alignment");
 
   if (HasFillExpr && FillExpr != 0 && Section->isBssSection()) {
@@ -3574,9 +3606,11 @@ bool AsmParser::parseDirectiveAlign(bool IsPow2, uint8_t ValueSize) {
     FillExpr = 0;
   }
 
+  Align SectionAlignment = Section->getAlign();
+
   // Check whether we should use optimal code alignment for this .align
   // directive.
-  if (MAI.useCodeAlign(*Section) && !HasFillExpr) {
+  if (!IsPASMAlign && MAI.useCodeAlign(*Section) && !HasFillExpr) {
     getStreamer().emitCodeAlignment(Align(Alignment),
                                     getTargetParser().getSTI(), MaxBytesToFill);
   } else {
@@ -3584,6 +3618,8 @@ bool AsmParser::parseDirectiveAlign(bool IsPow2, uint8_t ValueSize) {
     getStreamer().emitValueToAlignment(Align(Alignment), FillExpr, ValueSize,
                                        MaxBytesToFill);
   }
+  if (IsPASMAlign)
+    Section->setAlignment(SectionAlignment);
 
   return ReturnVal;
 }

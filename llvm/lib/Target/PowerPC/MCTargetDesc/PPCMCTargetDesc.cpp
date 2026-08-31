@@ -15,6 +15,7 @@
 #include "MCTargetDesc/PPCMCAsmInfo.h"
 #include "PPCELFStreamer.h"
 #include "PPCMCAsmInfo.h"
+#include "PPCMCCodeEmitter.h"
 #include "PPCTargetStreamer.h"
 #include "PPCXCOFFStreamer.h"
 #include "TargetInfo/PowerPCTargetInfo.h"
@@ -188,6 +189,12 @@ PPCTargetStreamer::PPCTargetStreamer(MCStreamer &S) : MCTargetStreamer(S) {}
 // Pin the vtable to this file.
 PPCTargetStreamer::~PPCTargetStreamer() = default;
 
+void PPCTargetStreamer::emitDirectiveEndian(bool IsLittleEndian) {
+  if (MCAssembler *Assembler = Streamer.getAssemblerPtr())
+    static_cast<PPCMCCodeEmitter &>(Assembler->getEmitter())
+        .setIsLittleEndian(IsLittleEndian);
+}
+
 static MCInstrInfo *createPPCMCInstrInfo() {
   MCInstrInfo *X = new MCInstrInfo();
   InitPPCMCInstrInfo(X);
@@ -301,6 +308,10 @@ public:
     OS << ", ";
     MAI.printExpr(OS, *LocalOffset);
     OS << '\n';
+  }
+
+  void emitDirectiveEndian(bool IsLittleEndian) override {
+    OS << (IsLittleEndian ? "\t.little_endian\n" : "\t.big_endian\n");
   }
 };
 

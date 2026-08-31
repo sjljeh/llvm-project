@@ -11,6 +11,7 @@
 #include "MCTargetDesc/PPCTargetStreamer.h"
 #include "PPCInstrInfo.h"
 #include "TargetInfo/PowerPCTargetInfo.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/BinaryFormat/COFF.h"
 #include "llvm/MC/MCContext.h"
@@ -22,6 +23,7 @@
 #include "llvm/MC/MCParser/MCParsedAsmOperand.h"
 #include "llvm/MC/MCParser/MCTargetAsmParser.h"
 #include "llvm/MC/MCRegisterInfo.h"
+#include "llvm/MC/MCSection.h"
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/MCSymbolELF.h"
@@ -105,6 +107,7 @@ struct PPCOperand;
 class PPCAsmParser : public MCTargetAsmParser {
   const bool IsPPC64;
   const bool IsPPCWinCOFF;
+  bool PASMIsLittleEndian = true;
 
   void Warning(SMLoc L, const Twine &Msg) { getParser().Warning(L, Msg); }
 
@@ -122,12 +125,15 @@ class PPCAsmParser : public MCTargetAsmParser {
   bool parseExpression(const MCExpr *&EVal);
   ParseStatus tryParseDataDirectiveOperand(StringRef Directive,
                                            unsigned Size) override;
+  ParseStatus tryEmitDataDirectiveValue(const MCExpr *Value, unsigned Size,
+                                        SMLoc Loc) override;
 
   bool parseOperand(OperandVector &Operands);
 
   bool parseDirectiveWord(unsigned Size, AsmToken ID);
   bool parseDirectiveFunction(SMLoc L);
   bool parseDirectiveZnop(SMLoc L);
+  bool parseDirectiveEndian(StringRef Directive, SMLoc L);
   bool parseDirectiveTC(unsigned Size, AsmToken ID);
   bool parseDirectiveMachine(SMLoc L);
   bool parseDirectiveAbiVersion(SMLoc L);
@@ -154,7 +160,8 @@ public:
   PPCAsmParser(const MCSubtargetInfo &STI, MCAsmParser &,
                const MCInstrInfo &MII)
       : MCTargetAsmParser(STI, MII), IsPPC64(STI.getTargetTriple().isPPC64()),
-        IsPPCWinCOFF(STI.getTargetTriple().isOSBinFormatCOFF()) {
+        IsPPCWinCOFF(STI.getTargetTriple().getArch() == Triple::ppcle &&
+                     STI.getTargetTriple().isOSBinFormatCOFF()) {
     // Initialize the set of available features.
     setAvailableFeatures(ComputeAvailableFeatures(STI.getFeatureBits()));
   }
@@ -162,6 +169,8 @@ public:
   bool useSingleAngleBracketShiftOperators() const override {
     return IsPPCWinCOFF;
   }
+
+  bool usePASMAlignDirective() const override { return IsPPCWinCOFF; }
 
   bool parseInstruction(ParseInstructionInfo &Info, StringRef Name,
                         SMLoc NameLoc, OperandVector &Operands) override;
@@ -1319,6 +1328,12 @@ bool PPCAsmParser::matchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
     // Post-process instructions (typically extended mnemonics)
     processInstruction(Inst, Operands);
     Inst.setLoc(IDLoc);
+    if (IsPPCWinCOFF && Out.getAssemblerPtr()) {
+      MCSection *Section = Out.getCurrentSectionOnly();
+      Align SectionAlignment = Section->getAlign();
+      Out.emitValueToAlignment(Align(4));
+      Section->setAlignment(SectionAlignment);
+    }
     Out.emitInstruction(Inst, getSTI());
     return false;
   case Match_MissingFeature:
@@ -1778,6 +1793,9 @@ bool PPCAsmParser::ParseDirective(AsmToken DirectiveID) {
     parseDirectiveFunction(DirectiveID.getLoc());
   else if (IsPPCWinCOFF && IDVal == ".znop")
     parseDirectiveZnop(DirectiveID.getLoc());
+  else if (IsPPCWinCOFF &&
+           (IDVal == ".big_endian" || IDVal == ".little_endian"))
+    parseDirectiveEndian(IDVal, DirectiveID.getLoc());
   else if (IDVal == ".llong")
     parseDirectiveWord(8, DirectiveID);
   else if (IDVal == ".tc")
@@ -1847,9 +1865,19 @@ bool PPCAsmParser::parseDirectiveWord(unsigned Size, AsmToken ID) {
       if (!isUIntN(8 * Size, IntValue) && !isIntN(8 * Size, IntValue))
         return Error(ExprLoc, "literal value out of range for '" +
                                   ID.getIdentifier() + "' directive");
-      getStreamer().emitIntValue(IntValue, Size);
-    } else
+      if (PASMIsLittleEndian) {
+        getStreamer().emitIntValue(IntValue, Size);
+      } else {
+        SmallString<8> Bytes;
+        for (unsigned I = Size; I != 0; --I)
+          Bytes.push_back(static_cast<char>(IntValue >> (8 * (I - 1))));
+        getStreamer().emitBytes(Bytes);
+      }
+    } else {
+      if (!PASMIsLittleEndian && getStreamer().getAssemblerPtr())
+        Value = MCSpecifierExpr::create(Value, PPC::S_PASM_BE, getContext());
       getStreamer().emitValue(Value, Size, ExprLoc);
+    }
     return false;
   };
 
@@ -1868,6 +1896,30 @@ ParseStatus PPCAsmParser::tryParseDataDirectiveOperand(StringRef Directive,
   if (getParser().parseEscapedString(Data))
     return ParseStatus::Failure;
   getStreamer().emitBytes(Data);
+  return ParseStatus::Success;
+}
+
+ParseStatus PPCAsmParser::tryEmitDataDirectiveValue(const MCExpr *Value,
+                                                    unsigned Size, SMLoc Loc) {
+  if (!IsPPCWinCOFF || PASMIsLittleEndian)
+    return ParseStatus::NoMatch;
+
+  if (const auto *MCE = dyn_cast<MCConstantExpr>(Value)) {
+    assert(Size <= 8 && "Invalid size");
+    uint64_t IntValue = MCE->getValue();
+    if (!isUIntN(8 * Size, IntValue) && !isIntN(8 * Size, IntValue)) {
+      Error(Loc, "out of range literal value");
+      return ParseStatus::Failure;
+    }
+    SmallString<8> Bytes;
+    for (unsigned I = Size; I != 0; --I)
+      Bytes.push_back(static_cast<char>(IntValue >> (8 * (I - 1))));
+    getStreamer().emitBytes(Bytes);
+  } else {
+    if (getStreamer().getAssemblerPtr())
+      Value = MCSpecifierExpr::create(Value, PPC::S_PASM_BE, getContext());
+    getStreamer().emitValue(Value, Size, Loc);
+  }
   return ParseStatus::Success;
 }
 
@@ -1902,6 +1954,18 @@ bool PPCAsmParser::parseDirectiveZnop(SMLoc L) {
   const MCExpr *Value = MCBinaryExpr::createAdd(
       IfGlue, MCConstantExpr::create(0x60000000, Ctx), Ctx);
   getStreamer().emitValue(Value, 4, L);
+  return false;
+}
+
+bool PPCAsmParser::parseDirectiveEndian(StringRef Directive, SMLoc) {
+  if (parseToken(AsmToken::EndOfStatement))
+    return addErrorSuffix(" in '" + Directive + "' directive");
+
+  PASMIsLittleEndian = Directive == ".little_endian";
+  auto *TStreamer = static_cast<PPCTargetStreamer *>(
+      getParser().getStreamer().getTargetStreamer());
+  if (TStreamer)
+    TStreamer->emitDirectiveEndian(PASMIsLittleEndian);
   return false;
 }
 
