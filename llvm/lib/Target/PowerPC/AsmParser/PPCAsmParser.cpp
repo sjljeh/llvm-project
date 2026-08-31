@@ -117,6 +117,7 @@ class PPCAsmParser : public MCTargetAsmParser {
 
   const MCExpr *extractSpecifier(const MCExpr *E,
                                  PPCMCExpr::Specifier &Variant);
+  bool parsePrimaryExpr(const MCExpr *&Res, SMLoc &EndLoc) override;
   bool parseExpression(const MCExpr *&EVal);
   ParseStatus tryParseDataDirectiveOperand(StringRef Directive,
                                            unsigned Size) override;
@@ -1463,6 +1464,22 @@ const MCExpr *PPCAsmParser::extractSpecifier(const MCExpr *E,
   }
 
   return E;
+}
+
+bool PPCAsmParser::parsePrimaryExpr(const MCExpr *&Res, SMLoc &EndLoc) {
+  if (IsPPCWinCOFF && getLexer().is(AsmToken::Identifier)) {
+    StringRef Name = getParser().getTok().getIdentifier();
+    unsigned CRField;
+    if (Name.starts_with_insensitive("cr.") &&
+        !Name.drop_front(3).getAsInteger(10, CRField) && CRField < 8) {
+      Res = MCConstantExpr::create(CRField, getContext());
+      getParser().Lex();
+      EndLoc = SMLoc::getFromPointer(getParser().getTok().getLoc().getPointer() -
+                                     1);
+      return false;
+    }
+  }
+  return getParser().parsePrimaryExpr(Res, EndLoc, nullptr);
 }
 
 /// This differs from the default "parseExpression" in that it handles
