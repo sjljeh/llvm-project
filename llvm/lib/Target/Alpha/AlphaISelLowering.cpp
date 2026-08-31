@@ -213,8 +213,11 @@ AlphaTargetLowering::AlphaTargetLowering(const TargetMachine &TM,
 
   setStackPointerRegisterToSaveRestore(Alpha::R30);
 
-  // AlphaLLRP tracks 16-byte fetch groups when inserting branch padding.
+  // Alpha fetches and slots instructions in naturally aligned 16-byte groups.
+  // Keep loop headers and function entries on a fetch boundary.
   setMinFunctionAlignment(Align(16));
+  setPrefFunctionAlignment(Align(16));
+  setPrefLoopAlignment(Align(16));
 
   computeRegisterProperties(STI.getRegisterInfo());
 }

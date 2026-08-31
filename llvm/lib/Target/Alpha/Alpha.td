@@ -57,14 +57,14 @@ def AlphaInstrInfo : InstrInfo;
 // Alpha Processor Definitions
 //===----------------------------------------------------------------------===//
 
-def : Processor<"generic", Alpha21264Itineraries, []>;
-def : Processor<"ev4"    , Alpha21264Itineraries, []>;
-def : Processor<"ev5"    , Alpha21264Itineraries, []>;
-def : Processor<"ev56"   , Alpha21264Itineraries, []>;
-def : Processor<"pca56"  , Alpha21264Itineraries, []>;
-def : Processor<"ev6"    , Alpha21264Itineraries, []>;
-def : Processor<"ev7"    , Alpha21264Itineraries, [FeatureCIX]>;
-def : Processor<"ev67"   , Alpha21264Itineraries, [FeatureCIX]>;
+def : ProcessorModel<"generic", Alpha21264Model, []>;
+def : ProcessorModel<"ev4", Alpha21064Model, []>;
+def : ProcessorModel<"ev5", Alpha21164Model, []>;
+def : ProcessorModel<"ev56", Alpha21164Model, []>;
+def : ProcessorModel<"pca56", Alpha21164Model, []>;
+def : ProcessorModel<"ev6", Alpha21264Model, []>;
+def : ProcessorModel<"ev7", Alpha21364Model, [FeatureCIX]>;
+def : ProcessorModel<"ev67", Alpha21264Model, [FeatureCIX]>;
 
 //===----------------------------------------------------------------------===//
 // The Alpha Target

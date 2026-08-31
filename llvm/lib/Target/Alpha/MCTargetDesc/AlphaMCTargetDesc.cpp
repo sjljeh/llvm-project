@@ -16,6 +16,7 @@
 #include "AlphaMCAsmInfo.h"
 #include "TargetInfo/AlphaTargetInfo.h"
 #include "llvm/DebugInfo/CodeView/CodeView.h"
+#include "llvm/MC/MCInstrAnalysis.h"
 #include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCSubtargetInfo.h"
@@ -45,6 +46,11 @@ static MCInstPrinter *createAlphaMCInstPrinter(const Triple &TT,
                                                const MCInstrInfo &MII,
                                                const MCRegisterInfo &MRI) {
   return new AlphaInstPrinter(MAI, MII, MRI);
+}
+
+static MCInstrAnalysis *
+createAlphaMCInstrAnalysis(const MCInstrInfo *Info) {
+  return new MCInstrAnalysis(Info);
 }
 
 void llvm::initLLVMToCVRegMapping(MCRegisterInfo *MRI) {
@@ -139,6 +145,11 @@ extern "C" void LLVMInitializeAlphaTargetMC() {
   // Register the GNU-style MC instruction printer.
   TargetRegistry::RegisterMCInstPrinter(getTheAlphaTarget(),
                                         createAlphaMCInstPrinter);
+
+  // Register the default instruction analysis for MC clients such as
+  // llvm-mca and object disassembly helpers.
+  TargetRegistry::RegisterMCInstrAnalysis(getTheAlphaTarget(),
+                                          createAlphaMCInstrAnalysis);
 
   // Register the asm backend.
   TargetRegistry::RegisterMCAsmBackend(getTheAlphaTarget(),

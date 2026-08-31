@@ -32,14 +32,8 @@ namespace {
                    cl::desc("Align all blocks"));
 
   struct AlphaLLRPPass : public MachineFunctionPass {
-    /// Target machine description which we query for reg. names, data
-    /// layout, etc.
-    ///
-    AlphaTargetMachine &TM;
-
     static char ID;
-    AlphaLLRPPass(AlphaTargetMachine &tm) 
-      : MachineFunctionPass(ID), TM(tm) { }
+    AlphaLLRPPass() : MachineFunctionPass(ID) {}
 
     StringRef getPassName() const override {
       return "Alpha NOP inserter";
@@ -168,6 +162,6 @@ namespace {
   char AlphaLLRPPass::ID = 0;
 } // end of anonymous namespace
 
-FunctionPass *llvm::createAlphaLLRPPass(AlphaTargetMachine &tm) {
-  return new AlphaLLRPPass(tm);
+FunctionPass *llvm::createAlphaLLRPPass() {
+  return new AlphaLLRPPass();
 }
