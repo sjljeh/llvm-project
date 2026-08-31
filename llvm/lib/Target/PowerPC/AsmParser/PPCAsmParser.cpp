@@ -127,6 +127,7 @@ class PPCAsmParser : public MCTargetAsmParser {
 
   bool parseDirectiveWord(unsigned Size, AsmToken ID);
   bool parseDirectiveFunction(SMLoc L);
+  bool parseDirectiveZnop(SMLoc L);
   bool parseDirectiveTC(unsigned Size, AsmToken ID);
   bool parseDirectiveMachine(SMLoc L);
   bool parseDirectiveAbiVersion(SMLoc L);
@@ -1764,6 +1765,8 @@ bool PPCAsmParser::ParseDirective(AsmToken DirectiveID) {
     parseDirectiveWord(4, DirectiveID);
   else if (IsPPCWinCOFF && IDVal == ".function")
     parseDirectiveFunction(DirectiveID.getLoc());
+  else if (IsPPCWinCOFF && IDVal == ".znop")
+    parseDirectiveZnop(DirectiveID.getLoc());
   else if (IDVal == ".llong")
     parseDirectiveWord(8, DirectiveID);
   else if (IDVal == ".tc")
@@ -1870,6 +1873,24 @@ bool PPCAsmParser::parseDirectiveFunction(SMLoc L) {
   Streamer.emitCOFFSymbolType(COFF::IMAGE_SYM_DTYPE_FUNCTION
                               << COFF::SCT_COMPLEX_TYPE_SHIFT);
   Streamer.endCOFFSymbolDef();
+  return false;
+}
+
+///  ::= .znop symbol
+bool PPCAsmParser::parseDirectiveZnop(SMLoc L) {
+  MCSymbol *Symbol;
+  if (getParser().parseSymbol(Symbol))
+    return Error(L, "expected identifier in '.znop' directive");
+  if (parseToken(AsmToken::EndOfStatement))
+    return addErrorSuffix(" in '.znop' directive");
+
+  MCContext &Ctx = getContext();
+  const MCExpr *SymbolRef = MCSymbolRefExpr::create(Symbol, Ctx);
+  const MCExpr *IfGlue =
+      MCSpecifierExpr::create(SymbolRef, PPC::S_IFGLUE, Ctx);
+  const MCExpr *Value = MCBinaryExpr::createAdd(
+      IfGlue, MCConstantExpr::create(0x60000000, Ctx), Ctx);
+  getStreamer().emitValue(Value, 4, L);
   return false;
 }
 
