@@ -423,7 +423,13 @@ void OutputSection::splitECChunks() {
 // of type relType at address P.
 bool Writer::isInRange(uint16_t relType, uint64_t s, uint64_t p, int margin,
                        MachineTypes machine) {
-  if (machine == ARMNT) {
+  if (machine == IMAGE_FILE_MACHINE_ALPHA) {
+    if (relType != IMAGE_REL_ALPHA_BRADDR)
+      return true;
+    int64_t diff = static_cast<int64_t>(s) - static_cast<int64_t>(p + 4);
+    diff += diff < 0 ? -margin : margin;
+    return isInt<23>(diff);
+  } else if (machine == ARMNT) {
     int64_t diff = AbsoluteDifference(s, p + 4) + margin;
     switch (relType) {
     case IMAGE_REL_ARM_BRANCH20T:
@@ -466,13 +472,16 @@ Writer::getThunk(DenseMap<std::pair<uint64_t, int64_t>, Defined *> &lastThunks,
   Defined *&lastThunk = lastThunks[{target->getRVA(), addend}];
   if (lastThunk) {
     uint64_t lastThunkRVA = lastThunk->getRVA();
-    if (machine == IMAGE_FILE_MACHINE_POWERPC)
+    if (machine == IMAGE_FILE_MACHINE_ALPHA ||
+        machine == IMAGE_FILE_MACHINE_POWERPC)
       lastThunkRVA = static_cast<uint32_t>(lastThunkRVA + addend);
     if (isInRange(type, lastThunkRVA, p, margin, machine))
       return {lastThunk, false};
   }
   Chunk *c;
-  if (machine == IMAGE_FILE_MACHINE_POWERPC) {
+  if (machine == IMAGE_FILE_MACHINE_ALPHA) {
+    c = make<RangeExtensionThunkAlpha>(ctx, target, addend);
+  } else if (machine == IMAGE_FILE_MACHINE_POWERPC) {
     c = make<RangeExtensionThunkPPC>(target, addend);
   } else {
     switch (getMachineArchType(machine)) {
@@ -486,11 +495,12 @@ Writer::getThunk(DenseMap<std::pair<uint64_t, int64_t>, Defined *> &lastThunks,
       llvm_unreachable("Unexpected architecture");
     }
   }
-  // A PPC input branch carries its source addend in the instruction. Bias the
-  // synthetic symbol by -A so relocating the branch reaches the thunk itself;
-  // the thunk then branches to the original S + A destination.
-  uint32_t symbolOffset =
-      machine == IMAGE_FILE_MACHINE_POWERPC ? uint32_t(-addend) : 0;
+  // Alpha and PPC input branches carry their source addend in the instruction.
+  // Bias the synthetic symbol by -A so relocating the branch reaches the thunk
+  // itself; the thunk then jumps to the original S + A destination.
+  bool hasEncodedAddend = machine == IMAGE_FILE_MACHINE_ALPHA ||
+                          machine == IMAGE_FILE_MACHINE_POWERPC;
+  uint32_t symbolOffset = hasEncodedAddend ? uint32_t(-addend) : 0;
   Defined *d = make<DefinedSynthetic>("range_extension_thunk", c, symbolOffset);
   lastThunk = d;
   return {d, true};
@@ -555,8 +565,11 @@ bool Writer::createThunks(OutputSection *os, int margin) {
         continue;
 
       int64_t addend = 0;
-      if (machine == IMAGE_FILE_MACHINE_POWERPC &&
-          (rel.Type & IMAGE_REL_PPC_TYPEMASK) == IMAGE_REL_PPC_REL24)
+      if (machine == IMAGE_FILE_MACHINE_ALPHA &&
+          rel.Type == IMAGE_REL_ALPHA_BRADDR)
+        addend = sc->getAlphaBranchAddend(rel);
+      else if (machine == IMAGE_FILE_MACHINE_POWERPC &&
+               (rel.Type & IMAGE_REL_PPC_TYPEMASK) == IMAGE_REL_PPC_REL24)
         addend = sc->getPPCBranchAddend(rel);
       uint64_t s = static_cast<uint32_t>(sym->getRVA() + addend);
 
@@ -687,8 +700,11 @@ bool Writer::verifyRanges(const std::vector<Chunk *> chunks) {
 
       uint64_t p = sc->getRVA() + rel.VirtualAddress;
       int64_t addend = 0;
-      if (machine == IMAGE_FILE_MACHINE_POWERPC &&
-          (rel.Type & IMAGE_REL_PPC_TYPEMASK) == IMAGE_REL_PPC_REL24)
+      if (machine == IMAGE_FILE_MACHINE_ALPHA &&
+          rel.Type == IMAGE_REL_ALPHA_BRADDR)
+        addend = sc->getAlphaBranchAddend(rel);
+      else if (machine == IMAGE_FILE_MACHINE_POWERPC &&
+               (rel.Type & IMAGE_REL_PPC_TYPEMASK) == IMAGE_REL_PPC_REL24)
         addend = sc->getPPCBranchAddend(rel);
       uint64_t s = static_cast<uint32_t>(sym->getRVA() + addend);
 
@@ -702,7 +718,8 @@ bool Writer::verifyRanges(const std::vector<Chunk *> chunks) {
 // Assign addresses and add thunks if necessary.
 void Writer::finalizeAddresses() {
   assignAddresses();
-  if (ctx.config.machine != ARMNT && !isAnyArm64(ctx.config.machine) &&
+  if (ctx.config.machine != IMAGE_FILE_MACHINE_ALPHA &&
+      ctx.config.machine != ARMNT && !isAnyArm64(ctx.config.machine) &&
       ctx.config.machine != IMAGE_FILE_MACHINE_POWERPC)
     return;
 

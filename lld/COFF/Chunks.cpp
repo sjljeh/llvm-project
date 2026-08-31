@@ -126,12 +126,27 @@ static void applySecIdx(uint8_t *off, OutputSection *os,
 static void applyAlphaBranch(uint8_t *off, uint64_t s, uint64_t p) {
   uint32_t inst = read32le(off);
   int64_t addend = SignExtend64<21>(inst & 0x1fffff) * 4;
+  if ((int64_t(s) + addend) & 3) {
+    error("Alpha branch relocation target is not four-byte aligned");
+    return;
+  }
   int64_t disp = (int64_t(s) + addend - int64_t(p) - 4) >> 2;
   if (!isInt<21>(disp)) {
     error("overflow in Alpha branch relocation");
     return;
   }
   write32le(off, (inst & 0xffe00000) | (uint32_t(disp) & 0x1fffff));
+}
+
+int64_t SectionChunk::getAlphaBranchAddend(
+    const coff_relocation &rel) const {
+  assert(getMachine() == IMAGE_FILE_MACHINE_ALPHA);
+  assert(rel.Type == IMAGE_REL_ALPHA_BRADDR);
+  ArrayRef<uint8_t> contents = getContents();
+  assert(contents.size() >= sizeof(uint32_t) &&
+         rel.VirtualAddress <= contents.size() - sizeof(uint32_t));
+  uint32_t inst = read32le(contents.data() + rel.VirtualAddress);
+  return SignExtend64<21>(inst & 0x1fffff) * 4;
 }
 
 static int64_t getAlphaPairAddend(const SectionChunk *sec,
@@ -1410,6 +1425,36 @@ void RangeExtensionThunkARM64::writeTo(uint8_t *buf) const {
   memcpy(buf, arm64Thunk, sizeof(arm64Thunk));
   applyArm64Addr(buf + 0, target->getRVA(), rva, 12);
   applyArm64Imm(buf + 4, target->getRVA() & 0xfff, 0);
+}
+
+size_t RangeExtensionThunkAlpha::getSize() const { return 16; }
+
+static uint32_t getAlphaThunkDestination(const COFFLinkerContext &ctx,
+                                         Defined *target, int64_t addend) {
+  int64_t destinationRVA = int64_t(target->getRVA()) + addend;
+  uint64_t destination = ctx.config.imageBase + destinationRVA;
+  if (destinationRVA < 0 || !isUInt<32>(destination)) {
+    error("Alpha range-extension thunk target does not fit in 32 bits");
+    return 0;
+  }
+  if (destination & 3)
+    error("Alpha range-extension thunk target is not four-byte aligned");
+  return destination;
+}
+
+void RangeExtensionThunkAlpha::getBaserels(std::vector<Baserel> *res) {
+  uint32_t destination = getAlphaThunkDestination(ctx, target, addend);
+  res->emplace_back(rva, IMAGE_REL_BASED_HIGHADJ, destination & 0xffff);
+  res->emplace_back(rva + 4, IMAGE_REL_BASED_LOW);
+}
+
+void RangeExtensionThunkAlpha::writeTo(uint8_t *buf) const {
+  uint32_t destination = getAlphaThunkDestination(ctx, target, addend);
+  write32le(buf + 0,
+            0x279f0000 | (((destination + 0x8000) >> 16) & 0xffff));
+  write32le(buf + 4, 0x239c0000 | (destination & 0xffff));
+  write32le(buf + 8, 0x6bfc0000);
+  write32le(buf + 12, 0x00000000);
 }
 
 size_t RangeExtensionThunkPPC::getSize() const { return 32; }
