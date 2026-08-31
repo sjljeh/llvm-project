@@ -1695,14 +1695,11 @@ bool PPCAsmParser::parsePrimaryExpr(const MCExpr *&Res, SMLoc &EndLoc) {
   }
 
   if (IsPPCWinCOFF && getLexer().is(AsmToken::Identifier)) {
-    StringRef Name = getParser().getTok().getIdentifier();
-    unsigned CRField;
-    if (Name.starts_with_insensitive("cr.") &&
-        !Name.drop_front(3).getAsInteger(10, CRField) && CRField < 8) {
-      Res = MCConstantExpr::create(CRField, getContext());
-      getParser().Lex();
-      EndLoc = SMLoc::getFromPointer(getParser().getTok().getLoc().getPointer() -
-                                     1);
+    int64_t RegisterNumber;
+    if (matchRegisterName(RegisterNumber)) {
+      Res = MCConstantExpr::create(RegisterNumber, getContext());
+      EndLoc =
+          SMLoc::getFromPointer(getParser().getTok().getLoc().getPointer() - 1);
       return false;
     }
   }
@@ -1778,9 +1775,15 @@ bool PPCAsmParser::parseOperand(OperandVector &Operands) {
     return Error(S, "unknown operand");
   }
 
-  // Push the parsed operand into the list of operands
-  Operands.push_back(
-      PPCOperand::CreateFromMCExpr(EVal, S, E, isPPC64(), getContext()));
+  // PASM folds absolute .set symbols before matching operands. This permits
+  // aliases for GPR/FPR/CR operands and named SPR numbers such as HID0.
+  int64_t AbsoluteValue;
+  if (IsPPCWinCOFF && EVal->evaluateAsAbsolute(AbsoluteValue))
+    Operands.push_back(
+        PPCOperand::CreateImm(AbsoluteValue, S, E, isPPC64(), getContext()));
+  else
+    Operands.push_back(
+        PPCOperand::CreateFromMCExpr(EVal, S, E, isPPC64(), getContext()));
 
   // Check whether this is a TLS call expression
   const char TlsGetAddr[] = "__tls_get_addr";
@@ -1851,9 +1854,15 @@ bool PPCAsmParser::parseOperand(OperandVector &Operands) {
         return Error(S, "invalid register number");
       break;
     case AsmToken::Identifier:
-      if (IsPPCWinCOFF && matchRegisterName(IntVal))
+      if (!IsPPCWinCOFF)
+        return Error(S, "invalid memory operand");
+      if (matchRegisterName(IntVal))
         break;
-      return Error(S, "invalid memory operand");
+      const MCExpr *BaseExpr;
+      if (parseExpression(BaseExpr) || !BaseExpr->evaluateAsAbsolute(IntVal) ||
+          IntVal < 0 || IntVal > 31)
+        return Error(S, "invalid memory operand");
+      break;
     default:
       return Error(S, "invalid memory operand");
     }
