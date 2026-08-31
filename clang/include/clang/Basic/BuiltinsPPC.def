@@ -91,6 +91,10 @@
 #undef __builtin_vsx_xvmaddasp
 #endif
 
+// Microsoft PowerPC compatibility built-ins used by the NT headers.
+BUILTIN(__emit, "vIUi", "nh")
+BUILTIN(__builtin_get_gpr13, "v*", "nTh")
+
 // XL Compatibility built-ins
 BUILTIN(__builtin_ppc_popcntb, "ULiULi", "")
 BUILTIN(__builtin_ppc_poppar4, "iUi", "")
