@@ -1696,6 +1696,12 @@ static unsigned getGNUBinOpPrecedence(const MCAsmInfo &MAI,
 
 unsigned AsmParser::getBinOpPrecedence(AsmToken::TokenKind K,
                                        MCBinaryExpr::Opcode &Kind) {
+  if (getTargetParser().useSingleAngleBracketShiftOperators()) {
+    if (K == AsmToken::Less)
+      K = AsmToken::LessLess;
+    else if (K == AsmToken::Greater)
+      K = AsmToken::GreaterGreater;
+  }
   bool ShouldUseLogicalShr = MAI.shouldUseLogicalShr();
   return IsDarwin ? getDarwinBinOpPrecedence(K, Kind, ShouldUseLogicalShr)
                   : getGNUBinOpPrecedence(MAI, K, Kind, ShouldUseLogicalShr);

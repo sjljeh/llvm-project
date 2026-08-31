@@ -156,6 +156,10 @@ public:
     setAvailableFeatures(ComputeAvailableFeatures(STI.getFeatureBits()));
   }
 
+  bool useSingleAngleBracketShiftOperators() const override {
+    return IsPPCWinCOFF;
+  }
+
   bool parseInstruction(ParseInstructionInfo &Info, StringRef Name,
                         SMLoc NameLoc, OperandVector &Operands) override;
 
@@ -264,9 +268,13 @@ public:
   int64_t getImmS16Context() const {
     assert((Kind == Immediate || Kind == ContextImmediate) &&
            "Invalid access!");
-    if (Kind == Immediate)
-      return Imm.Val;
-    return static_cast<int16_t>(Imm.Val);
+    if (Kind == ContextImmediate)
+      return static_cast<int16_t>(Imm.Val);
+    // In 32-bit mode, an unsigned spelling of a negative 32-bit value has the
+    // same signed immediate interpretation. This also matches isDirectBr().
+    if (!IsPPC64 && isUInt<32>(Imm.Val))
+      return static_cast<int32_t>(Imm.Val);
+    return Imm.Val;
   }
   int64_t getImmU16Context() const {
     assert((Kind == Immediate || Kind == ContextImmediate) &&
