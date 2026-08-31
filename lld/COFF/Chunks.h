@@ -269,6 +269,7 @@ public:
   static bool classof(const Chunk *c) { return c->kind() <= SectionECKind; }
   size_t getSize() const { return header->SizeOfRawData; }
   ArrayRef<uint8_t> getContents() const;
+  int64_t getAlphaBranchAddend(const coff_relocation &rel) const;
   int64_t getPPCBranchAddend(const coff_relocation &rel) const;
   void writeTo(uint8_t *buf) const;
   MachineTypes getMachine() const;
@@ -701,6 +702,28 @@ public:
 
 private:
   MachineTypes machine;
+};
+
+// Microsoft LINK's 32-bit Alpha range-extension thunk. It loads the absolute
+// destination into the ABI scratch register at (R28) and tail-jumps through it.
+class RangeExtensionThunkAlpha : public NonSectionCodeChunk {
+public:
+  RangeExtensionThunkAlpha(COFFLinkerContext &ctx, Defined *target,
+                           int64_t addend)
+      : ctx(ctx), target(target), addend(addend) {
+    setAlignment(16);
+  }
+  size_t getSize() const override;
+  void getBaserels(std::vector<Baserel> *res) override;
+  void writeTo(uint8_t *buf) const override;
+  MachineTypes getMachine() const override {
+    return llvm::COFF::IMAGE_FILE_MACHINE_ALPHA;
+  }
+
+private:
+  COFFLinkerContext &ctx;
+  Defined *target;
+  int64_t addend;
 };
 
 // A position-independent PowerPC range extension thunk. It preserves the
