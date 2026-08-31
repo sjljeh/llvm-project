@@ -542,14 +542,16 @@ private:
 // A chunk for common symbols. Common chunks don't have actual data.
 class CommonChunk : public NonSectionChunk {
 public:
-  CommonChunk(const COFFSymbolRef sym);
+  CommonChunk(COFFLinkerContext &ctx, const COFFSymbolRef sym);
   size_t getSize() const override { return sym.getValue(); }
   uint32_t getOutputCharacteristics() const override;
-  StringRef getSectionName() const override { return ".bss"; }
+  StringRef getSectionName() const override;
+  bool isAlphaSmallData() const;
 
   bool live;
 
 private:
+  COFFLinkerContext &ctx;
   const COFFSymbolRef sym;
 };
 

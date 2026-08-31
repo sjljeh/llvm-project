@@ -176,6 +176,34 @@ void SectionChunk::applyRelAlpha(uint8_t *off, const coff_relocation &rel,
   case IMAGE_REL_ALPHA_REFQUAD:
     add64(off, s + imageBase);
     break;
+  case IMAGE_REL_ALPHA_GPREL32: {
+    COFFLinkerContext &ctx = file->symtab.ctx;
+    if (!ctx.alphaGlobalPointerRVA || s < ctx.alphaSmallDataStartRVA ||
+        s >= ctx.alphaSmallDataEndRVA) {
+      error("Alpha GP-relative relocation target is not in .sdata");
+      break;
+    }
+    add32(off, s - *ctx.alphaGlobalPointerRVA);
+    break;
+  }
+  case IMAGE_REL_ALPHA_LITERAL: {
+    COFFLinkerContext &ctx = file->symtab.ctx;
+    if (!ctx.alphaGlobalPointerRVA || s < ctx.alphaSmallDataStartRVA ||
+        s >= ctx.alphaSmallDataEndRVA) {
+      error("Alpha literal relocation target is not in .sdata");
+      break;
+    }
+    int64_t value = SignExtend64<16>(read16le(off)) + int64_t(s) -
+                    int64_t(*ctx.alphaGlobalPointerRVA);
+    if (!isInt<16>(value)) {
+      error("Alpha literal relocation out of range");
+      break;
+    }
+    write16le(off, value);
+    break;
+  }
+  case IMAGE_REL_ALPHA_LITUSE:
+    break;
   case IMAGE_REL_ALPHA_BRADDR:
     applyAlphaBranch(off, s, p);
     break;
@@ -1172,7 +1200,10 @@ static int getRuntimePseudoRelocSize(uint16_t type, Triple::ArchType arch) {
       return 64;
     case IMAGE_REL_ALPHA_REFLONG:
     case IMAGE_REL_ALPHA_REFLONGNB:
+    case IMAGE_REL_ALPHA_GPREL32:
       return 32;
+    case IMAGE_REL_ALPHA_LITERAL:
+      return 16;
     default:
       return 0;
     }
@@ -1329,7 +1360,8 @@ uint32_t SectionChunk::getSectionNumber() const {
   return s.getIndex() + 1;
 }
 
-CommonChunk::CommonChunk(const COFFSymbolRef s) : live(false), sym(s) {
+CommonChunk::CommonChunk(COFFLinkerContext &ctx, const COFFSymbolRef s)
+    : live(false), ctx(ctx), sym(s) {
   // The value of a common symbol is its size. Align all common symbols smaller
   // than 32 bytes naturally, i.e. round the size up to the next power of two.
   // This is what MSVC link.exe does.
@@ -1338,8 +1370,20 @@ CommonChunk::CommonChunk(const COFFSymbolRef s) : live(false), sym(s) {
 }
 
 uint32_t CommonChunk::getOutputCharacteristics() const {
+  if (isAlphaSmallData())
+    return IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ |
+           IMAGE_SCN_MEM_WRITE;
   return IMAGE_SCN_CNT_UNINITIALIZED_DATA | IMAGE_SCN_MEM_READ |
          IMAGE_SCN_MEM_WRITE;
+}
+
+StringRef CommonChunk::getSectionName() const {
+  return isAlphaSmallData() ? ".sdata" : ".bss";
+}
+
+bool CommonChunk::isAlphaSmallData() const {
+  return ctx.config.machine == IMAGE_FILE_MACHINE_ALPHA &&
+         ctx.config.alphaGpSize != 0 && sym.getValue() <= ctx.config.alphaGpSize;
 }
 
 void StringChunk::writeTo(uint8_t *buf) const {

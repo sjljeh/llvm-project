@@ -118,6 +118,13 @@ public:
 
   Configuration config;
 
+  // Final Alpha .sdata range and its quadword-aligned midpoint. Microsoft
+  // Alpha LITERAL/GPREL32 relocations and PE's GLOBAL_PTR directory use these
+  // RVAs. This remains unset for images without .sdata.
+  std::optional<uint32_t> alphaGlobalPointerRVA;
+  uint32_t alphaSmallDataStartRVA = 0;
+  uint32_t alphaSmallDataEndRVA = 0;
+
   DynamicRelocsChunk *dynamicRelocs = nullptr;
 };
 

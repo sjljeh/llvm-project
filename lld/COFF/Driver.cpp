@@ -652,6 +652,9 @@ void LinkerDriver::parseDirectives(InputFile *file) {
     case OPT_failifmismatch:
       checkFailIfMismatch(arg->getValue(), file);
       break;
+    case OPT_gpsize:
+      parseNumbers(arg->getValue(), &ctx.config.alphaGpSize);
+      break;
     case OPT_incl:
       file->symtab.addGCRoot(arg->getValue());
       break;
@@ -2001,6 +2004,10 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     if (!isPowerOf2_64(config->fileAlign))
       Err(ctx) << "/filealign: not a power of two: " << config->fileAlign;
   }
+
+  // Alpha uses /GPSIZE to place sufficiently small common symbols in .sdata.
+  if (auto *arg = args.getLastArg(OPT_gpsize))
+    parseNumbers(arg->getValue(), &config->alphaGpSize);
 
   // Handle /stack
   if (auto *arg = args.getLastArg(OPT_stack))

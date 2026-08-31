@@ -58,6 +58,7 @@ def export  : P<"export", "Export a function">;
 // No help text because /failifmismatch is not intended to be used by the user.
 def failifmismatch : P<"failifmismatch", "">;
 def filealign : P<"filealign", "Section alignment in the output file">;
+def gpsize : P<"gpsize", "Maximum Alpha common symbol size for .sdata">;
 def functionpadmin : F<"functionpadmin">;
 def functionpadmin_opt : P<"functionpadmin",
     "Prepares an image for hotpatching">;

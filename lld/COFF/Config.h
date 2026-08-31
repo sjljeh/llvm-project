@@ -311,6 +311,7 @@ struct Configuration {
   uint64_t align = 4096;
   uint64_t imageBase = -1;
   uint64_t fileAlign = 512;
+  uint64_t alphaGpSize = 0;
   uint64_t stackReserve = 1024 * 1024;
   uint64_t stackCommit = 4096;
   uint64_t heapReserve = 1024 * 1024;
