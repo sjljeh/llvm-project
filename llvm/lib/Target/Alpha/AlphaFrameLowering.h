@@ -21,13 +21,9 @@ namespace llvm {
   class AlphaSubtarget;
 
 class AlphaFrameLowering : public TargetFrameLowering {
-  const AlphaSubtarget &STI;
-  // FIXME: This should end in MachineFunctionInfo, not here!
-  mutable int curgpdist;
 public:
-  explicit AlphaFrameLowering(const AlphaSubtarget &sti)
-    : TargetFrameLowering(StackGrowsDown, Align(16), 0), STI(sti), curgpdist(0) {
-  }
+  explicit AlphaFrameLowering(const AlphaSubtarget &)
+      : TargetFrameLowering(StackGrowsDown, Align(16), 0) {}
 
   /// emitProlog/emitEpilog - These methods insert prolog and epilog code into
   /// the function.
