@@ -21,6 +21,9 @@ int alpha_try_catch() {
 // ASM-LABEL: "?alpha_try_catch@@YAHXZ":
 // ASM: .seh_proc "?alpha_try_catch@@YAHXZ"
 // ASM: .seh_handler __CxxFrameHandler, @unwind, @except
+// ASM: lda $30,-{{[0-9]+}}($30)
+// ASM-NEXT: stq $26,{{[0-9]+}}($30)
+// ASM-NEXT: .seh_endprologue
 // ASM: .seh_handlerdata
 // ASM: "$cppxdata$?alpha_try_catch@@YAHXZ":
 // ASM: .long 429065504
@@ -35,9 +38,9 @@ int alpha_try_catch() {
 // ASM: .seh_endproc
 
 // OBJ: Name: .xdata
-// OBJ: RawDataSize: 104
+// OBJ: RawDataSize: 0x68
 // OBJ: Name: .pdata
-// OBJ: RawDataSize: 40
+// OBJ: RawDataSize: 0x28
 // OBJ: IMAGE_REL_ALPHA_REFHI $ehgcr_0_3
 // OBJ-NEXT: IMAGE_REL_ALPHA_PAIR
 // OBJ-NEXT: IMAGE_REL_ALPHA_REFLO $ehgcr_0_3
