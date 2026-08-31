@@ -100,6 +100,18 @@ public:
     return TargetInfo::CharPtrBuiltinVaList;
   }
 
+  CallingConvCheckResult
+  checkCallingConvention(CallingConv CC) const override {
+    switch (CC) {
+    case CC_X86StdCall:
+    case CC_X86FastCall:
+    case CC_X86ThisCall:
+      return CCCR_Ignore;
+    default:
+      return Alpha32TargetInfo::checkCallingConvention(CC);
+    }
+  }
+
 };
 
 class LLVM_LIBRARY_VISIBILITY MicrosoftAlphaTargetInfo
@@ -139,6 +151,18 @@ public:
 
   BuiltinVaListKind getBuiltinVaListKind() const override {
     return TargetInfo::CharPtrBuiltinVaList;
+  }
+
+  CallingConvCheckResult
+  checkCallingConvention(CallingConv CC) const override {
+    switch (CC) {
+    case CC_X86StdCall:
+    case CC_X86FastCall:
+    case CC_X86ThisCall:
+      return CCCR_Ignore;
+    default:
+      return Alpha64TargetInfo::checkCallingConvention(CC);
+    }
   }
 
   void getTargetDefines(const LangOptions &Opts,
