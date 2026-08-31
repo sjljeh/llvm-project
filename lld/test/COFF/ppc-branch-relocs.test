@@ -1,0 +1,68 @@
+# RUN: yaml2obj %s -o %t.obj
+# RUN: llvm-readobj --hex-dump=.text %t.obj | FileCheck %s --check-prefix=INPUT
+# RUN: lld-link /machine:ppc /entry:entry /subsystem:native /nodefaultlib \
+# RUN:   /out:%t.exe %t.obj
+# RUN: llvm-readobj --hex-dump=.text %t.exe | FileCheck %s --check-prefix=LINKED
+
+# REL24 and REL14 use the Microsoft formula S - C + E, where C is the RVA of
+# the input section contribution and E is the signed encoded branch field.
+# The branches at offsets 8 and 16 have zero source addends; the branches at
+# offsets 12 and 20 have source addends of 8. The latter conditional branch
+# also proves that the static prediction bit is preserved.
+
+# INPUT:      Hex dump of section '.text':
+# INPUT-NEXT: 0x00000000 00000000 00000000 f9ffff4b fdffff4b
+# INPUT-NEXT: 0x00000010 f0ff8241 f4ffa241 2000804e
+
+# LINKED:      Hex dump of section '.text':
+# LINKED-NEXT: {{.*}} 00000000 00000000 11000048 15000048
+# LINKED-NEXT: {{.*}} 08008241 0c00a241 2000804e
+
+--- !COFF
+header:
+  Machine:         IMAGE_FILE_MACHINE_POWERPC
+  Characteristics: []
+sections:
+  - Name:            .text
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     0000000000000000F9FFFF4BFDFFFF4BF0FF8241F4FFA2412000804E
+    Relocations:
+      - VirtualAddress:  8
+        SymbolName:      target
+        Type:            6 # IMAGE_REL_PPC_REL24
+      - VirtualAddress:  12
+        SymbolName:      target
+        Type:            6 # IMAGE_REL_PPC_REL24
+      - VirtualAddress:  16
+        SymbolName:      target
+        Type:            7 # IMAGE_REL_PPC_REL14
+      - VirtualAddress:  20
+        SymbolName:      target
+        Type:            7 # IMAGE_REL_PPC_REL14
+symbols:
+  - Name:            .text
+    Value:           0
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_STATIC
+    SectionDefinition:
+      Length:          28
+      NumberOfRelocations: 4
+      NumberOfLinenumbers: 0
+      CheckSum:        0
+      Number:          1
+  - Name:            entry
+    Value:           8
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_FUNCTION
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+  - Name:            target
+    Value:           24
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_FUNCTION
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+...
