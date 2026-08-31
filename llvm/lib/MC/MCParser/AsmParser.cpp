@@ -3192,8 +3192,16 @@ bool AsmParser::parseDirectiveValue(StringRef IDVal, unsigned Size) {
   auto parseOp = [&]() -> bool {
     const MCExpr *Value;
     SMLoc ExprLoc = getLexer().getLoc();
-    if (checkForValidSection() || getTargetParser().parseDataExpr(Value))
+    if (checkForValidSection())
       return true;
+
+    ParseStatus Result =
+        getTargetParser().tryParseDataDirectiveOperand(IDVal, Size);
+    if (Result.isSuccess())
+      return false;
+    if (Result.isFailure() || getTargetParser().parseDataExpr(Value))
+      return true;
+
     // Special case constant expressions to match code generator.
     if (const MCConstantExpr *MCE = dyn_cast<MCConstantExpr>(Value)) {
       assert(Size <= 8 && "Invalid size");

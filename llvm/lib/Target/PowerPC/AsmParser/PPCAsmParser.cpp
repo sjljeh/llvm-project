@@ -118,6 +118,8 @@ class PPCAsmParser : public MCTargetAsmParser {
   const MCExpr *extractSpecifier(const MCExpr *E,
                                  PPCMCExpr::Specifier &Variant);
   bool parseExpression(const MCExpr *&EVal);
+  ParseStatus tryParseDataDirectiveOperand(StringRef Directive,
+                                           unsigned Size) override;
 
   bool parseOperand(OperandVector &Operands);
 
@@ -1729,6 +1731,45 @@ bool PPCAsmParser::ParseDirective(AsmToken DirectiveID) {
 ///  ::= .word [ expression (, expression)* ]
 bool PPCAsmParser::parseDirectiveWord(unsigned Size, AsmToken ID) {
   auto parseOp = [&]() -> bool {
+    if (IsPPCWinCOFF &&
+        (ID.getIdentifier() == ".ualong" ||
+         ID.getIdentifier() == ".uashort") &&
+        getLexer().is(AsmToken::LBrac)) {
+      SMLoc BracketLoc = getParser().getTok().getLoc();
+      getParser().Lex();
+
+      if (getLexer().isNot(AsmToken::Identifier))
+        return Error(getParser().getTok().getLoc(),
+                     "expected PASM relocation modifier");
+
+      StringRef Modifier = getParser().getTok().getIdentifier();
+      bool IsSecOff = Modifier.equals_insensitive("secoff");
+      bool IsSecNum = Modifier.equals_insensitive("secnum");
+      if (!IsSecOff && !IsSecNum)
+        return Error(getParser().getTok().getLoc(),
+                     "unknown PASM relocation modifier '" + Modifier + "'");
+      getParser().Lex();
+
+      if (parseToken(AsmToken::RBrac, "expected ']'"))
+        return true;
+
+      MCSymbol *Symbol;
+      if (getParser().parseSymbol(Symbol))
+        return Error(getParser().getTok().getLoc(),
+                     "expected symbol after PASM relocation modifier");
+
+      if (IsSecOff) {
+        if (Size != 4)
+          return Error(BracketLoc, "'[secoff]' requires a 4-byte directive");
+        getStreamer().emitCOFFSecRel32(Symbol, 0);
+      } else {
+        if (Size != 2)
+          return Error(BracketLoc, "'[secnum]' requires a 2-byte directive");
+        getStreamer().emitCOFFSectionIndex(Symbol);
+      }
+      return false;
+    }
+
     const MCExpr *Value;
     SMLoc ExprLoc = getParser().getTok().getLoc();
     if (getParser().parseExpression(Value))
@@ -1748,6 +1789,19 @@ bool PPCAsmParser::parseDirectiveWord(unsigned Size, AsmToken ID) {
   if (parseMany(parseOp))
     return addErrorSuffix(" in '" + ID.getIdentifier() + "' directive");
   return false;
+}
+
+ParseStatus PPCAsmParser::tryParseDataDirectiveOperand(StringRef Directive,
+                                                       unsigned Size) {
+  if (!IsPPCWinCOFF || Directive != ".byte" || Size != 1 ||
+      getLexer().isNot(AsmToken::String))
+    return ParseStatus::NoMatch;
+
+  std::string Data;
+  if (getParser().parseEscapedString(Data))
+    return ParseStatus::Failure;
+  getStreamer().emitBytes(Data);
+  return ParseStatus::Success;
 }
 
 ///  ::= .tc [ symbol (, expression)* ]
