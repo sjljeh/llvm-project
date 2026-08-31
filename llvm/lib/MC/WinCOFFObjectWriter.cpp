@@ -354,7 +354,8 @@ void WinCOFFWriter::defineSection(const MCSectionCOFF &MCSec) {
 
   // Set section alignment.
   Section->Header.Characteristics = MCSec.getCharacteristics();
-  Section->Header.Characteristics |= getAlignment(MCSec);
+  if (!MCSec.shouldOmitAlignment() || MCSec.getAlign() > Align(1))
+    Section->Header.Characteristics |= getAlignment(MCSec);
   StringRef AssemblyLanguage =
       getContext().getTargetOptions().getAssemblyLanguage();
   if ((AssemblyLanguage.equals_insensitive("armasm64") ||
