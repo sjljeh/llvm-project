@@ -398,6 +398,10 @@ public:
   virtual bool parsePrimaryExpr(const MCExpr *&Res, SMLoc &EndLoc) {
     return getParser().parsePrimaryExpr(Res, EndLoc, nullptr);
   }
+
+  /// Whether single '<' and '>' tokens are shift operators in expressions.
+  virtual bool useSingleAngleBracketShiftOperators() const { return false; }
+
   // Parse an expression in a data directive, possibly with a relocation
   // specifier.
   virtual bool parseDataExpr(const MCExpr *&Res) {
