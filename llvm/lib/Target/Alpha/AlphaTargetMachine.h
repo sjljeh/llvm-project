@@ -10,6 +10,7 @@
 #define LLVM_LIB_TARGET_ALPHA_ALPHATARGETMACHINE_H
 
 #include "AlphaSubtarget.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/CodeGen/CodeGenTargetMachineImpl.h"
 #include <memory>
 #include <optional>
@@ -20,7 +21,7 @@ class TargetLoweringObjectFile;
 
 class AlphaTargetMachine : public CodeGenTargetMachineImpl {
   std::unique_ptr<TargetLoweringObjectFile> TLOF;
-  AlphaSubtarget Subtarget;
+  mutable StringMap<std::unique_ptr<AlphaSubtarget>> SubtargetMap;
 
 public:
   AlphaTargetMachine(const Target &T, const Triple &TT, StringRef CPU,
@@ -30,9 +31,7 @@ public:
                      bool JIT);
   ~AlphaTargetMachine() override;
 
-  const AlphaSubtarget *getSubtargetImpl(const Function &) const override {
-    return &Subtarget;
-  }
+  const AlphaSubtarget *getSubtargetImpl(const Function &F) const override;
 
   TargetPassConfig *createPassConfig(PassManagerBase &PM) override;
 
