@@ -24,7 +24,7 @@ namespace {
     static char ID;
     AlphaBSel() : MachineFunctionPass(ID) {}
 
-    virtual bool runOnMachineFunction(MachineFunction &Fn);
+    bool runOnMachineFunction(MachineFunction &Fn) override;
 
     StringRef getPassName() const override {
       return "Alpha Branch Selection";

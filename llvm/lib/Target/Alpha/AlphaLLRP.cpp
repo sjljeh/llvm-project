@@ -45,7 +45,7 @@ namespace {
       return "Alpha NOP inserter";
     }
 
-    bool runOnMachineFunction(MachineFunction &F) {
+    bool runOnMachineFunction(MachineFunction &F) override {
       const TargetInstrInfo *TII = F.getSubtarget().getInstrInfo();
       bool Changed = false;
       MachineInstr* prev[3] = {0,0,0};
@@ -131,7 +131,7 @@ namespace {
           case Alpha::BR:
           case Alpha::JMP:
             ub = true;
-            //fall through
+            [[fallthrough]];
           default:
             prev[0] = prev[1];
             prev[1] = prev[2];

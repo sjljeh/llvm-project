@@ -909,7 +909,7 @@ def FBNE : br_fcc<0x36, "fbne">;
 //An ugly trick to get the opcode as an imm I can use
 def immBRCond : SDNodeXForm<imm, [{
   switch((uint64_t)N->getZExtValue()) {
-    default: assert(0 && "Unknown branch type");
+    default: llvm_unreachable("Unknown branch type");
     case 0:  return getI64Imm(Alpha::BEQ);
     case 1:  return getI64Imm(Alpha::BNE);
     case 2:  return getI64Imm(Alpha::BGE);
