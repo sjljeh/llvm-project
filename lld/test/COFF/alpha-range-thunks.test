@@ -23,8 +23,8 @@
 # LINKED-NEXT: VirtualSize: 0x10
 # LINKED:      Hex dump of section '.text':
 # LINKED-NEXT: {{.*}} 030040d3 060040d3 0000fe2f 0000fe2f
-# LINKED-NEXT: {{.*}} c0009f27 04009c23 0000fc6b 00000000
-# LINKED-NEXT: {{.*}} c0009f27 0c009c23 0000fc6b 00000000
+# LINKED-NEXT: {{.*}} 00019f27 04009c23 0000fc6b 00000000
+# LINKED-NEXT: {{.*}} 00019f27 0c009c23 0000fc6b 00000000
 # LINKED:      Hex dump of section '.far':
 # LINKED-NEXT: {{.*}} 00000000 00000000 00000000 00000000
 # LINKED:      BaseReloc [
@@ -57,6 +57,20 @@ sections:
     Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
     Alignment:       16
     SectionData:     00000000000000000000000000000000
+  - Name:            .pdata
+    Characteristics: [ IMAGE_SCN_CNT_INITIALIZED_DATA, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     0000000008000000000000000000000000000000
+    Relocations:
+      - VirtualAddress:  0
+        SymbolName:      entry
+        Type:            IMAGE_REL_ALPHA_REFLONG
+      - VirtualAddress:  4
+        SymbolName:      entry
+        Type:            IMAGE_REL_ALPHA_REFLONG
+      - VirtualAddress:  16
+        SymbolName:      entry
+        Type:            IMAGE_REL_ALPHA_REFLONG
 symbols:
   - Name:            entry
     Value:           0
