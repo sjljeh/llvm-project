@@ -136,6 +136,7 @@ class PPCAsmParser : public MCTargetAsmParser {
   bool parseOperand(OperandVector &Operands);
 
   bool parseDirectiveWord(unsigned Size, AsmToken ID);
+  bool parseDirectiveAsciiZ();
   bool parseDirectiveFunction(SMLoc L);
   bool parseDirectiveZnop(SMLoc L);
   bool parseDirectiveEndian(StringRef Directive, SMLoc L);
@@ -1694,8 +1695,9 @@ bool PPCAsmParser::parsePrimaryExpr(const MCExpr *&Res, SMLoc &EndLoc) {
   }
 
   if (IsPPCWinCOFF && getLexer().is(AsmToken::Identifier)) {
+    StringRef Name = getLexer().getTok().getIdentifier();
     int64_t RegisterNumber;
-    if (matchRegisterName(RegisterNumber)) {
+    if (!getContext().lookupSymbol(Name) && matchRegisterName(RegisterNumber)) {
       Res = MCConstantExpr::create(RegisterNumber, getContext());
       EndLoc =
           SMLoc::getFromPointer(getParser().getTok().getLoc().getPointer() - 1);
@@ -1743,18 +1745,9 @@ bool PPCAsmParser::parseOperand(OperandVector &Operands) {
     return false;
   }
   case AsmToken::Identifier:
-    // Microsoft's PowerPC assembler accepts named registers without a '%',
-    // including dotted spellings such as r.3, f.1, and cr.2 and the r.sp and
-    // r.toc aliases. Keep this COFF-specific so identifiers retain their
-    // established meaning in the other PowerPC assembly dialects.
-    if (IsPPCWinCOFF) {
-      int64_t IntVal;
-      if (matchRegisterName(IntVal)) {
-        Operands.push_back(
-            PPCOperand::CreateImm(IntVal, S, E, isPPC64(), getContext()));
-        return false;
-      }
-    }
+    // parsePrimaryExpr handles Microsoft register spellings as integer
+    // primaries, which also permits forms such as "cr.0 + LT". Parsing the
+    // complete expression here is important for D-form memory suffixes.
     [[fallthrough]];
   case AsmToken::String:
   case AsmToken::LBrac:
@@ -1990,6 +1983,8 @@ bool PPCAsmParser::ParseDirective(AsmToken DirectiveID) {
   else if (IsPPCWinCOFF &&
            (IDVal == ".big_endian" || IDVal == ".little_endian"))
     parseDirectiveEndian(IDVal, DirectiveID.getLoc());
+  else if (IsPPCWinCOFF && IDVal == ".asciiz")
+    parseDirectiveAsciiZ();
   else if (IDVal == ".llong")
     parseDirectiveWord(8, DirectiveID);
   else if (IDVal == ".tc")
@@ -2004,6 +1999,21 @@ bool PPCAsmParser::ParseDirective(AsmToken DirectiveID) {
     parseGNUAttribute(DirectiveID.getLoc());
   else
     return true;
+  return false;
+}
+
+bool PPCAsmParser::parseDirectiveAsciiZ() {
+  auto parseOp = [&]() -> bool {
+    std::string Data;
+    if (getParser().parseEscapedString(Data))
+      return true;
+    getStreamer().emitBytes(Data);
+    getStreamer().emitIntValue(0, 1);
+    return false;
+  };
+
+  if (parseMany(parseOp))
+    return addErrorSuffix(" in '.asciiz' directive");
   return false;
 }
 
