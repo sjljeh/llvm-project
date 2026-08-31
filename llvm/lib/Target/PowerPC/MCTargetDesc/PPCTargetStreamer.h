@@ -29,6 +29,7 @@ public:
   virtual void emitMachine(StringRef CPU){};
   virtual void emitAbiVersion(int AbiVersion){};
   virtual void emitLocalEntry(MCSymbolELF *S, const MCExpr *LocalOffset){};
+  virtual void emitDirectiveEndian(bool IsLittleEndian);
 };
 
 } // end namespace llvm
