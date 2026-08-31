@@ -849,6 +849,29 @@ void Writer::run() {
     removeUnusedSections();
     layoutSections();
     finalizeAddresses();
+    if (ctx.config.machine == IMAGE_FILE_MACHINE_ALPHA) {
+      for (OutputSection *sec : ctx.outputSections) {
+        if (sec->name != ".sdata" || sec->getVirtualSize() == 0)
+          continue;
+        uint32_t start = sec->getRVA();
+        uint32_t end = start + sec->getVirtualSize();
+        if (!ctx.alphaGlobalPointerRVA) {
+          ctx.alphaSmallDataStartRVA = start;
+          ctx.alphaSmallDataEndRVA = end;
+          ctx.alphaGlobalPointerRVA = 0;
+        } else {
+          ctx.alphaSmallDataStartRVA =
+              std::min(ctx.alphaSmallDataStartRVA, start);
+          ctx.alphaSmallDataEndRVA = std::max(ctx.alphaSmallDataEndRVA, end);
+        }
+      }
+      if (ctx.alphaGlobalPointerRVA)
+        ctx.alphaGlobalPointerRVA =
+            ((uint64_t(ctx.alphaSmallDataStartRVA) +
+              ctx.alphaSmallDataEndRVA) /
+             2) &
+            ~uint64_t(7);
+    }
     removeEmptySections();
     assignOutputSectionIndices();
     setSectionPermissions();
@@ -1292,6 +1315,7 @@ void Writer::createSections() {
     if (auto *cc = dyn_cast<CommonChunk>(c)) {
       if (!cc->live)
         continue;
+      cc->hasData = cc->isAlphaSmallData();
     }
     StringRef name = c->getSectionName();
     if (shouldStripSectionSuffix(sc, name, ctx.config.mingw))
@@ -2197,6 +2221,8 @@ template <typename PEHeaderTy> void Writer::writeHeader() {
     dir[BASE_RELOCATION_TABLE].RelativeVirtualAddress = relocSec->getRVA();
     dir[BASE_RELOCATION_TABLE].Size = relocSize;
   }
+  if (ctx.alphaGlobalPointerRVA)
+    dir[GLOBAL_PTR].RelativeVirtualAddress = *ctx.alphaGlobalPointerRVA;
   if (Symbol *sym = symtab.findUnderscore("_tls_used")) {
     if (Defined *b = dyn_cast<Defined>(sym)) {
       dir[TLS_TABLE].RelativeVirtualAddress = b->getRVA();
