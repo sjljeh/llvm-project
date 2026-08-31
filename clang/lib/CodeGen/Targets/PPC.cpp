@@ -401,7 +401,25 @@ public:
   bool initDwarfEHRegSizeTable(CodeGen::CodeGenFunction &CGF,
                                llvm::Value *Address) const override;
 };
-}
+
+class WindowsPPC32TargetCodeGenInfo : public PPC32TargetCodeGenInfo {
+public:
+  WindowsPPC32TargetCodeGenInfo(CodeGenTypes &CGT, bool SoftFloatABI,
+                                bool RetSmallStructInRegABI)
+      : PPC32TargetCodeGenInfo(CGT, SoftFloatABI, RetSmallStructInRegABI) {}
+
+  void getDependentLibraryOption(llvm::StringRef Lib,
+                                 llvm::SmallString<24> &Opt) const override {
+    Opt = "/DEFAULTLIB:";
+    Opt += qualifyWindowsLibrary(Lib);
+  }
+
+  void getDetectMismatchOption(llvm::StringRef Name, llvm::StringRef Value,
+                               llvm::SmallString<32> &Opt) const override {
+    Opt = "/FAILIFMISMATCH:\"" + Name.str() + "=" + Value.str() + "\"";
+  }
+};
+} // namespace
 
 CharUnits PPC32_SVR4_ABIInfo::getParamTypeAlignment(QualType Ty) const {
   // Complex types are passed just like their elements.
@@ -1054,6 +1072,9 @@ std::unique_ptr<TargetCodeGenInfo>
 CodeGen::createPPC32TargetCodeGenInfo(CodeGenModule &CGM, bool SoftFloatABI) {
   bool RetSmallStructInRegABI = PPC32TargetCodeGenInfo::isStructReturnInRegABI(
       CGM.getTriple(), CGM.getCodeGenOpts());
+  if (CGM.getTriple().isOSWindows())
+    return std::make_unique<WindowsPPC32TargetCodeGenInfo>(
+        CGM.getTypes(), SoftFloatABI, RetSmallStructInRegABI);
   return std::make_unique<PPC32TargetCodeGenInfo>(CGM.getTypes(), SoftFloatABI,
                                                   RetSmallStructInRegABI);
 }
