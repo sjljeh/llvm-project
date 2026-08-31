@@ -159,7 +159,7 @@ enum {
   EM_RH32 = 38,          // TRW RH-32
   EM_RCE = 39,           // Motorola RCE
   EM_ARM = 40,           // ARM
-  EM_ALPHA = 41,         // DEC Alpha
+  EM_ALPHA_STD = 41,     // Reserved ABI-assigned Alpha value (not deployed)
   EM_SH = 42,            // Hitachi SH
   EM_SPARCV9 = 43,       // SPARC V9
   EM_TRICORE = 44,       // Siemens TriCore
@@ -319,12 +319,15 @@ enum {
   EM_NORC = 218,          // Nanoradio Optimized RISC
   EM_CSR_KALIMBA = 219,   // CSR Kalimba architecture family
   EM_AMDGPU = 224,        // AMD GPU architecture
-  EM_RISCV = 243,         // RISC-V
-  EM_LANAI = 244,         // Lanai 32-bit processor
-  EM_BPF = 247,           // Linux kernel bpf virtual machine
-  EM_VE = 251,            // NEC SX-Aurora VE
-  EM_CSKY = 252,          // C-SKY 32-bit processor
-  EM_LOONGARCH = 258,     // LoongArch
+  // The deployed Alpha ELF ABI predates the registry assignment above and all
+  // extant Alpha ELF systems use this experimental machine number.
+  EM_ALPHA = 0x9026,
+  EM_RISCV = 243,     // RISC-V
+  EM_LANAI = 244,     // Lanai 32-bit processor
+  EM_BPF = 247,       // Linux kernel bpf virtual machine
+  EM_VE = 251,        // NEC SX-Aurora VE
+  EM_CSKY = 252,      // C-SKY 32-bit processor
+  EM_LOONGARCH = 258, // LoongArch
 };
 
 // Object file classes.
@@ -436,6 +439,30 @@ enum {
 // ELF Relocation types for AArch64
 enum {
 #include "ELFRelocs/AArch64.def"
+};
+
+// Alpha-specific e_flags.
+enum : unsigned {
+  EF_ALPHA_32BIT = 0x00000001U,
+  EF_ALPHA_CANRELAX = 0x00000002U,
+};
+
+// ELF relocation types for Alpha.
+enum {
+#include "ELFRelocs/Alpha.def"
+};
+
+// Alpha st_other values and literal-use relocation addends.
+enum {
+  STO_ALPHA_NOPV = 0x80,
+  STO_ALPHA_STD_GPLOAD = 0x88,
+  LITUSE_ALPHA_ADDR = 0,
+  LITUSE_ALPHA_BASE = 1,
+  LITUSE_ALPHA_BYTOFF = 2,
+  LITUSE_ALPHA_JSR = 3,
+  LITUSE_ALPHA_TLSGD = 4,
+  LITUSE_ALPHA_TLSLDM = 5,
+  LITUSE_ALPHA_JSRDIRECT = 6,
 };
 
 // Special values for the st_other field in the symbol table entry for AArch64.
@@ -1319,6 +1346,9 @@ enum : unsigned {
   // not set it; likewise, a small code model object can refer only to code in a
   // section that does not set this flag.
   SHF_X86_64_LARGE = 0x10000000,
+
+  // Section contributes to Alpha's GP-relative data area.
+  SHF_ALPHA_GPREL = 0x10000000,
 
   // All sections with the GPREL flag are grouped into a global data area
   // for faster accesses

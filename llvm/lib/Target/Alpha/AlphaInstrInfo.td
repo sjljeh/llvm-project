@@ -25,6 +25,12 @@ def Alpha_cvttq   : SDNode<"AlphaISD::CVTTQ_"  ,  SDTFPUnaryOp, []>;
 def Alpha_gprello : SDNode<"AlphaISD::GPRelLo",   SDTIntBinOp, []>;
 def Alpha_gprelhi : SDNode<"AlphaISD::GPRelHi",   SDTIntBinOp, []>;
 def Alpha_rellit  : SDNode<"AlphaISD::RelLit",    SDTIntBinOp, [SDNPMayLoad]>;
+def Alpha_tprello : SDNode<"AlphaISD::TPRelLo",   SDTIntBinOp, []>;
+def Alpha_tprelhi : SDNode<"AlphaISD::TPRelHi",   SDTIntBinOp, []>;
+def Alpha_gottprel : SDNode<"AlphaISD::GOTTPRel", SDTIntBinOp,
+                            [SDNPMayLoad]>;
+def SDT_AlphaReadUnique : SDTypeProfile<1, 0, [SDTCisVT<0, i64>]>;
+def Alpha_rdunique : SDNode<"AlphaISD::RDUNIQUE", SDT_AlphaReadUnique, []>;
 
 def retflag       : SDNode<"AlphaISD::RET_FLAG", SDTNone,
                            [SDNPHasChain, SDNPOptInGlue]>;
@@ -448,6 +454,8 @@ let isCall = 1, Ra = 26, Rb = 27, disp = 0,
     Uses = [R16, R17, R18, R19, R20, R21, F16, F17, F18, F19, F20, F21,
             R27, R29] in {
     def JSR : MbrForm< 0x1A, 0x01, (ins), "jsr $$26,($$27),0", s_jsr>; //Jump to subroutine
+    def JSRl : MbrForm<0x1A, 0x01, (ins),
+                       "jsr $$26,($$27),0\t\t!lituse_jsr", s_jsr>;
 }
 
 let isCall = 1, Ra = 26, Rb = 27, disp = 0,
@@ -508,6 +516,12 @@ def LDAH  : MForm<0x09, 0, "ldah $RA,$DISP($RB)",
                  [], s_lda>;  //Load address high
 def LDAHr : MForm<0x09, 0, "ldah $RA,$DISP($RB)\t\t!gprelhigh",
                  [(set GPRC:$RA, (Alpha_gprelhi tglobaladdr:$DISP, GPRC:$RB))], s_lda>;  //Load address high
+def LDAt  : MForm<0x08, 1, "lda $RA,$DISP($RB)\t\t!tprello",
+                 [(set GPRC:$RA, (Alpha_tprello tglobaltlsaddr:$DISP,
+                                  GPRC:$RB))], s_lda>;
+def LDAHt : MForm<0x09, 1, "ldah $RA,$DISP($RB)\t\t!tprelhi",
+                  [(set GPRC:$RA, (Alpha_tprelhi tglobaltlsaddr:$DISP,
+                                   GPRC:$RB))], s_lda>;
 }
 
 let OutOperandList = (outs), InOperandList = (ins F4RC:$RA, s64imm:$DISP, GPRC:$RB) in {
@@ -619,6 +633,11 @@ def LDAHg : MForm<0x09, 1, "ldah $RA,0($RB)\t\t!gpdisp!$NUM", [], s_lda>;  //Loa
 let OutOperandList = (outs GPRC:$RA), InOperandList = (ins s64imm:$DISP, GPRC:$RB) in 
 def LDQl : MForm<0x29, 1, "ldq $RA,$DISP($RB)\t\t!literal",
                  [(set GPRC:$RA, (Alpha_rellit tglobaladdr:$DISP, GPRC:$RB))], s_ild>;
+let OutOperandList = (outs GPRC:$RA),
+    InOperandList = (ins s64imm:$DISP, GPRC:$RB) in
+  def LDQt : MForm<0x29, 1, "ldq $RA,$DISP($RB)\t\t!gottprel",
+                   [(set GPRC:$RA, (Alpha_gottprel tglobaltlsaddr:$DISP,
+                                    GPRC:$RB))], s_ild>;
 def : Pat<(Alpha_rellit texternalsym:$ext, GPRC:$RB),
           (LDQl texternalsym:$ext, GPRC:$RB)>;
 
@@ -637,6 +656,9 @@ def LDL_L : MForm<0x2A, 1, "ldl_l $RA,$DISP($RB)", [], s_ild>;
 
 def RPCC : MfcForm<0x18, 0xC000, "rpcc $RA", s_rpcc>; //Read process cycle counter
 def CALL_PAL : PALForm<0x00, (ins u64imm:$FUNCTION), "call_pal $FUNCTION", s_imisc>;
+let isCodeGenOnly = 1 in
+def RDUNIQUE : PseudoInstAlpha<(outs R0RC:$RA), (ins), "call_pal 0x9e",
+                               [(set R0RC:$RA, (Alpha_rdunique))], s_imisc>;
 def MB  : MfcPForm<0x18, 0x4000, "mb",  s_imisc>; //memory barrier
 def WMB : MfcPForm<0x18, 0x4400, "wmb", s_imisc>; //write memory barrier
 

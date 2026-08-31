@@ -140,7 +140,9 @@ static Defined *addOptionalRegular(Ctx &ctx, StringRef name, SectionBase *sec,
 // The linker is expected to define some symbols depending on
 // the linking result. This function defines such symbols.
 void elf::addReservedSymbols(Ctx &ctx) {
-  if (ctx.arg.emachine == EM_MIPS) {
+  if (ctx.arg.emachine == EM_ALPHA || ctx.arg.emachine == EM_ALPHA_STD) {
+    ctx.sym.alphaGp = addOptionalRegular(ctx, "_gp", nullptr, 0, STV_HIDDEN);
+  } else if (ctx.arg.emachine == EM_MIPS) {
     auto addAbsolute = [&](StringRef name) {
       Symbol *sym =
           ctx.symtab->addSymbol(Defined{ctx, ctx.internalFile, name, STB_GLOBAL,
@@ -566,6 +568,15 @@ static bool isRelroSection(Ctx &ctx, const OutputSection *sec) {
   if (!(flags & SHF_ALLOC) || !(flags & SHF_WRITE))
     return false;
 
+  // Alpha addresses both .got and SHF_ALPHA_GPREL sections through a signed
+  // 16-bit displacement from _gp. Keeping .got in a separate RELRO page would
+  // put even the first .sdata byte outside that window. Alpha's dynamic-link
+  // layout is not implemented yet, so keep the static GOT adjacent to small
+  // data rather than advertising unusable RELRO protection.
+  if ((ctx.arg.emachine == EM_ALPHA || ctx.arg.emachine == EM_ALPHA_STD) &&
+      ctx.in.got && sec == ctx.in.got->getParent())
+    return false;
+
   // Once initialized, TLS data segments are used as data templates
   // for a thread-local storage. For each new thread, runtime
   // allocates memory for a TLS and copy templates there. No thread
@@ -765,6 +776,13 @@ unsigned elf::getSectionRank(Ctx &ctx, OutputSection &osec) {
       rank |= 2;
   }
 
+  if (ctx.arg.emachine == EM_ALPHA || ctx.arg.emachine == EM_ALPHA_STD) {
+    // Keep Alpha GP-relative data immediately after .got. _gp is .got+0x8000,
+    // so this ordering maximizes the signed 16-bit GPREL window.
+    if (osec.name != ".got")
+      rank |= (osec.flags & SHF_ALPHA_GPREL) ? 1 : 2;
+  }
+
   if (ctx.arg.emachine == EM_RISCV) {
     // .sdata and .sbss are placed closer to make GP relaxation more profitable
     // and match GNU ld.
@@ -905,6 +923,11 @@ template <class ELFT> void Writer<ELFT>::setReservedSymbolSections() {
     OutputSection *sbss =
         ctx.arg.emachine == EM_RISCV ? findSection(ctx, ".sbss") : nullptr;
     ctx.sym.bss->section = sbss ? sbss : findSection(ctx, ".bss");
+  }
+
+  if (ctx.sym.alphaGp) {
+    ctx.sym.alphaGp->section = findSection(ctx, ".got");
+    ctx.sym.alphaGp->value = 0x8000;
   }
 
   // Setup MIPS _gp_disp/__gnu_local_gp symbols which should

@@ -17,21 +17,23 @@
 #include "AlphaInstrInfo.h"
 #include "AlphaTargetMachine.h"
 #include "TargetInfo/AlphaTargetInfo.h"
+#include "llvm/ADT/SmallString.h"
+#include "llvm/BinaryFormat/ELF.h"
+#include "llvm/CodeGen/AsmPrinter.h"
+#include "llvm/CodeGen/TargetLoweringObjectFileImpl.h"
+#include "llvm/IR/Mangler.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
-#include "llvm/CodeGen/AsmPrinter.h"
+#include "llvm/MC/MCAsmInfo.h"
+#include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCInstBuilder.h"
 #include "llvm/MC/MCStreamer.h"
-#include "llvm/MC/MCAsmInfo.h"
-#include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCSymbol.h"
-#include "llvm/IR/Mangler.h"
-#include "llvm/CodeGen/TargetLoweringObjectFileImpl.h"
-#include "llvm/Target/TargetMachine.h"
-#include "llvm/ADT/SmallString.h"
+#include "llvm/MC/MCSymbolELF.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Target/TargetMachine.h"
 using namespace llvm;
 
 namespace {
@@ -190,6 +192,12 @@ void AlphaAsmPrinter::printOp(const MachineOperand &MO, raw_ostream &O) {
 /// EmitFunctionBodyStart - Targets can override this to emit stuff before
 /// the first basic block in the function.
 void AlphaAsmPrinter::emitFunctionBodyStart() {
+  if (TM.getTargetTriple().isOSBinFormatELF()) {
+    MCSymbol *Sym = getSymbol(&MF->getFunction());
+    cast<MCSymbolELF>(Sym)->setOther(ELF::STO_ALPHA_STD_GPLOAD);
+    if (OutStreamer->hasRawTextSupport())
+      OutStreamer->emitRawText("\t.usepv " + Sym->getName() + ",std");
+  }
   for (MachineBasicBlock &MBB : *MF)
     if (!MBB.isEntryBlock())
       MBB.setLabelMustBeEmitted();

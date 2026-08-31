@@ -220,6 +220,7 @@ void ScalarEnumerationTraits<ELFYAML::ELF_EM>::enumeration(
   ECase(EM_RH32);
   ECase(EM_RCE);
   ECase(EM_ARM);
+  ECase(EM_ALPHA_STD);
   ECase(EM_ALPHA);
   ECase(EM_SH);
   ECase(EM_SPARCV9);

@@ -694,6 +694,9 @@ struct Ctx : CommonLinkerContext {
     // the end of the .got.
     Defined *globalOffsetTable;
 
+    // _gp for Alpha.  The ABI places it 0x8000 bytes past .got.
+    Defined *alphaGp;
+
     // _gp, _gp_disp and __gnu_local_gp symbols. Only for MIPS.
     Defined *mipsGp;
     Defined *mipsGpDisp;

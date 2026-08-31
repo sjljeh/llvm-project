@@ -445,30 +445,45 @@ void AlphaDAGToDAGISel::SelectCALL(SDNode *N) {
     InFlag = N->getOperand(N->getNumOperands() - 1);
   SDLoc dl(N);
 
-   if (Addr.getOpcode() == ISD::TargetGlobalAddress ||
-       Addr.getOpcode() == ISD::TargetExternalSymbol) {
-     SmallVector<SDValue, 3> Ops = {Addr, Chain};
-     if (InFlag)
-       Ops.push_back(InFlag);
-     CurDAG->SelectNodeTo(N, Alpha::BSR,
-                          CurDAG->getVTList(MVT::Other, MVT::Glue), Ops);
-     return;
-   } else if (Addr.getOpcode() == AlphaISD::GPRelLo) {
-     SDValue GOT = SDValue(getGlobalBaseReg(), 0);
-     Chain = CurDAG->getCopyToReg(Chain, dl, Alpha::R29, GOT, InFlag);
-     InFlag = Chain.getValue(1);
-      SDValue Ops[] = {Addr.getOperand(0), Chain, InFlag};
-      CurDAG->SelectNodeTo(N, Alpha::BSR,
-                           CurDAG->getVTList(MVT::Other, MVT::Glue), Ops);
-      return;
-   } else {
-     Chain = CurDAG->getCopyToReg(Chain, dl, Alpha::R27, Addr, InFlag);
-     InFlag = Chain.getValue(1);
-      SDValue Ops[] = {Chain, InFlag};
-      CurDAG->SelectNodeTo(N, Alpha::JSR,
-                           CurDAG->getVTList(MVT::Other, MVT::Glue), Ops);
-      return;
-   }
+  bool IsDirect = Addr.getOpcode() == ISD::TargetGlobalAddress ||
+                  Addr.getOpcode() == ISD::TargetExternalSymbol;
+  bool UsesLiteralCall = false;
+  if (IsDirect && getTargetMachine().getTargetTriple().isOSBinFormatCOFF()) {
+    SmallVector<SDValue, 3> Ops = {Addr, Chain};
+    if (InFlag)
+      Ops.push_back(InFlag);
+    CurDAG->SelectNodeTo(N, Alpha::BSR,
+                         CurDAG->getVTList(MVT::Other, MVT::Glue), Ops);
+    return;
+  }
+
+  // ELF calls enter through $27 (the procedure value), which the callee uses
+  // to establish $gp.  Materialize direct callees through the literal GOT and
+  // use jsr rather than the NT direct-BSR convention.
+  if (IsDirect) {
+    SDValue GOT = SDValue(getGlobalBaseReg(), 0);
+    Addr = SDValue(CurDAG->getMachineNode(Alpha::LDQl, dl, MVT::i64, Addr, GOT),
+                   0);
+    UsesLiteralCall = true;
+  }
+
+  if (Addr.getOpcode() == AlphaISD::GPRelLo &&
+      getTargetMachine().getTargetTriple().isOSBinFormatCOFF()) {
+    SDValue GOT = SDValue(getGlobalBaseReg(), 0);
+    Chain = CurDAG->getCopyToReg(Chain, dl, Alpha::R29, GOT, InFlag);
+    InFlag = Chain.getValue(1);
+    SDValue Ops[] = {Addr.getOperand(0), Chain, InFlag};
+    CurDAG->SelectNodeTo(N, Alpha::BSR,
+                         CurDAG->getVTList(MVT::Other, MVT::Glue), Ops);
+    return;
+  } else {
+    Chain = CurDAG->getCopyToReg(Chain, dl, Alpha::R27, Addr, InFlag);
+    InFlag = Chain.getValue(1);
+    SDValue Ops[] = {Chain, InFlag};
+    CurDAG->SelectNodeTo(N, UsesLiteralCall ? Alpha::JSRl : Alpha::JSR,
+                         CurDAG->getVTList(MVT::Other, MVT::Glue), Ops);
+    return;
+  }
 }
 
 

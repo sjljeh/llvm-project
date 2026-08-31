@@ -167,6 +167,8 @@ static std::tuple<ELFKind, uint16_t, uint8_t> parseEmulation(Ctx &ctx,
           .Case("elf64btsmip", {ELF64BEKind, EM_MIPS})
           .Case("elf64ltsmip", {ELF64LEKind, EM_MIPS})
           .Case("elf64lriscv", {ELF64LEKind, EM_RISCV})
+          .Cases({"elf64alpha", "elf64alpha_nbsd", "elf64alpha_obsd"},
+                 {ELF64LEKind, EM_ALPHA})
           .Case("elf64ppc", {ELF64BEKind, EM_PPC64})
           .Case("elf64lppc", {ELF64LEKind, EM_PPC64})
           .Cases({"elf_amd64", "elf_x86_64"}, {ELF64LEKind, EM_X86_64})
@@ -1328,10 +1330,10 @@ static SmallVector<StringRef, 0> getSymbolOrderingFile(Ctx &ctx,
 
 static bool getIsRela(Ctx &ctx, opt::InputArgList &args) {
   // The psABI specifies the default relocation entry format.
-  bool rela =
-      is_contained({EM_AARCH64, EM_AMDGPU, EM_HEXAGON, EM_LOONGARCH, EM_PPC,
-                    EM_PPC64, EM_RISCV, EM_S390, EM_SPARCV9, EM_X86_64},
-                   ctx.arg.emachine);
+  bool rela = is_contained({EM_AARCH64, EM_ALPHA, EM_ALPHA_STD, EM_AMDGPU,
+                            EM_HEXAGON, EM_LOONGARCH, EM_PPC, EM_PPC64,
+                            EM_RISCV, EM_S390, EM_SPARCV9, EM_X86_64},
+                           ctx.arg.emachine);
   // If -z rel or -z rela is specified, use the last option.
   for (auto *arg : args.filtered(OPT_z)) {
     StringRef s(arg->getValue());
@@ -2085,8 +2087,15 @@ static void setConfigs(Ctx &ctx, opt::InputArgList &args) {
   // linker scripts.
   ctx.arg.warnMissingEntry =
       (!ctx.arg.entry.empty() || (!ctx.arg.shared && !ctx.arg.relocatable));
-  if (ctx.arg.entry.empty() && !ctx.arg.relocatable)
-    ctx.arg.entry = ctx.arg.emachine == EM_MIPS ? "__start" : "_start";
+  if (ctx.arg.entry.empty() && !ctx.arg.relocatable) {
+    bool alphaBSD =
+        ctx.arg.emachine == EM_ALPHA &&
+        (ctx.arg.osabi == ELFOSABI_OPENBSD ||
+         StringRef(ctx.arg.emulation).starts_with("elf64alpha_nbsd") ||
+         StringRef(ctx.arg.emulation).starts_with("elf64alpha_obsd"));
+    ctx.arg.entry =
+        ctx.arg.emachine == EM_MIPS || alphaBSD ? "__start" : "_start";
+  }
   if (ctx.arg.outputFile.empty())
     ctx.arg.outputFile = "a.out";
 

@@ -3948,6 +3948,13 @@ TEST(TripleTest, Merge) {
                 .merge(Triple(Triple::normalize("amdgpu9-amd-amdhsa"))));
 }
 
+TEST(DataLayoutTest, Alpha) {
+  EXPECT_EQ(Triple("alpha-unknown-linux-gnu").computeDataLayout(),
+            "e-m:e-p:64:64-i64:64-i128:128-f128:128:128-n64-S128");
+  EXPECT_EQ(Triple("alpha-pc-windows-msvc").computeDataLayout(),
+            "e-p:64:64-f64:64-n32:64");
+}
+
 TEST(DataLayoutTest, UEFI) {
   Triple TT = Triple("x86_64-unknown-uefi");
 

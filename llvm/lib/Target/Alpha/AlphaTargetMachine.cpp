@@ -45,7 +45,7 @@ static StringRef getDataLayoutForTriple(const Triple &TT, StringRef FS) {
     return "e-p:32:32-f64:64-n32:64";
   if (TT.isOSWindows())
     return "e-p:64:64-f64:64-n32:64";
-  return "e-p:64:64-f128:128:128-n64";
+  return "e-m:e-p:64:64-i64:64-i128:128-f128:128:128-n64-S128";
 }
 
 AlphaTargetMachine::AlphaTargetMachine(
