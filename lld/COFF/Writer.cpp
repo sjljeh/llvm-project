@@ -226,10 +226,10 @@ private:
   void assignAddresses();
   bool isInRange(uint16_t relType, uint64_t s, uint64_t p, int margin,
                  MachineTypes machine);
-  std::pair<Defined *, bool> getThunk(DenseMap<uint64_t, Defined *> &lastThunks,
-                                      Defined *target, uint64_t p,
-                                      uint16_t type, int margin,
-                                      MachineTypes machine);
+  std::pair<Defined *, bool>
+  getThunk(DenseMap<std::pair<uint64_t, int64_t>, Defined *> &lastThunks,
+           Defined *target, int64_t addend, uint64_t p, uint16_t type,
+           int margin, MachineTypes machine);
   bool createThunks(OutputSection *os, int margin);
   bool verifyRanges(const std::vector<Chunk *> chunks);
   void createECCodeMap();
@@ -446,6 +446,12 @@ bool Writer::isInRange(uint16_t relType, uint64_t s, uint64_t p, int margin,
     default:
       return true;
     }
+  } else if (machine == IMAGE_FILE_MACHINE_POWERPC) {
+    if ((relType & IMAGE_REL_PPC_TYPEMASK) != IMAGE_REL_PPC_REL24)
+      return true;
+    int64_t diff = static_cast<int64_t>(s) - static_cast<int64_t>(p);
+    diff += diff < 0 ? -margin : margin;
+    return isInt<26>(diff);
   } else {
     return true;
   }
@@ -454,23 +460,38 @@ bool Writer::isInRange(uint16_t relType, uint64_t s, uint64_t p, int margin,
 // Return the last thunk for the given target if it is in range,
 // or create a new one.
 std::pair<Defined *, bool>
-Writer::getThunk(DenseMap<uint64_t, Defined *> &lastThunks, Defined *target,
-                 uint64_t p, uint16_t type, int margin, MachineTypes machine) {
-  Defined *&lastThunk = lastThunks[target->getRVA()];
-  if (lastThunk && isInRange(type, lastThunk->getRVA(), p, margin, machine))
-    return {lastThunk, false};
-  Chunk *c;
-  switch (getMachineArchType(machine)) {
-  case Triple::thumb:
-    c = make<RangeExtensionThunkARM>(ctx, target);
-    break;
-  case Triple::aarch64:
-    c = make<RangeExtensionThunkARM64>(machine, target);
-    break;
-  default:
-    llvm_unreachable("Unexpected architecture");
+Writer::getThunk(DenseMap<std::pair<uint64_t, int64_t>, Defined *> &lastThunks,
+                 Defined *target, int64_t addend, uint64_t p, uint16_t type,
+                 int margin, MachineTypes machine) {
+  Defined *&lastThunk = lastThunks[{target->getRVA(), addend}];
+  if (lastThunk) {
+    uint64_t lastThunkRVA = lastThunk->getRVA();
+    if (machine == IMAGE_FILE_MACHINE_POWERPC)
+      lastThunkRVA = static_cast<uint32_t>(lastThunkRVA + addend);
+    if (isInRange(type, lastThunkRVA, p, margin, machine))
+      return {lastThunk, false};
   }
-  Defined *d = make<DefinedSynthetic>("range_extension_thunk", c);
+  Chunk *c;
+  if (machine == IMAGE_FILE_MACHINE_POWERPC) {
+    c = make<RangeExtensionThunkPPC>(target, addend);
+  } else {
+    switch (getMachineArchType(machine)) {
+    case Triple::thumb:
+      c = make<RangeExtensionThunkARM>(ctx, target);
+      break;
+    case Triple::aarch64:
+      c = make<RangeExtensionThunkARM64>(machine, target);
+      break;
+    default:
+      llvm_unreachable("Unexpected architecture");
+    }
+  }
+  // A PPC input branch carries its source addend in the instruction. Bias the
+  // synthetic symbol by -A so relocating the branch reaches the thunk itself;
+  // the thunk then branches to the original S + A destination.
+  uint32_t symbolOffset =
+      machine == IMAGE_FILE_MACHINE_POWERPC ? uint32_t(-addend) : 0;
+  Defined *d = make<DefinedSynthetic>("range_extension_thunk", c, symbolOffset);
   lastThunk = d;
   return {d, true};
 }
@@ -488,7 +509,7 @@ Writer::getThunk(DenseMap<uint64_t, Defined *> &lastThunks, Defined *target,
 // the previously created thunks) and retry with a wider margin.
 bool Writer::createThunks(OutputSection *os, int margin) {
   bool addressesChanged = false;
-  DenseMap<uint64_t, Defined *> lastThunks;
+  DenseMap<std::pair<uint64_t, int64_t>, Defined *> lastThunks;
   DenseMap<std::pair<ObjFile *, Defined *>, uint32_t> thunkSymtabIndices;
   size_t thunksSize = 0;
   // Recheck Chunks.size() each iteration, since we can insert more
@@ -516,6 +537,11 @@ bool Writer::createThunks(OutputSection *os, int margin) {
         file->getCOFFObj()->getRelocations(sc->header);
     for (size_t j = 0, e = originalRelocs.size(); j < e; ++j) {
       const coff_relocation &rel = originalRelocs[j];
+      if (machine == IMAGE_FILE_MACHINE_POWERPC) {
+        uint16_t type = rel.Type & IMAGE_REL_PPC_TYPEMASK;
+        if (type == IMAGE_REL_PPC_PAIR || type == IMAGE_REL_PPC_IMGLUE)
+          continue;
+      }
       Symbol *relocTarget = file->getSymbol(rel.SymbolTableIndex);
 
       // The estimate of the source address P should be pretty accurate,
@@ -528,14 +554,18 @@ bool Writer::createThunks(OutputSection *os, int margin) {
       if (!sym)
         continue;
 
-      uint64_t s = sym->getRVA();
+      int64_t addend = 0;
+      if (machine == IMAGE_FILE_MACHINE_POWERPC &&
+          (rel.Type & IMAGE_REL_PPC_TYPEMASK) == IMAGE_REL_PPC_REL24)
+        addend = sc->getPPCBranchAddend(rel);
+      uint64_t s = static_cast<uint32_t>(sym->getRVA() + addend);
 
       if (isInRange(rel.Type, s, p, margin, machine))
         continue;
 
       // If the target isn't in range, hook it up to an existing or new thunk.
       auto [thunk, wasNew] =
-          getThunk(lastThunks, sym, p, rel.Type, margin, machine);
+          getThunk(lastThunks, sym, addend, p, rel.Type, margin, machine);
       if (wasNew) {
         Chunk *thunkChunk = thunk->getChunk();
         thunkChunk->setRVA(
@@ -644,6 +674,11 @@ bool Writer::verifyRanges(const std::vector<Chunk *> chunks) {
 
     ArrayRef<coff_relocation> relocs = sc->getRelocs();
     for (const coff_relocation &rel : relocs) {
+      if (machine == IMAGE_FILE_MACHINE_POWERPC) {
+        uint16_t type = rel.Type & IMAGE_REL_PPC_TYPEMASK;
+        if (type == IMAGE_REL_PPC_PAIR || type == IMAGE_REL_PPC_IMGLUE)
+          continue;
+      }
       Symbol *relocTarget = sc->file->getSymbol(rel.SymbolTableIndex);
 
       Defined *sym = dyn_cast_or_null<Defined>(relocTarget);
@@ -651,7 +686,11 @@ bool Writer::verifyRanges(const std::vector<Chunk *> chunks) {
         continue;
 
       uint64_t p = sc->getRVA() + rel.VirtualAddress;
-      uint64_t s = sym->getRVA();
+      int64_t addend = 0;
+      if (machine == IMAGE_FILE_MACHINE_POWERPC &&
+          (rel.Type & IMAGE_REL_PPC_TYPEMASK) == IMAGE_REL_PPC_REL24)
+        addend = sc->getPPCBranchAddend(rel);
+      uint64_t s = static_cast<uint32_t>(sym->getRVA() + addend);
 
       if (!isInRange(rel.Type, s, p, 0, machine))
         return false;
@@ -663,7 +702,8 @@ bool Writer::verifyRanges(const std::vector<Chunk *> chunks) {
 // Assign addresses and add thunks if necessary.
 void Writer::finalizeAddresses() {
   assignAddresses();
-  if (ctx.config.machine != ARMNT && !isAnyArm64(ctx.config.machine))
+  if (ctx.config.machine != ARMNT && !isAnyArm64(ctx.config.machine) &&
+      ctx.config.machine != IMAGE_FILE_MACHINE_POWERPC)
     return;
 
   size_t origNumChunks = 0;

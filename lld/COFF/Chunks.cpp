@@ -256,7 +256,7 @@ static uint16_t readPPC16(uint8_t *off, bool isLE) {
   return isLE ? read16le(off) : read16be(off);
 }
 
-static uint32_t readPPC32(uint8_t *off, bool isLE) {
+static uint32_t readPPC32(const uint8_t *off, bool isLE) {
   return isLE ? read32le(off) : read32be(off);
 }
 
@@ -286,6 +286,20 @@ static void applyPPCAddr24(uint8_t *off, uint64_t v, bool isLE) {
 static void applyPPCAddr14(uint8_t *off, uint64_t v, bool isLE) {
   uint32_t inst = readPPC32(off, isLE);
   writePPC32(off, (inst & 0xffff0003) | (v & 0x0000fffc), isLE);
+}
+
+int64_t SectionChunk::getPPCBranchAddend(const coff_relocation &rel) const {
+  assert(getMachine() == IMAGE_FILE_MACHINE_POWERPC);
+  assert((rel.Type & IMAGE_REL_PPC_TYPEMASK) == IMAGE_REL_PPC_REL24);
+  ArrayRef<uint8_t> contents = getContents();
+  assert(contents.size() >= sizeof(uint32_t) &&
+         rel.VirtualAddress <= contents.size() - sizeof(uint32_t));
+  bool isLE = getArch() == Triple::ppcle;
+  int64_t encoded = SignExtend64<26>(
+      readPPC32(contents.data() + rel.VirtualAddress, isLE) & 0x03fffffc);
+  // Microsoft encodes A - O in the instruction, where O is the relocation's
+  // offset in its input section contribution. Recover the source addend A.
+  return encoded + rel.VirtualAddress;
 }
 
 static int64_t getPPCPairAddend(const SectionChunk *sec,
@@ -374,7 +388,12 @@ void SectionChunk::applyRelPPC(uint8_t *off, const coff_relocation &rel,
     int64_t sectionStart =
         static_cast<int64_t>(p) - static_cast<int64_t>(rel.VirtualAddress);
     int64_t addend = SignExtend64<26>(readPPC32(off, isLE) & 0x03fffffc);
-    applyPPCAddr24(off, static_cast<int64_t>(s) - sectionStart + addend, isLE);
+    int64_t value = static_cast<int64_t>(s) - sectionStart + addend;
+    if (!isInt<26>(value))
+      error("PowerPC REL24 relocation out of range");
+    if (value & 3)
+      error("PowerPC REL24 relocation is not four-byte aligned");
+    applyPPCAddr24(off, value, isLE);
     break;
   }
   case IMAGE_REL_PPC_REL14: {
@@ -1391,6 +1410,26 @@ void RangeExtensionThunkARM64::writeTo(uint8_t *buf) const {
   memcpy(buf, arm64Thunk, sizeof(arm64Thunk));
   applyArm64Addr(buf + 0, target->getRVA(), rva, 12);
   applyArm64Imm(buf + 4, target->getRVA() & 0xfff, 0);
+}
+
+size_t RangeExtensionThunkPPC::getSize() const { return 32; }
+
+void RangeExtensionThunkPPC::writeTo(uint8_t *buf) const {
+  auto ha = [](uint32_t v) -> uint16_t { return (v + 0x8000) >> 16; };
+  auto lo = [](uint32_t v) -> uint16_t { return v; };
+
+  uint32_t destination = target->getRVA() + addend;
+  if (destination & 3)
+    error("PowerPC range-extension thunk target is not four-byte aligned");
+  uint32_t offset = destination - (rva + 8);
+  writePPC32(buf + 0, 0x7c0802a6, true);               // mflr r0
+  writePPC32(buf + 4, 0x429f0005, true);               // bcl 20,31,.+4
+  writePPC32(buf + 8, 0x7d8802a6, true);               // mflr r12
+  writePPC32(buf + 12, 0x3d8c0000 | ha(offset), true); // addis r12,r12,ha
+  writePPC32(buf + 16, 0x398c0000 | lo(offset), true); // addi r12,r12,lo
+  writePPC32(buf + 20, 0x7c0803a6, true);              // mtlr r0
+  writePPC32(buf + 24, 0x7d8903a6, true);              // mtctr r12
+  writePPC32(buf + 28, 0x4e800420, true);              // bctr
 }
 
 void SameAddressThunkARM64EC::setDynamicRelocs(COFFLinkerContext &ctx) const {
