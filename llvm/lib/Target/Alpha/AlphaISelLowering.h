@@ -36,6 +36,9 @@ namespace llvm {
       /// RetLit - Literal Relocation of a Global
       RelLit,
 
+      /// Alpha ELF TLS address materialization.
+      TPRelHi, TPRelLo, GOTTPRel, RDUNIQUE,
+
       /// GlobalRetAddr - used to restore the return address
       GlobalRetAddr,
 
@@ -112,11 +115,10 @@ namespace llvm {
 
     bool isOffsetFoldingLegal(const GlobalAddressSDNode *GA) const override;
 
-    /// isFPImmLegal - Returns true if the target can instruction select the
-    /// specified FP immediate natively. If false, the legalizer will
-    /// materialize the FP immediate as a load from a constant pool.
-    bool isFPImmLegal(const APFloat &Imm, EVT VT,
-                      bool ForCodeSize) const override;
+    /// Only +/-0.0 can be selected natively (from F31); other FP immediates
+    /// are materialized as a load from a constant pool.
+    FPImmAction getFPImmAction(const APFloat &Imm, EVT VT,
+                               bool ForCodeSize) const override;
 
   private:
     // Helpers for custom lowering.

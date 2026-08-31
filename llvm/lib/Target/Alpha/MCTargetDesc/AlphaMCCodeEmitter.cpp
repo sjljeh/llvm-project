@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "AlphaMCTargetDesc.h"
+#include "llvm/BinaryFormat/ELF.h"
 #include "llvm/MC/MCCodeEmitter.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCExpr.h"
@@ -127,13 +128,130 @@ int64_t AlphaMCCodeEmitter::getImmediate(const MCInst &MI,
 
 uint32_t AlphaMCCodeEmitter::getBinaryCodeForInstr(
     const MCInst &MI, SmallVectorImpl<MCFixup> &Fixups) const {
+  auto GetFixupKind = [](const MCExpr *Expr,
+                         MCFixupKind DefaultKind) -> MCFixupKind {
+    const auto *Specifier = dyn_cast<MCSpecifierExpr>(Expr);
+    if (!Specifier)
+      return DefaultKind;
+    switch (static_cast<Alpha::Specifier>(Specifier->getSpecifier())) {
+    case Alpha::S_LITERAL:
+      return Alpha::fixup_Alpha_LITERAL;
+    case Alpha::S_LITUSE_ADDR:
+    case Alpha::S_LITUSE_BASE:
+    case Alpha::S_LITUSE_BYTOFF:
+    case Alpha::S_LITUSE_JSR:
+    case Alpha::S_LITUSE_TLSGD:
+    case Alpha::S_LITUSE_TLSLDM:
+    case Alpha::S_LITUSE_JSRDIRECT:
+      return DefaultKind;
+    case Alpha::S_GPDISP:
+      return Alpha::fixup_Alpha_GPDISP;
+    case Alpha::S_GPRELHIGH:
+      return Alpha::fixup_Alpha_REFHI;
+    case Alpha::S_GPRELLOW:
+      return Alpha::fixup_Alpha_REFLO;
+    case Alpha::S_GPREL16:
+      return Alpha::fixup_Alpha_GPREL16;
+    case Alpha::S_GPREL32:
+      return DefaultKind;
+    case Alpha::S_BRSGP:
+      return Alpha::fixup_Alpha_BRSGP;
+    case Alpha::S_TLSGD:
+      return Alpha::fixup_Alpha_TLSGD;
+    case Alpha::S_TLSLDM:
+      return Alpha::fixup_Alpha_TLSLDM;
+    case Alpha::S_GOTDTPREL:
+      return Alpha::fixup_Alpha_GOTDTPREL;
+    case Alpha::S_DTPRELHI:
+      return Alpha::fixup_Alpha_DTPRELHI;
+    case Alpha::S_DTPRELLO:
+      return Alpha::fixup_Alpha_DTPRELLO;
+    case Alpha::S_DTPREL16:
+      return Alpha::fixup_Alpha_DTPREL16;
+    case Alpha::S_GOTTPREL:
+      return Alpha::fixup_Alpha_GOTTPREL;
+    case Alpha::S_TPRELHI:
+      return Alpha::fixup_Alpha_TPRELHI;
+    case Alpha::S_TPRELLO:
+      return Alpha::fixup_Alpha_TPRELLO;
+    case Alpha::S_TPREL16:
+      return Alpha::fixup_Alpha_TPREL16;
+    case Alpha::S_None:
+      return DefaultKind;
+    }
+    llvm_unreachable("invalid Alpha relocation specifier");
+  };
+
+  auto GetFixupExpr = [&](const MCExpr *Expr) -> const MCExpr * {
+    const auto *Specifier = dyn_cast<MCSpecifierExpr>(Expr);
+    if (!Specifier)
+      return Expr;
+    switch (static_cast<Alpha::Specifier>(Specifier->getSpecifier())) {
+    case Alpha::S_GPDISP:
+      return MCConstantExpr::create(4, Ctx);
+    default:
+      return Specifier->getSubExpr();
+    }
+  };
+
+  bool HasLituse = false;
+  if (Ctx.getTargetTriple().isOSBinFormatELF()) {
+    for (const MCOperand &Op : MI) {
+      if (!Op.isExpr())
+        continue;
+      const auto *Specifier = dyn_cast<MCSpecifierExpr>(Op.getExpr());
+      if (!Specifier)
+        continue;
+      unsigned Use;
+      switch (static_cast<Alpha::Specifier>(Specifier->getSpecifier())) {
+      case Alpha::S_LITUSE_ADDR:
+        Use = ELF::LITUSE_ALPHA_ADDR;
+        break;
+      case Alpha::S_LITUSE_BASE:
+        Use = ELF::LITUSE_ALPHA_BASE;
+        break;
+      case Alpha::S_LITUSE_BYTOFF:
+        Use = ELF::LITUSE_ALPHA_BYTOFF;
+        break;
+      case Alpha::S_LITUSE_JSR:
+        Use = ELF::LITUSE_ALPHA_JSR;
+        break;
+      case Alpha::S_LITUSE_TLSGD:
+        Use = ELF::LITUSE_ALPHA_TLSGD;
+        break;
+      case Alpha::S_LITUSE_TLSLDM:
+        Use = ELF::LITUSE_ALPHA_TLSLDM;
+        break;
+      case Alpha::S_LITUSE_JSRDIRECT:
+        Use = ELF::LITUSE_ALPHA_JSRDIRECT;
+        break;
+      default:
+        continue;
+      }
+      Fixups.push_back(MCFixup::create(0, MCConstantExpr::create(Use, Ctx),
+                                       Alpha::fixup_Alpha_LITUSE));
+      HasLituse = true;
+      break;
+    }
+    if (!HasLituse &&
+        (MI.getOpcode() == Alpha::JSRl || MI.getOpcode() == Alpha::JSRs)) {
+      Fixups.push_back(
+          MCFixup::create(0, MCConstantExpr::create(ELF::LITUSE_ALPHA_JSR, Ctx),
+                          Alpha::fixup_Alpha_LITUSE));
+    }
+  }
+
   auto EncodeMem = [&](unsigned Opcode) -> uint32_t {
     unsigned Ra = getRegisterNumber(MI.getOperand(0));
     unsigned Rb = getRegisterNumber(MI.getOperand(2));
     const MCOperand &DispOp = MI.getOperand(1);
     if (DispOp.isExpr()) {
+      MCFixupKind Kind =
+          GetFixupKind(DispOp.getExpr(), Alpha::fixup_Alpha_REFLO);
+      if (Kind == Alpha::fixup_Alpha_GPDISP && Opcode == 0x08)
+        return (Opcode << 26) | (Ra << 21) | (Rb << 16);
       Fixups.push_back(
-          MCFixup::create(0, DispOp.getExpr(), Alpha::fixup_Alpha_REFLO, false));
+          MCFixup::create(0, GetFixupExpr(DispOp.getExpr()), Kind, false));
       return (Opcode << 26) | (Ra << 21) | (Rb << 16);
     }
     int64_t Disp = getImmediate(MI, 1);
@@ -148,7 +266,11 @@ uint32_t AlphaMCCodeEmitter::getBinaryCodeForInstr(
     unsigned Rb = getRegisterNumber(MI.getOperand(2));
     const MCOperand &DispOp = MI.getOperand(1);
     if (DispOp.isExpr()) {
-      Fixups.push_back(MCFixup::create(0, DispOp.getExpr(), FixupKind, false));
+      MCFixupKind Kind = GetFixupKind(DispOp.getExpr(), FixupKind);
+      if (Kind == Alpha::fixup_Alpha_GPDISP && Opcode == 0x08)
+        return (Opcode << 26) | (Ra << 21) | (Rb << 16);
+      Fixups.push_back(
+          MCFixup::create(0, GetFixupExpr(DispOp.getExpr()), Kind, false));
       return (Opcode << 26) | (Ra << 21) | (Rb << 16);
     }
     int64_t Disp = getImmediate(MI, 1);
@@ -214,8 +336,9 @@ uint32_t AlphaMCCodeEmitter::getBinaryCodeForInstr(
                                  unsigned OpNo) -> uint32_t {
     const MCOperand &MO = MI.getOperand(OpNo);
     if (MO.isExpr()) {
-      Fixups.push_back(
-          MCFixup::create(0, MO.getExpr(), Alpha::fixup_Alpha_Branch, true));
+      MCFixupKind Kind = GetFixupKind(MO.getExpr(), Alpha::fixup_Alpha_Branch);
+      const MCExpr *Expr = GetFixupExpr(MO.getExpr());
+      Fixups.push_back(MCFixup::create(0, Expr, Kind, true));
       return EncodeBranch(Opcode, Ra, 0);
     }
     return EncodeBranch(Opcode, Ra, getImmediate(MI, OpNo));
@@ -224,6 +347,14 @@ uint32_t AlphaMCCodeEmitter::getBinaryCodeForInstr(
   switch (MI.getOpcode()) {
   case Alpha::UNOP:
     return 0x2ffe0000;
+  case Alpha::RDUNIQUE:
+    return 0x0000009e;
+  case Alpha::LDAHt:
+    return EncodeMemFixup(0x09, Alpha::fixup_Alpha_TPRELHI);
+  case Alpha::LDAt:
+    return EncodeMemFixup(0x08, Alpha::fixup_Alpha_TPRELLO);
+  case Alpha::LDQt:
+    return EncodeMemFixup(0x29, Alpha::fixup_Alpha_GOTTPREL);
   case Alpha::CALL_PAL:
     return static_cast<uint32_t>(getImmediate(MI, 0)) & 0x03ffffff;
   case Alpha::MB:
@@ -397,6 +528,7 @@ uint32_t AlphaMCCodeEmitter::getBinaryCodeForInstr(
   case Alpha::FBGT:
     return EncodeBranchOperand(0x37, getRegisterNumber(MI.getOperand(0)), 1);
   case Alpha::JSR:
+  case Alpha::JSRl:
     return (0x1a << 26) | (26 << 21) | (27 << 16) | (1 << 14);
   case Alpha::JSRs:
     return (0x1a << 26) | (26 << 21) | (27 << 16) | (1 << 14);
@@ -405,6 +537,16 @@ uint32_t AlphaMCCodeEmitter::getBinaryCodeForInstr(
            (getRegisterNumber(MI.getOperand(0)) << 16);
   case Alpha::LDA:
     return EncodeMem(0x08);
+  case Alpha::LDAHg: {
+    unsigned Ra = getRegisterNumber(MI.getOperand(0));
+    unsigned Rb = getRegisterNumber(MI.getOperand(2));
+    const MCExpr *Distance = MCConstantExpr::create(4, Ctx);
+    Fixups.push_back(MCFixup::create(0, Distance, Alpha::fixup_Alpha_GPDISP));
+    return (0x09 << 26) | (Ra << 21) | (Rb << 16);
+  }
+  case Alpha::LDAg:
+    return (0x08 << 26) | (getRegisterNumber(MI.getOperand(0)) << 21) |
+           (getRegisterNumber(MI.getOperand(2)) << 16);
   case Alpha::LDAHr:
     return EncodeMemFixup(0x09, Alpha::fixup_Alpha_REFHI);
   case Alpha::LDAH:
@@ -424,7 +566,9 @@ uint32_t AlphaMCCodeEmitter::getBinaryCodeForInstr(
   case Alpha::LDQr:
     return EncodeMemFixup(0x29, Alpha::fixup_Alpha_REFLO);
   case Alpha::LDQl:
-    return EncodeMem(0x29);
+    return EncodeMemFixup(0x29, Ctx.getTargetTriple().isOSBinFormatELF()
+                                    ? Alpha::fixup_Alpha_LITERAL
+                                    : Alpha::fixup_Alpha_REFLO);
   case Alpha::LDAr:
     return EncodeMemFixup(0x08, Alpha::fixup_Alpha_REFLO);
   case Alpha::LDWU:

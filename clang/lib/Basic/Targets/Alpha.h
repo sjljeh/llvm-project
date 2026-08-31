@@ -23,8 +23,15 @@ class LLVM_LIBRARY_VISIBILITY AlphaTargetInfo : public TargetInfo {
 public:
   AlphaTargetInfo(const llvm::Triple &Triple, const TargetOptions &Opts)
       : TargetInfo(Triple) {
+    PointerWidth = PointerAlign = 64;
+    LongWidth = LongAlign = 64;
     LongDoubleWidth = LongDoubleAlign = 128;
-    resetDataLayout("e-p:64:64-f128:128:128-n64");
+    LongDoubleFormat = &llvm::APFloat::IEEEquad();
+    Int128Align = SuitableAlign = 128;
+    SizeType = UnsignedLong;
+    PtrDiffType = IntPtrType = SignedLong;
+    IntMaxType = Int64Type = SignedLong;
+    resetDataLayout("e-m:e-p:64:64-i64:64-i128:128-f128:128:128-n64-S128");
   }
 
   void getTargetDefines(const LangOptions &Opts,
@@ -73,21 +80,23 @@ public:
     LongWidth = LongAlign = 32;
     SizeType = UnsignedInt;
     PtrDiffType = IntPtrType = SignedInt;
+    IntMaxType = Int64Type = SignedLongLong;
     LongDoubleWidth = LongDoubleAlign = 64;
     LongDoubleFormat = &llvm::APFloat::IEEEdouble();
+    SuitableAlign = 64;
     resetDataLayout("e-p:32:32-f64:64-n32:64");
   }
+
+  // The 32-bit address space (TASO) is a distinct data layout, so report it as
+  // the target ABI. CodeGen records it in the "target-abi" module flag, from
+  // which the backend recomputes and verifies the module's data layout.
+  StringRef getABI() const override { return "taso"; }
 };
 
 class LLVM_LIBRARY_VISIBILITY Alpha64TargetInfo : public AlphaTargetInfo {
 public:
   Alpha64TargetInfo(const llvm::Triple &Triple, const TargetOptions &Opts)
-      : AlphaTargetInfo(Triple, Opts) {
-    PointerWidth = PointerAlign = 64;
-    LongWidth = LongAlign = 64;
-    LongDoubleWidth = LongDoubleAlign = 128;
-    resetDataLayout("e-p:64:64-f128:128:128-n64");
-  }
+      : AlphaTargetInfo(Triple, Opts) {}
 };
 
 class LLVM_LIBRARY_VISIBILITY WindowsAlphaTargetInfo
@@ -143,6 +152,7 @@ public:
     LongWidth = LongAlign = 32;
     LongDoubleWidth = LongDoubleAlign = 64;
     LongDoubleFormat = &llvm::APFloat::IEEEdouble();
+    SuitableAlign = 64;
     SizeType = UnsignedLongLong;
     PtrDiffType = IntPtrType = SignedLongLong;
     IntMaxType = Int64Type = SignedLongLong;

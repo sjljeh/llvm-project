@@ -16,7 +16,7 @@ Target &llvm::getTheAlphaTarget() {
   return TheAlphaTarget;
 }
 
-extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeAlphaTargetInfo() {
+extern "C" LLVM_ABI LLVM_EXTERNAL_VISIBILITY void LLVMInitializeAlphaTargetInfo() {
   RegisterTarget<Triple::alpha, /*HasJIT=*/false> X(
       getTheAlphaTarget(), "alpha", "Alpha [experimental]", "Alpha");
 }

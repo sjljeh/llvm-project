@@ -40,20 +40,24 @@ static bool hasTASOFeature(StringRef FS) {
   return llvm::is_contained(Features, "+taso");
 }
 
-static StringRef getDataLayoutForTriple(const Triple &TT, StringRef FS) {
-  if (TT.isOSWindows() && hasTASOFeature(FS))
-    return "e-p:32:32-f64:64-n32:64";
-  if (TT.isOSWindows())
-    return "e-p:64:64-f64:64-n32:64";
-  return "e-p:64:64-f128:128:128-n64";
+// The data layout is computed from the triple and the ABI name. Windows TASO
+// uses a 32-bit address space, so select it through the "taso" ABI name when
+// the +taso feature is requested without an explicit ABI.
+static TargetOptions getAlphaTargetOptions(const Triple &TT, StringRef FS,
+                                           TargetOptions Options) {
+  if (TT.isOSWindows() && hasTASOFeature(FS) &&
+      Options.MCOptions.ABIName.empty())
+    Options.MCOptions.ABIName = "taso";
+  return Options;
 }
 
 AlphaTargetMachine::AlphaTargetMachine(
     const Target &T, const Triple &TT, StringRef CPU, StringRef FS,
     const TargetOptions &Options, std::optional<Reloc::Model> RM,
     std::optional<CodeModel::Model> CM, CodeGenOptLevel OL, bool JIT)
-    : CodeGenTargetMachineImpl(T, getDataLayoutForTriple(TT, FS), TT, CPU, FS,
-                               Options, getEffectiveRelocModel(RM),
+    : CodeGenTargetMachineImpl(T, TT, CPU, FS,
+                               getAlphaTargetOptions(TT, FS, Options),
+                               getEffectiveRelocModel(RM),
                                getEffectiveCodeModel(CM, CodeModel::Small), OL),
       TLOF(createTLOF(TT)) {
   initAsmInfo();

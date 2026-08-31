@@ -1,0 +1,16 @@
+## Accept the registry-assigned Alpha machine value 41 for compatibility, even
+## though deployed Alpha ELF systems use the historical value 0x9026.
+
+# RUN: yaml2obj %s -o %t
+# RUN: llvm-readobj --file-headers %t | FileCheck %s
+
+# CHECK: Format: elf64-alpha
+# CHECK: Arch: alpha
+# CHECK: Machine: EM_ALPHA_STD (0x29)
+
+--- !ELF
+FileHeader:
+  Class:   ELFCLASS64
+  Data:    ELFDATA2LSB
+  Type:    ET_REL
+  Machine: EM_ALPHA_STD

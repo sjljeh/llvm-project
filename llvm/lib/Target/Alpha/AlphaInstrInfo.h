@@ -34,6 +34,12 @@ public:
   ///
   const AlphaRegisterInfo &getRegisterInfo() const { return RI; }
 
+  /// Inline asm memory operands are addressed through a GPR base register.
+  const TargetRegisterClass *
+  getInlineAsmMemoryOperandRegClass(InlineAsm::ConstraintCode C) const override {
+    return &Alpha::GPRCRegClass;
+  }
+
   Register isLoadFromStackSlot(const MachineInstr &MI,
                                int &FrameIndex) const override;
   Register isStoreToStackSlot(const MachineInstr &MI,

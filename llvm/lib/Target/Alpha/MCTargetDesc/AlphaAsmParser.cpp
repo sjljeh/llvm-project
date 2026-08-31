@@ -9,6 +9,7 @@
 #include "AlphaMCTargetDesc.h"
 #include "TargetInfo/AlphaTargetInfo.h"
 #include "llvm/ADT/StringSwitch.h"
+#include "llvm/BinaryFormat/ELF.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCParser/AsmLexer.h"
@@ -18,8 +19,10 @@
 #include "llvm/MC/MCRegister.h"
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSubtargetInfo.h"
+#include "llvm/MC/MCSymbolELF.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/raw_ostream.h"
+#include <optional>
 
 using namespace llvm;
 
@@ -105,6 +108,16 @@ public:
 };
 
 class AlphaAsmParser : public MCTargetAsmParser {
+  Alpha::Specifier RelocSpecifier = Alpha::S_None;
+  std::optional<int64_t> RelocSequence;
+  std::optional<int64_t> ActiveLiteralSequence;
+  std::optional<int64_t> PendingGPDISPSequence;
+  SMLoc CurrentInstructionLoc;
+  SMLoc RelocLoc;
+  SMLoc PendingGPDISPLoc;
+  unsigned CurrentOpcode = 0;
+  bool PendingGPDISPInterrupted = false;
+
 public:
   AlphaAsmParser(const MCSubtargetInfo &STI, MCAsmParser &Parser,
                  const MCInstrInfo &MII)
@@ -121,7 +134,45 @@ public:
   }
 
   bool ParseDirective(AsmToken DirectiveID) override {
+    if (PendingGPDISPSequence)
+      PendingGPDISPInterrupted = true;
+
     StringRef Directive = DirectiveID.getString();
+    if (Directive == ".gprel32") {
+      SMLoc Loc = getParser().getTok().getLoc();
+      const MCExpr *Expr;
+      if (getParser().parseExpression(Expr))
+        return true;
+      Expr = MCSpecifierExpr::create(Expr, Alpha::S_GPREL32, getContext());
+      getStreamer().emitValue(Expr, 4, Loc);
+      return parseEndOfStatement();
+    }
+
+    if (Directive == ".usepv") {
+      if (!getContext().getTargetTriple().isOSBinFormatELF())
+        return Error(DirectiveID.getLoc(), ".usepv requires Alpha ELF");
+      if (getLexer().isNot(AsmToken::Identifier))
+        return Error(getParser().getTok().getLoc(), "expected symbol name");
+      MCSymbol *Symbol =
+          getContext().getOrCreateSymbol(getParser().getTok().getString());
+      getParser().Lex();
+      if (parseComma() || getLexer().isNot(AsmToken::Identifier))
+        return Error(getParser().getTok().getLoc(),
+                     "expected 'no' or 'std' after .usepv symbol");
+      StringRef Kind = getParser().getTok().getString();
+      unsigned Other;
+      if (Kind.equals_insensitive("no"))
+        Other = ELF::STO_ALPHA_NOPV;
+      else if (Kind.equals_insensitive("std"))
+        Other = ELF::STO_ALPHA_STD_GPLOAD;
+      else
+        return Error(getParser().getTok().getLoc(),
+                     "expected 'no' or 'std' after .usepv symbol");
+      getParser().Lex();
+      cast<MCSymbolELF>(Symbol)->setOther(Other);
+      return parseEndOfStatement();
+    }
+
     bool IsProcedureMetadata =
         StringSwitch<bool>(Directive.lower())
             .Cases({".aent", ".ent", ".end", ".edata"}, true)
@@ -142,6 +193,9 @@ public:
 
   bool parseInstruction(ParseInstructionInfo &Info, StringRef Name,
                         SMLoc NameLoc, OperandVector &Operands) override {
+    RelocSpecifier = Alpha::S_None;
+    RelocSequence.reset();
+    CurrentInstructionLoc = NameLoc;
     Operands.push_back(AlphaOperand::createToken(Name, NameLoc));
 
     unsigned Opcode = StringSwitch<unsigned>(Name)
@@ -170,6 +224,7 @@ public:
                           .Case("bne", Alpha::BNE)
                           .Case("br", Alpha::BR)
                           .Case("bsr", Alpha::BSR)
+                          .Case("jsr", Alpha::JSR)
                           .Case("lda", Alpha::LDA)
                           .Case("ldah", Alpha::LDAH)
                           .Case("ldl", Alpha::LDL)
@@ -184,9 +239,10 @@ public:
 
     if (!Opcode)
       return Error(NameLoc, "Alpha instruction parsing is not implemented");
+    CurrentOpcode = Opcode;
 
     if (Opcode == Alpha::UNOP || Opcode == Alpha::MB || Opcode == Alpha::WMB)
-      return parseEndOfStatement();
+      return parseEndOfInstruction();
 
     if (Opcode == Alpha::RETDAG) {
       // ASAXP accepts ret, ret $31,($26), and ret $31,($26),1. RETDAG has
@@ -194,11 +250,14 @@ public:
       while (getLexer().isNot(AsmToken::EndOfStatement) &&
              getLexer().isNot(AsmToken::Eof))
         getParser().Lex();
-      return parseEndOfStatement();
+      return parseEndOfInstruction();
     }
 
     if (Opcode == Alpha::CALL_PAL)
       return parsePALInstruction(Operands);
+
+    if (Opcode == Alpha::JSR)
+      return parseJSRInstruction();
 
     if (Opcode == Alpha::BR || Opcode == Alpha::BSR)
       return parseUnconditionalBranchInstruction(Operands);
@@ -255,6 +314,7 @@ public:
                               .Case("bne", Alpha::BNE)
                               .Case("br", Alpha::BR)
                               .Case("bsr", Alpha::BSR)
+                              .Case("jsr", Alpha::JSR)
                               .Case("lda", Alpha::LDA)
                               .Case("ldah", Alpha::LDAH)
                               .Case("ldl", Alpha::LDL)
@@ -318,11 +378,21 @@ public:
       return Error(IDLoc, "Alpha instruction parsing is not implemented");
 
     Inst.setOpcode(InstOpcode);
+    bool SpecifierApplied = false;
     auto AddOperand = [&](unsigned I) {
       auto &Operand = static_cast<AlphaOperand &>(*Operands[I]);
       if (Operand.isReg())
         Inst.addOperand(MCOperand::createReg(Operand.getReg()));
-      else if (Operand.isImm())
+      else if (RelocSpecifier != Alpha::S_None && !SpecifierApplied &&
+               (Operand.isImm() || Operand.isExpr())) {
+        const MCExpr *SubExpr =
+            Operand.isExpr()
+                ? Operand.getExpr()
+                : MCConstantExpr::create(Operand.getImm(), getContext());
+        Inst.addOperand(MCOperand::createExpr(
+            MCSpecifierExpr::create(SubExpr, RelocSpecifier, getContext())));
+        SpecifierApplied = true;
+      } else if (Operand.isImm())
         Inst.addOperand(MCOperand::createImm(Operand.getImm()));
       else if (Operand.isExpr())
         Inst.addOperand(MCOperand::createExpr(Operand.getExpr()));
@@ -345,6 +415,11 @@ public:
       for (unsigned I = 1, E = Operands.size(); I != E; ++I)
         AddOperand(I);
     }
+    if (RelocSpecifier != Alpha::S_None && !SpecifierApplied) {
+      const MCExpr *Zero = MCConstantExpr::create(0, getContext());
+      Inst.addOperand(MCOperand::createExpr(
+          MCSpecifierExpr::create(Zero, RelocSpecifier, getContext())));
+    }
 
     Out.emitInstruction(Inst, getSTI());
     return false;
@@ -352,6 +427,11 @@ public:
 
   void convertToMapAndConstraints(unsigned Kind,
                                    const OperandVector &Operands) override {}
+
+  void onEndOfFile() override {
+    if (PendingGPDISPSequence)
+      Error(PendingGPDISPLoc, "unpaired explicit !gpdisp sequence");
+  }
 
 private:
   bool parseGPR(MCRegister &Reg, SMLoc &StartLoc, SMLoc &EndLoc) {
@@ -468,6 +548,36 @@ private:
       return false;
     }
 
+    // Stop before a following relocation suffix. The generic expression
+    // parser treats '!' as an operator and would consume it. Parse the common
+    // symbol-plus-constant form here; otherwise use the generic parser.
+    if (getLexer().is(AsmToken::Identifier)) {
+      AsmToken::TokenKind NextKind = getLexer().peekTok().getKind();
+      if (NextKind == AsmToken::Exclaim || NextKind == AsmToken::Plus ||
+          NextKind == AsmToken::Minus) {
+        StringRef Name = getParser().getTok().getString();
+        const MCExpr *Expr = MCSymbolRefExpr::create(
+            getContext().getOrCreateSymbol(Name), getContext());
+        SMLoc EndLoc = getParser().getTok().getEndLoc();
+        getParser().Lex();
+        if (getLexer().is(AsmToken::Plus) || getLexer().is(AsmToken::Minus)) {
+          bool IsSub = getLexer().is(AsmToken::Minus);
+          getParser().Lex();
+          if (getLexer().isNot(AsmToken::Integer))
+            return Error(getParser().getTok().getLoc(),
+                         "expected integer symbol addend");
+          const MCExpr *Addend = MCConstantExpr::create(
+              getParser().getTok().getIntVal(), getContext());
+          EndLoc = getParser().getTok().getEndLoc();
+          getParser().Lex();
+          Expr = IsSub ? MCBinaryExpr::createSub(Expr, Addend, getContext())
+                       : MCBinaryExpr::createAdd(Expr, Addend, getContext());
+        }
+        Operands.push_back(AlphaOperand::createExpr(Expr, StartLoc, EndLoc));
+        return false;
+      }
+    }
+
     const MCExpr *Expr;
     if (getParser().parseExpression(Expr))
       return true;
@@ -486,10 +596,158 @@ private:
   }
 
   bool parseEndOfStatement() {
+    if (getLexer().is(AsmToken::Exclaim)) {
+      SMLoc SuffixLoc = getParser().getTok().getLoc();
+      RelocLoc = SuffixLoc;
+      getParser().Lex();
+      if (getLexer().isNot(AsmToken::Identifier))
+        return Error(SuffixLoc, "expected Alpha relocation suffix");
+
+      StringRef Name = getParser().getTok().getString();
+      RelocSpecifier = StringSwitch<Alpha::Specifier>(Name.lower())
+                           .Case("literal", Alpha::S_LITERAL)
+                           .Case("lituse_addr", Alpha::S_LITUSE_ADDR)
+                           .Case("lituse_base", Alpha::S_LITUSE_BASE)
+                           .Case("lituse_bytoff", Alpha::S_LITUSE_BYTOFF)
+                           .Case("lituse_jsr", Alpha::S_LITUSE_JSR)
+                           .Case("lituse_tlsgd", Alpha::S_LITUSE_TLSGD)
+                           .Case("lituse_tlsldm", Alpha::S_LITUSE_TLSLDM)
+                           .Case("lituse_jsrdirect", Alpha::S_LITUSE_JSRDIRECT)
+                           .Case("gpdisp", Alpha::S_GPDISP)
+                           .Case("gprelhigh", Alpha::S_GPRELHIGH)
+                           .Case("gprellow", Alpha::S_GPRELLOW)
+                           .Case("gprel", Alpha::S_GPREL16)
+                           .Case("samegp", Alpha::S_BRSGP)
+                           .Case("brsgp", Alpha::S_BRSGP)
+                           .Case("tlsgd", Alpha::S_TLSGD)
+                           .Case("tlsldm", Alpha::S_TLSLDM)
+                           .Case("gotdtprel", Alpha::S_GOTDTPREL)
+                           .Case("dtprelhi", Alpha::S_DTPRELHI)
+                           .Case("dtprello", Alpha::S_DTPRELLO)
+                           .Case("dtprel", Alpha::S_DTPREL16)
+                           .Case("gottprel", Alpha::S_GOTTPREL)
+                           .Case("tprelhi", Alpha::S_TPRELHI)
+                           .Case("tprello", Alpha::S_TPRELLO)
+                           .Case("tprel", Alpha::S_TPREL16)
+                           .Default(Alpha::S_None);
+      if (RelocSpecifier == Alpha::S_None)
+        return Error(SuffixLoc, "unknown Alpha relocation suffix");
+      getParser().Lex();
+
+      if (getLexer().is(AsmToken::Exclaim)) {
+        getParser().Lex();
+        if (getLexer().isNot(AsmToken::Integer))
+          return Error(getParser().getTok().getLoc(),
+                       "expected Alpha relocation sequence number");
+        RelocSequence = getParser().getTok().getIntVal();
+        getParser().Lex();
+      }
+    }
     if (getLexer().isNot(AsmToken::EndOfStatement))
       return Error(getParser().getTok().getLoc(), "unexpected token");
     getParser().Lex();
     return false;
+  }
+
+  bool parseEndOfInstruction() {
+    if (parseEndOfStatement())
+      return true;
+    if (!getContext().getTargetTriple().isOSBinFormatELF())
+      return false;
+
+    if (RelocSpecifier == Alpha::S_GPDISP && !RelocSequence)
+      return Error(RelocLoc, "!gpdisp requires an explicit sequence number");
+
+    switch (RelocSpecifier) {
+    case Alpha::S_LITERAL:
+    case Alpha::S_TLSGD:
+    case Alpha::S_TLSLDM:
+      ActiveLiteralSequence = RelocSequence;
+      break;
+    case Alpha::S_LITUSE_ADDR:
+    case Alpha::S_LITUSE_BASE:
+    case Alpha::S_LITUSE_BYTOFF:
+    case Alpha::S_LITUSE_JSR:
+    case Alpha::S_LITUSE_TLSGD:
+    case Alpha::S_LITUSE_TLSLDM:
+    case Alpha::S_LITUSE_JSRDIRECT:
+      if (RelocSequence) {
+        if (!ActiveLiteralSequence)
+          return Error(RelocLoc,
+                       "explicit !lituse sequence has no preceding literal");
+        if (RelocSequence != ActiveLiteralSequence)
+          return Error(RelocLoc, "mismatched explicit !lituse sequence number");
+      }
+      break;
+    default:
+      break;
+    }
+
+    if (!PendingGPDISPSequence) {
+      if (RelocSpecifier != Alpha::S_GPDISP || !RelocSequence)
+        return false;
+      if (CurrentOpcode != Alpha::LDAH)
+        return Error(CurrentInstructionLoc,
+                     "explicit !gpdisp sequence must start with ldah");
+      PendingGPDISPSequence = RelocSequence;
+      PendingGPDISPLoc = RelocLoc;
+      PendingGPDISPInterrupted = false;
+      return false;
+    }
+
+    if (PendingGPDISPInterrupted) {
+      PendingGPDISPSequence.reset();
+      return Error(CurrentInstructionLoc,
+                   "explicit !gpdisp sequence pairs must be adjacent");
+    }
+    if (RelocSpecifier != Alpha::S_GPDISP || !RelocSequence) {
+      PendingGPDISPSequence.reset();
+      return Error(CurrentInstructionLoc,
+                   "expected adjacent lda with matching explicit !gpdisp "
+                   "sequence");
+    }
+    if (RelocSequence != PendingGPDISPSequence) {
+      PendingGPDISPSequence.reset();
+      return Error(RelocLoc, "mismatched explicit !gpdisp sequence number");
+    }
+    if (CurrentOpcode != Alpha::LDA) {
+      PendingGPDISPSequence.reset();
+      return Error(CurrentInstructionLoc,
+                   "explicit !gpdisp sequence must end with lda");
+    }
+
+    PendingGPDISPSequence.reset();
+    PendingGPDISPInterrupted = false;
+    return false;
+  }
+
+  bool parseJSRInstruction() {
+    MCRegister Reg;
+    SMLoc StartLoc;
+    SMLoc EndLoc;
+    if (parseGPR(Reg, StartLoc, EndLoc))
+      return true;
+    if (Reg != Alpha::R26)
+      return Error(StartLoc, "jsr destination register must be $26");
+    if (parseComma() || !parseOptionalToken(AsmToken::LParen))
+      return Error(getParser().getTok().getLoc(), "expected '('");
+    if (parseGPR(Reg, StartLoc, EndLoc))
+      return true;
+    if (Reg != Alpha::R27)
+      return Error(StartLoc, "jsr procedure-value register must be $27");
+    if (!parseOptionalToken(AsmToken::RParen))
+      return Error(getParser().getTok().getLoc(), "expected ')'");
+    if (getLexer().is(AsmToken::Comma)) {
+      getParser().Lex();
+      SMLoc HintLoc = getParser().getTok().getLoc();
+      if (getLexer().isNot(AsmToken::Integer))
+        return Error(HintLoc, "expected integer jsr hint");
+      int64_t Hint = getParser().getTok().getIntVal();
+      getParser().Lex();
+      if (Hint != 0)
+        return Error(HintLoc, "non-zero jsr hints are unsupported");
+    }
+    return parseEndOfInstruction();
   }
 
   bool parseOperateInstruction(OperandVector &Operands) {
@@ -506,7 +764,7 @@ private:
 
     if (parseComma() || parseRegisterOperand(Operands))
       return true;
-    return parseEndOfStatement();
+    return parseEndOfInstruction();
   }
 
   bool parseMemoryInstruction(OperandVector &Operands) {
@@ -520,25 +778,20 @@ private:
       return true;
     if (!parseOptionalToken(AsmToken::RParen))
       return Error(getParser().getTok().getLoc(), "expected ')'");
-    if (getLexer().is(AsmToken::Exclaim)) {
-      getParser().Lex();
-      if (getLexer().is(AsmToken::Identifier))
-        getParser().Lex();
-    }
-    return parseEndOfStatement();
+    return parseEndOfInstruction();
   }
 
   bool parsePALInstruction(OperandVector &Operands) {
     if (parseImmediateOperand(Operands))
       return true;
-    return parseEndOfStatement();
+    return parseEndOfInstruction();
   }
 
   bool parseConditionalBranchInstruction(OperandVector &Operands) {
     if (parseRegisterOperand(Operands) || parseComma() ||
         parseImmediateOrExpression(Operands, true))
       return true;
-    return parseEndOfStatement();
+    return parseEndOfInstruction();
   }
 
   bool parseUnconditionalBranchInstruction(OperandVector &Operands) {
@@ -554,7 +807,7 @@ private:
     }
     if (parseImmediateOrExpression(Operands, true))
       return true;
-    return parseEndOfStatement();
+    return parseEndOfInstruction();
   }
 };
 

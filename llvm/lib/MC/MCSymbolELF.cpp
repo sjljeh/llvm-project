@@ -22,9 +22,6 @@ enum {
   // Shift value for STV_* flags. 4 possible values, 2 bits.
   ELF_STV_Shift = 5,
 
-  // Shift value for the target-specific high four bits of st_other.
-  ELF_STO_Shift = 7,
-
   // One bit.
   ELF_IsSignature_Shift = 11,
 
@@ -155,17 +152,11 @@ unsigned MCSymbolELF::getVisibility() const {
 }
 
 void MCSymbolELF::setOther(unsigned Other) {
-  assert((Other & 0xf) == 0);
-  Other >>= 4;
-  assert(Other <= 0xf);
-  uint32_t OtherFlags = getFlags() & ~(0xf << ELF_STO_Shift);
-  setFlags(OtherFlags | (Other << ELF_STO_Shift));
+  assert(Other <= 0xff);
+  this->Other = static_cast<uint8_t>(Other);
 }
 
-unsigned MCSymbolELF::getOther() const {
-  unsigned Other = (Flags >> ELF_STO_Shift) & 0xf;
-  return Other << 4;
-}
+unsigned MCSymbolELF::getOther() const { return Other; }
 
 void MCSymbolELF::setIsWeakref() const {
   uint32_t OtherFlags = getFlags() & ~(0x1 << ELF_Weakref_Shift);
