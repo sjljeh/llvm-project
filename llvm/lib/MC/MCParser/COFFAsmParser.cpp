@@ -26,7 +26,42 @@ using namespace llvm;
 
 namespace {
 
+static bool getMicrosoftSectionProperties(StringRef Section,
+                                          unsigned &Characteristics,
+                                          Align &Alignment) {
+  if (Section == ".text") {
+    Characteristics = COFF::IMAGE_SCN_CNT_CODE | COFF::IMAGE_SCN_MEM_EXECUTE |
+                      COFF::IMAGE_SCN_MEM_READ;
+  } else if (Section == ".data") {
+    Characteristics = COFF::IMAGE_SCN_CNT_INITIALIZED_DATA |
+                      COFF::IMAGE_SCN_MEM_READ | COFF::IMAGE_SCN_MEM_WRITE;
+  } else if (Section == ".bss") {
+    Characteristics = COFF::IMAGE_SCN_CNT_UNINITIALIZED_DATA |
+                      COFF::IMAGE_SCN_MEM_READ | COFF::IMAGE_SCN_MEM_WRITE;
+  } else if (Section == ".rdata" || Section == ".ydata") {
+    Characteristics =
+        COFF::IMAGE_SCN_CNT_INITIALIZED_DATA | COFF::IMAGE_SCN_MEM_READ;
+    Alignment = Align(8);
+  } else if (Section == ".pdata") {
+    Characteristics =
+        COFF::IMAGE_SCN_CNT_INITIALIZED_DATA | COFF::IMAGE_SCN_MEM_READ;
+    Alignment = Align(4);
+  } else if (Section == ".reldata") {
+    Characteristics = COFF::IMAGE_SCN_CNT_INITIALIZED_DATA |
+                      COFF::IMAGE_SCN_MEM_READ | COFF::IMAGE_SCN_MEM_WRITE;
+    Alignment = Align(8);
+  } else if (Section == ".debug$S") {
+    Characteristics = COFF::IMAGE_SCN_CNT_INITIALIZED_DATA |
+                      COFF::IMAGE_SCN_MEM_READ |
+                      COFF::IMAGE_SCN_MEM_DISCARDABLE;
+  } else {
+    return false;
+  }
+  return true;
+}
+
 class COFFAsmParser : public MCAsmParserExtension {
+  bool IsPPCWinCOFF = false;
   template<bool (COFFAsmParser::*HandlerMethod)(StringRef, SMLoc)>
   void addDirectiveHandler(StringRef Directive) {
     MCAsmParser::ExtensionDirectiveHandler Handler = std::make_pair(
@@ -34,18 +69,23 @@ class COFFAsmParser : public MCAsmParserExtension {
     getParser().addDirectiveHandler(Directive, Handler);
   }
 
-  bool parseSectionSwitch(StringRef Section, unsigned Characteristics);
+  bool parseSectionSwitch(StringRef Section, unsigned Characteristics,
+                          Align Alignment = Align(1));
 
   bool parseSectionSwitch(StringRef Section, unsigned Characteristics,
                           StringRef COMDATSymName, COFF::COMDATType Type,
-                          unsigned UniqueID);
+                          unsigned UniqueID, Align Alignment = Align(1),
+                          bool OmitAlignment = false);
 
   bool parseSectionName(StringRef &SectionName);
   bool parseSectionFlags(StringRef SectionName, StringRef FlagsString,
-                         unsigned *Flags);
+                         unsigned *Flags, Align *Alignment);
   void Initialize(MCAsmParser &Parser) override {
     // Call the base implementation.
     MCAsmParserExtension::Initialize(Parser);
+
+    IsPPCWinCOFF =
+        Parser.getContext().getTargetTriple().getArch() == Triple::ppcle;
 
     addDirectiveHandler<&COFFAsmParser::parseSectionDirectiveText>(".text");
     addDirectiveHandler<&COFFAsmParser::parseSectionDirectiveData>(".data");
@@ -61,6 +101,9 @@ class COFFAsmParser : public MCAsmParserExtension {
     addDirectiveHandler<&COFFAsmParser::parseDirectiveMicrosoftSection>(
         ".debug$S");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveSection>(".section");
+    if (IsPPCWinCOFF)
+      addDirectiveHandler<&COFFAsmParser::parseDirectiveSection>(
+          ".new_section");
     addDirectiveHandler<&COFFAsmParser::parseDirectivePushSection>(
         ".pushsection");
     addDirectiveHandler<&COFFAsmParser::parseDirectivePopSection>(
@@ -112,13 +155,15 @@ class COFFAsmParser : public MCAsmParserExtension {
   bool parseSectionDirectiveText(StringRef, SMLoc) {
     return parseSectionSwitch(".text", COFF::IMAGE_SCN_CNT_CODE |
                                            COFF::IMAGE_SCN_MEM_EXECUTE |
-                                           COFF::IMAGE_SCN_MEM_READ);
+                                           COFF::IMAGE_SCN_MEM_READ,
+                              IsPPCWinCOFF ? Align(8) : Align(1));
   }
 
   bool parseSectionDirectiveData(StringRef, SMLoc) {
     return parseSectionSwitch(".data", COFF::IMAGE_SCN_CNT_INITIALIZED_DATA |
                                            COFF::IMAGE_SCN_MEM_READ |
-                                           COFF::IMAGE_SCN_MEM_WRITE);
+                                           COFF::IMAGE_SCN_MEM_WRITE,
+                              IsPPCWinCOFF ? Align(8) : Align(1));
   }
 
   bool parseSectionDirectiveBSS(StringRef, SMLoc) {
@@ -171,7 +216,8 @@ public:
 } // end anonymous namespace.
 
 bool COFFAsmParser::parseSectionFlags(StringRef SectionName,
-                                      StringRef FlagsString, unsigned *Flags) {
+                                      StringRef FlagsString, unsigned *Flags,
+                                      Align *Alignment) {
   enum {
     None = 0,
     Alloc = 1 << 0,
@@ -187,6 +233,7 @@ bool COFFAsmParser::parseSectionFlags(StringRef SectionName,
   };
 
   bool ReadOnlyRemoved = false;
+  bool HasAlignment = false;
   unsigned SecFlags = None;
 
   for (char FlagChar : FlagsString) {
@@ -200,6 +247,17 @@ bool COFFAsmParser::parseSectionFlags(StringRef SectionName,
       if (SecFlags & InitData)
         return TokError("conflicting section flags 'b' and 'd'.");
       SecFlags &= ~Load;
+      break;
+
+    case 'c': // PASM code section
+      if (!IsPPCWinCOFF)
+        return TokError("unknown flag");
+      SecFlags |= Code;
+      SecFlags &= ~(Alloc | InitData);
+      if ((SecFlags & NoLoad) == 0)
+        SecFlags |= Load;
+      if (!ReadOnlyRemoved)
+        SecFlags |= NoWrite;
       break;
 
     case 'd': // data section
@@ -258,6 +316,13 @@ bool COFFAsmParser::parseSectionFlags(StringRef SectionName,
       break;
 
     default:
+      if (IsPPCWinCOFF && FlagChar >= '0' && FlagChar <= '9') {
+        if (HasAlignment)
+          return TokError("multiple section alignment flags");
+        HasAlignment = true;
+        *Alignment = Align(uint64_t(1) << (FlagChar - '0'));
+        break;
+      }
       return TokError("unknown flag");
     }
   }
@@ -325,31 +390,22 @@ bool COFFAsmParser::parseDirectiveCGProfile(StringRef S, SMLoc Loc) {
 }
 
 bool COFFAsmParser::parseSectionSwitch(StringRef Section,
-                                       unsigned Characteristics) {
+                                       unsigned Characteristics,
+                                       Align Alignment) {
   return parseSectionSwitch(Section, Characteristics, "", (COFF::COMDATType)0,
-                            MCSection::NonUniqueID);
+                            MCSection::NonUniqueID, Alignment);
 }
 
 // Legacy Microsoft RISC assemblers provide shorthand directives for these
 // well-known COFF sections. Preserve their default section alignments as
 // well as their characteristics.
-bool COFFAsmParser::parseDirectiveMicrosoftSection(StringRef Directive,
-                                                   SMLoc) {
-  unsigned Characteristics = COFF::IMAGE_SCN_CNT_INITIALIZED_DATA |
-                             COFF::IMAGE_SCN_MEM_READ;
+bool COFFAsmParser::parseDirectiveMicrosoftSection(StringRef Directive, SMLoc) {
+  unsigned Characteristics;
   Align Alignment(1);
-
-  if (Directive == ".rdata" || Directive == ".ydata")
-    Alignment = Align(8);
-  else if (Directive == ".pdata")
-    Alignment = Align(4);
-  else if (Directive == ".reldata") {
-    Characteristics |= COFF::IMAGE_SCN_MEM_WRITE;
-    Alignment = Align(8);
-  } else {
-    assert(Directive == ".debug$S" && "unexpected section directive");
-    Characteristics |= COFF::IMAGE_SCN_MEM_DISCARDABLE;
-  }
+  bool Found =
+      getMicrosoftSectionProperties(Directive, Characteristics, Alignment);
+  assert(Found && "unexpected section directive");
+  (void)Found;
 
   if (getLexer().isNot(AsmToken::EndOfStatement))
     return TokError("unexpected token in section switching directive");
@@ -365,14 +421,19 @@ bool COFFAsmParser::parseDirectiveMicrosoftSection(StringRef Directive,
 bool COFFAsmParser::parseSectionSwitch(StringRef Section,
                                        unsigned Characteristics,
                                        StringRef COMDATSymName,
-                                       COFF::COMDATType Type,
-                                       unsigned UniqueID) {
+                                       COFF::COMDATType Type, unsigned UniqueID,
+                                       Align Alignment, bool OmitAlignment) {
   if (getLexer().isNot(AsmToken::EndOfStatement))
     return TokError("unexpected token in section switching directive");
   Lex();
 
-  getStreamer().switchSection(getContext().getCOFFSection(
-      Section, Characteristics, COMDATSymName, Type, UniqueID));
+  MCSectionCOFF *COFFSection = getContext().getCOFFSection(
+      Section, Characteristics, COMDATSymName, Type, UniqueID);
+  if (Alignment > Align(1))
+    COFFSection->ensureMinAlignment(Alignment);
+  if (OmitAlignment)
+    COFFSection->setOmitAlignment();
+  getStreamer().switchSection(COFFSection);
 
   return false;
 }
@@ -405,8 +466,11 @@ bool COFFAsmParser::parseDirectiveSection(StringRef directive, SMLoc loc) {
 //   x: Executable section
 //   y: Not-readable section (clears 'r')
 //
+// PowerPC Windows COFF also accepts PASM's 'c' code flag and a single digit
+// specifying a base-two section alignment.
+//
 // Subsections are not supported.
-bool COFFAsmParser::parseSectionArguments(StringRef, SMLoc) {
+bool COFFAsmParser::parseSectionArguments(StringRef Directive, SMLoc) {
   StringRef SectionName;
 
   if (parseSectionName(SectionName))
@@ -415,6 +479,14 @@ bool COFFAsmParser::parseSectionArguments(StringRef, SMLoc) {
   unsigned Flags = COFF::IMAGE_SCN_CNT_INITIALIZED_DATA |
                    COFF::IMAGE_SCN_MEM_READ |
                    COFF::IMAGE_SCN_MEM_WRITE;
+  Align Alignment(1);
+  bool OmitAlignment = IsPPCWinCOFF && Directive == ".new_section";
+
+  // PASM uses .new_section to declare a section before selecting it with a
+  // section-switching directive. Coalescing the declaration and later switch
+  // avoids redundant empty COFF sections while preserving their attributes.
+  if (Directive == ".new_section")
+    getMicrosoftSectionProperties(SectionName, Flags, Alignment);
 
   if (getLexer().is(AsmToken::Comma)) {
     Lex();
@@ -425,7 +497,13 @@ bool COFFAsmParser::parseSectionArguments(StringRef, SMLoc) {
     StringRef FlagsStr = getTok().getStringContents();
     Lex();
 
-    if (parseSectionFlags(SectionName, FlagsStr, &Flags))
+    // Explicit protection bits replace the well-known section defaults.
+    Alignment = Align(1);
+    if (IsPPCWinCOFF && FlagsStr.contains('c') &&
+        FlagsStr.find_first_of("0123456789") == StringRef::npos)
+      OmitAlignment = true;
+
+    if (parseSectionFlags(SectionName, FlagsStr, &Flags, &Alignment))
       return true;
   }
 
@@ -465,7 +543,8 @@ bool COFFAsmParser::parseSectionArguments(StringRef, SMLoc) {
     if (T.getArch() == Triple::arm || T.getArch() == Triple::thumb)
       Flags |= COFF::IMAGE_SCN_MEM_16BIT;
   }
-  parseSectionSwitch(SectionName, Flags, COMDATSymName, Type, UniqueID);
+  parseSectionSwitch(SectionName, Flags, COMDATSymName, Type, UniqueID,
+                     Alignment, OmitAlignment);
   return false;
 }
 
