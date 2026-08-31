@@ -29,7 +29,7 @@
 # CHECK:      IMAGE_SCN_MEM_READ
 # CHECK:      IMAGE_SCN_MEM_WRITE
 # CHECK:      Name: .debug$S
-# CHECK:      RawDataSize: 6
+# CHECK:      RawDataSize: 22
 # CHECK:      IMAGE_SCN_ALIGN_1BYTES
 # CHECK:      IMAGE_SCN_CNT_INITIALIZED_DATA
 # CHECK:      IMAGE_SCN_MEM_DISCARDABLE
@@ -48,6 +48,11 @@
 # CHECK:      Section {{.*}} .reldata {
 # CHECK-NEXT: 0x0 IMAGE_REL_PPC_ADDR32 ..function
 # CHECK-NEXT: }
+# CHECK:      Section {{.*}} .debug$S {
+# CHECK-NEXT: 0x8 IMAGE_REL_PPC_ADDR32 ..function
+# CHECK-NEXT: 0xC IMAGE_REL_PPC_SECREL ..function
+# CHECK-NEXT: 0x10 IMAGE_REL_PPC_SECTION ..function
+# CHECK-NEXT: }
 
 # CHECK:      Hex dump of section '.text':
 # CHECK-NEXT: 0x00000000 00006360 000021d8 0000022d 2000804e
@@ -59,7 +64,8 @@
 # CHECK:      Hex dump of section '.reldata':
 # CHECK-NEXT: 0x00000000 00000000
 # CHECK:      Hex dump of section '.debug$S':
-# CHECK-NEXT: 0x00000000 01000000 0400
+# CHECK-NEXT: 0x00000000 01000000 04000000 00000000 00000000
+# CHECK-NEXT: 0x00000010 00000361 6263
 
         .text
         .globl ..function
@@ -92,3 +98,8 @@ table:
         .debug$S
         .ualong 1
         .uashort 4
+        .uashort 0
+        .ualong ..function
+        .ualong [secoff]..function
+        .uashort [secnum]..function
+        .byte 3, "abc"
