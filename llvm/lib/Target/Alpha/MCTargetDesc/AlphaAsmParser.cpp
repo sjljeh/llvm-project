@@ -126,7 +126,8 @@ public:
         StringSwitch<bool>(Directive.lower())
             .Cases({".aent", ".ent", ".end", ".edata"}, true)
             .Cases({".eflag", ".fmask", ".frame", ".livereg"}, true)
-            .Cases({".prologue", ".save_ra"}, true);
+            .Cases({".prologue", ".save_ra"}, true)
+            .Default(false);
     if (!IsProcedureMetadata)
       return true;
 
