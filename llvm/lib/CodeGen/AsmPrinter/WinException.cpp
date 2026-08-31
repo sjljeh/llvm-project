@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "WinException.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/BinaryFormat/COFF.h"
@@ -801,8 +802,16 @@ void WinException::emitSEHActionsForRange(const WinEHFuncInfo &FuncInfo,
     } else {
       // For an except, the filter can be 1 (catch-all) or a function
       // label.
-      FilterOrFinally = UME.Filter ? create32bitRef(UME.Filter)
-                                   : MCConstantExpr::create(1, Ctx);
+      MCSymbol *Filter = UME.Filter ? Asm->getSymbol(UME.Filter) : nullptr;
+      if (Filter && usesPPCWindowsEH(*Asm)) {
+        // The NT PowerPC C runtime jumps directly to filter code, unlike
+        // ordinary calls through the two-word function descriptor.
+        SmallString<128> EntryName("..");
+        EntryName += Filter->getName();
+        Filter = Ctx.getOrCreateSymbol(EntryName);
+      }
+      FilterOrFinally =
+          Filter ? create32bitRef(Filter) : MCConstantExpr::create(1, Ctx);
       ExceptOrNull = create32bitRef(Handler->getSymbol());
     }
 

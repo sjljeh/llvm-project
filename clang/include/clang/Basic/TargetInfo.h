@@ -1669,6 +1669,8 @@ public:
   bool isSEHTrySupported() const {
     return getTriple().isOSWindows() &&
            (getTriple().isX86() ||
+            (getTriple().isPPC32() &&
+             getTriple().isWindowsMSVCEnvironment()) ||
             getTriple().getArch() == llvm::Triple::aarch64 ||
             getTriple().isThumb());
   }

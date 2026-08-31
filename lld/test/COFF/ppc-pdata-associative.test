@@ -1,0 +1,33 @@
+# RUN: split-file %s %t
+# RUN: llc -filetype=obj -function-sections %t/entry.ll -o %t/entry.obj
+# RUN: llc -filetype=obj -function-sections %t/helper.ll -o %t/helper.obj
+# RUN: llvm-readobj --symbols %t/entry.obj %t/helper.obj | FileCheck %s --check-prefix=ASSOC
+# RUN: lld-link /machine:ppc /entry:entry /subsystem:native /nodefaultlib \
+# RUN:   /out:%t.exe %t/entry.obj %t/helper.obj
+# RUN: llvm-readobj --file-headers --sections %t.exe | FileCheck %s
+
+# ASSOC-COUNT-2: Selection: Associative (0x5)
+
+# CHECK: ExceptionTableRVA: 0x3000
+# CHECK-NEXT: ExceptionTableSize: 0x28
+# CHECK: Name: .pdata
+# CHECK: VirtualSize: 0x28
+
+#--- entry.ll
+target triple = "powerpcle-pc-windows-msvc"
+
+define i32 @entry() uwtable {
+entry:
+  %value = call i32 @helper()
+  ret i32 %value
+}
+
+declare i32 @helper()
+
+#--- helper.ll
+target triple = "powerpcle-pc-windows-msvc"
+
+define i32 @helper() uwtable {
+entry:
+  ret i32 7
+}
