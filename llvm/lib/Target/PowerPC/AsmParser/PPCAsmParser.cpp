@@ -1351,9 +1351,9 @@ MCRegister PPCAsmParser::matchRegisterName(int64_t &IntVal) {
   // case-insensitive spelling.
   std::string NameBuf = getParser().getTok().getString().lower();
   if (IsPPCWinCOFF) {
-    if (NameBuf == "r.sp")
+    if (NameBuf == "r.sp" || NameBuf == "sp")
       NameBuf = "r1";
-    else if (NameBuf == "r.toc")
+    else if (NameBuf == "r.toc" || NameBuf == "rtoc")
       NameBuf = "r2";
     else if (StringRef(NameBuf).starts_with("r.") ||
              StringRef(NameBuf).starts_with("f.") ||
@@ -1467,6 +1467,27 @@ const MCExpr *PPCAsmParser::extractSpecifier(const MCExpr *E,
 }
 
 bool PPCAsmParser::parsePrimaryExpr(const MCExpr *&Res, SMLoc &EndLoc) {
+  if (IsPPCWinCOFF && getLexer().is(AsmToken::LBrac)) {
+    SMLoc ModifierLoc = getParser().getTok().getLoc();
+    getParser().Lex();
+    if (getLexer().isNot(AsmToken::Identifier) ||
+        !getParser().getTok().getIdentifier().equals_insensitive("toc"))
+      return Error(ModifierLoc, "expected 'toc' relocation modifier");
+    getParser().Lex();
+    if (parseToken(AsmToken::RBrac, "expected ']'"))
+      return true;
+
+    MCSymbol *Symbol;
+    if (getParser().parseSymbol(Symbol))
+      return Error(getParser().getTok().getLoc(),
+                   "expected symbol after '[toc]'");
+
+    Res = MCSymbolRefExpr::create(Symbol, PPC::S_TOC, getContext());
+    EndLoc = SMLoc::getFromPointer(getParser().getTok().getLoc().getPointer() -
+                                   1);
+    return false;
+  }
+
   if (IsPPCWinCOFF && getLexer().is(AsmToken::Identifier)) {
     StringRef Name = getParser().getTok().getIdentifier();
     unsigned CRField;
@@ -1534,6 +1555,7 @@ bool PPCAsmParser::parseOperand(OperandVector &Operands) {
     }
     [[fallthrough]];
   case AsmToken::String:
+  case AsmToken::LBrac:
   case AsmToken::LParen:
   case AsmToken::Plus:
   case AsmToken::Minus:

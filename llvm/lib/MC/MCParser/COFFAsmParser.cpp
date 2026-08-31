@@ -53,6 +53,8 @@ class COFFAsmParser : public MCAsmParserExtension {
     addDirectiveHandler<&COFFAsmParser::parseDirectiveMicrosoftSection>(
         ".rdata");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveMicrosoftSection>(
+        ".ydata");
+    addDirectiveHandler<&COFFAsmParser::parseDirectiveMicrosoftSection>(
         ".pdata");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveMicrosoftSection>(
         ".reldata");
@@ -337,7 +339,7 @@ bool COFFAsmParser::parseDirectiveMicrosoftSection(StringRef Directive,
                              COFF::IMAGE_SCN_MEM_READ;
   Align Alignment(1);
 
-  if (Directive == ".rdata")
+  if (Directive == ".rdata" || Directive == ".ydata")
     Alignment = Align(8);
   else if (Directive == ".pdata")
     Alignment = Align(4);
