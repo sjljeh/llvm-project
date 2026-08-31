@@ -848,7 +848,7 @@ std::optional<Symbol *> ObjFile::createDefined(
   auto getName = [&]() { return check(coffObj->getSymbolName(sym)); };
 
   if (sym.isCommon()) {
-    auto *c = make<CommonChunk>(sym);
+    auto *c = make<CommonChunk>(symtab.ctx, sym);
     chunks.push_back(c);
     return symtab.addCommon(this, getName(), sym.getValue(), sym.getGeneric(),
                             c);
