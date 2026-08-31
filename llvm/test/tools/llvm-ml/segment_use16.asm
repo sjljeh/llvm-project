@@ -1,4 +1,4 @@
-; RUN: llvm-ml -filetype=s %s /Fo - | FileCheck %s
+; RUN: llvm-ml -filetype=s -output-att-asm %s /Fo - | FileCheck %s
 
 option dotname
 
