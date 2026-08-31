@@ -50,6 +50,14 @@ class COFFAsmParser : public MCAsmParserExtension {
     addDirectiveHandler<&COFFAsmParser::parseSectionDirectiveText>(".text");
     addDirectiveHandler<&COFFAsmParser::parseSectionDirectiveData>(".data");
     addDirectiveHandler<&COFFAsmParser::parseSectionDirectiveBSS>(".bss");
+    addDirectiveHandler<&COFFAsmParser::parseDirectiveMicrosoftSection>(
+        ".rdata");
+    addDirectiveHandler<&COFFAsmParser::parseDirectiveMicrosoftSection>(
+        ".pdata");
+    addDirectiveHandler<&COFFAsmParser::parseDirectiveMicrosoftSection>(
+        ".reldata");
+    addDirectiveHandler<&COFFAsmParser::parseDirectiveMicrosoftSection>(
+        ".debug$S");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveSection>(".section");
     addDirectiveHandler<&COFFAsmParser::parseDirectivePushSection>(
         ".pushsection");
@@ -118,6 +126,7 @@ class COFFAsmParser : public MCAsmParserExtension {
   }
 
   bool parseDirectiveSection(StringRef, SMLoc);
+  bool parseDirectiveMicrosoftSection(StringRef, SMLoc);
   bool parseSectionArguments(StringRef, SMLoc);
   bool parseDirectivePushSection(StringRef, SMLoc);
   bool parseDirectivePopSection(StringRef, SMLoc);
@@ -317,6 +326,38 @@ bool COFFAsmParser::parseSectionSwitch(StringRef Section,
                                        unsigned Characteristics) {
   return parseSectionSwitch(Section, Characteristics, "", (COFF::COMDATType)0,
                             MCSection::NonUniqueID);
+}
+
+// Legacy Microsoft RISC assemblers provide shorthand directives for these
+// well-known COFF sections. Preserve their default section alignments as
+// well as their characteristics.
+bool COFFAsmParser::parseDirectiveMicrosoftSection(StringRef Directive,
+                                                   SMLoc) {
+  unsigned Characteristics = COFF::IMAGE_SCN_CNT_INITIALIZED_DATA |
+                             COFF::IMAGE_SCN_MEM_READ;
+  Align Alignment(1);
+
+  if (Directive == ".rdata")
+    Alignment = Align(8);
+  else if (Directive == ".pdata")
+    Alignment = Align(4);
+  else if (Directive == ".reldata") {
+    Characteristics |= COFF::IMAGE_SCN_MEM_WRITE;
+    Alignment = Align(8);
+  } else {
+    assert(Directive == ".debug$S" && "unexpected section directive");
+    Characteristics |= COFF::IMAGE_SCN_MEM_DISCARDABLE;
+  }
+
+  if (getLexer().isNot(AsmToken::EndOfStatement))
+    return TokError("unexpected token in section switching directive");
+  Lex();
+
+  MCSectionCOFF *Section =
+      getContext().getCOFFSection(Directive, Characteristics);
+  Section->ensureMinAlignment(Alignment);
+  getStreamer().switchSection(Section);
+  return false;
 }
 
 bool COFFAsmParser::parseSectionSwitch(StringRef Section,

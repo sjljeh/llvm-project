@@ -103,6 +103,7 @@ struct PPCOperand;
 
 class PPCAsmParser : public MCTargetAsmParser {
   const bool IsPPC64;
+  const bool IsPPCWinCOFF;
 
   void Warning(SMLoc L, const Twine &Msg) { getParser().Warning(L, Msg); }
 
@@ -146,7 +147,8 @@ class PPCAsmParser : public MCTargetAsmParser {
 public:
   PPCAsmParser(const MCSubtargetInfo &STI, MCAsmParser &,
                const MCInstrInfo &MII)
-      : MCTargetAsmParser(STI, MII), IsPPC64(STI.getTargetTriple().isPPC64()) {
+      : MCTargetAsmParser(STI, MII), IsPPC64(STI.getTargetTriple().isPPC64()),
+        IsPPCWinCOFF(STI.getTargetTriple().isOSBinFormatCOFF()) {
     // Initialize the set of available features.
     setAvailableFeatures(ComputeAvailableFeatures(STI.getFeatureBits()));
   }
@@ -1335,6 +1337,7 @@ bool PPCAsmParser::matchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
 #include "PPCGenAsmMatcher.inc"
 
 MCRegister PPCAsmParser::matchRegisterName(int64_t &IntVal) {
+  IntVal = 0;
   if (getParser().getTok().is(AsmToken::Percent))
     getParser().Lex(); // Eat the '%'.
 
@@ -1344,6 +1347,16 @@ MCRegister PPCAsmParser::matchRegisterName(int64_t &IntVal) {
   // MatchRegisterName() expects lower-case registers, but we want to support
   // case-insensitive spelling.
   std::string NameBuf = getParser().getTok().getString().lower();
+  if (IsPPCWinCOFF) {
+    if (NameBuf == "r.sp")
+      NameBuf = "r1";
+    else if (NameBuf == "r.toc")
+      NameBuf = "r2";
+    else if (StringRef(NameBuf).starts_with("r.") ||
+             StringRef(NameBuf).starts_with("f.") ||
+             StringRef(NameBuf).starts_with("cr."))
+      NameBuf.erase(NameBuf.find('.'), 1);
+  }
   StringRef Name(NameBuf);
   MCRegister RegNo = MatchRegisterName(Name);
   if (!RegNo)
@@ -1488,6 +1501,19 @@ bool PPCAsmParser::parseOperand(OperandVector &Operands) {
     return false;
   }
   case AsmToken::Identifier:
+    // Microsoft's PowerPC assembler accepts named registers without a '%',
+    // including dotted spellings such as r.3, f.1, and cr.2 and the r.sp and
+    // r.toc aliases. Keep this COFF-specific so identifiers retain their
+    // established meaning in the other PowerPC assembly dialects.
+    if (IsPPCWinCOFF) {
+      int64_t IntVal;
+      if (matchRegisterName(IntVal)) {
+        Operands.push_back(
+            PPCOperand::CreateImm(IntVal, S, E, isPPC64(), getContext()));
+        return false;
+      }
+    }
+    [[fallthrough]];
   case AsmToken::String:
   case AsmToken::LParen:
   case AsmToken::Plus:
@@ -1578,6 +1604,9 @@ bool PPCAsmParser::parseOperand(OperandVector &Operands) {
         return Error(S, "invalid register number");
       break;
     case AsmToken::Identifier:
+      if (IsPPCWinCOFF && matchRegisterName(IntVal))
+        break;
+      return Error(S, "invalid memory operand");
     default:
       return Error(S, "invalid memory operand");
     }
@@ -1676,6 +1705,10 @@ bool PPCAsmParser::ParseDirective(AsmToken DirectiveID) {
   StringRef IDVal = DirectiveID.getIdentifier();
   if (IDVal == ".word")
     parseDirectiveWord(2, DirectiveID);
+  else if (IsPPCWinCOFF && IDVal == ".uashort")
+    parseDirectiveWord(2, DirectiveID);
+  else if (IsPPCWinCOFF && IDVal == ".ualong")
+    parseDirectiveWord(4, DirectiveID);
   else if (IDVal == ".llong")
     parseDirectiveWord(8, DirectiveID);
   else if (IDVal == ".tc")
