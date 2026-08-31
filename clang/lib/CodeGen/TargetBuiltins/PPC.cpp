@@ -12,6 +12,7 @@
 
 #include "CGBuiltin.h"
 #include "clang/Basic/TargetBuiltins.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/IntrinsicsPowerPC.h"
 #include "llvm/Support/ScopedPrinter.h"
@@ -204,6 +205,31 @@ Value *CodeGenFunction::EmitPPCBuiltinCpu(unsigned BuiltinID,
 
 Value *CodeGenFunction::EmitPPCBuiltinExpr(unsigned BuiltinID,
                                            const CallExpr *E) {
+  if (BuiltinID == PPC::BI__emit) {
+    Expr::EvalResult Result;
+    if (!E->getArg(0)->EvaluateAsInt(Result, CGM.getContext()))
+      llvm_unreachable("Sema will ensure that the parameter is constant");
+
+    uint64_t Encoding = Result.Val.getInt().zextOrTrunc(32).getZExtValue();
+    llvm::FunctionType *FTy =
+        llvm::FunctionType::get(VoidTy, /*isVarArg=*/false);
+    llvm::InlineAsm *Emit =
+        InlineAsm::get(FTy, ".long 0x" + utohexstr(Encoding), "",
+                       /*hasSideEffects=*/true);
+    return Builder.CreateCall(Emit);
+  }
+
+  if (BuiltinID == PPC::BI__builtin_get_gpr13) {
+    llvm::LLVMContext &Context = CGM.getLLVMContext();
+    llvm::MDNode *RegName =
+        llvm::MDNode::get(Context, llvm::MDString::get(Context, "r13"));
+    llvm::Value *Metadata = llvm::MetadataAsValue::get(Context, RegName);
+    llvm::Function *F =
+        CGM.getIntrinsic(llvm::Intrinsic::read_register, {Int32Ty});
+    llvm::Value *GPR13 = Builder.CreateCall(F, {Metadata});
+    return Builder.CreateIntToPtr(GPR13, ConvertType(E->getType()));
+  }
+
   // Do not emit the builtin arguments in the arguments of a function call,
   // because the evaluation order of function arguments is not specified in C++.
   // This is important when testing to ensure the arguments are emitted in the
