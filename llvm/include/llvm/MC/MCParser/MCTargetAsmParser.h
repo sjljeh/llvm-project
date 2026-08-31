@@ -405,6 +405,14 @@ public:
     return getParser().parseExpression(Res, EndLoc);
   }
 
+  /// Parse and emit a target-specific operand in a generic data directive.
+  /// Return NoMatch without consuming tokens to use the generic expression
+  /// parser.
+  virtual ParseStatus tryParseDataDirectiveOperand(StringRef Directive,
+                                                   unsigned Size) {
+    return ParseStatus::NoMatch;
+  }
+
   virtual bool parseRegister(MCRegister &Reg, SMLoc &StartLoc,
                              SMLoc &EndLoc) = 0;
 
