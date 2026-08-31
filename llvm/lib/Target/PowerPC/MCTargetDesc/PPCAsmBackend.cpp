@@ -258,12 +258,14 @@ void PPCAsmBackend::applyFixup(const MCFragment &F, const MCFixup &Fixup,
     return; // Doesn't change encoding.
 
   unsigned NumBytes = getFixupKindNumBytes(Kind);
+  bool IsLittleEndian = Endian == llvm::endianness::little &&
+                        Target.getSpecifier() != PPC::S_PASM_BE;
 
   // For each byte of the fragment that the fixup touches, mask in the bits
   // from the fixup value. The Value has been "split up" into the appropriate
   // bitfields above.
   for (unsigned i = 0; i != NumBytes; ++i) {
-    unsigned Idx = Endian == llvm::endianness::little ? i : (NumBytes - 1 - i);
+    unsigned Idx = IsLittleEndian ? i : (NumBytes - 1 - i);
     Data[i] |= uint8_t((Value >> (Idx * 8)) & 0xff);
   }
 }

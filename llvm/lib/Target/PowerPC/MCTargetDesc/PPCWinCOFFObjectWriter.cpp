@@ -50,7 +50,8 @@ unsigned PPCWinCOFFObjectWriter::getRelocType(
     return COFF::IMAGE_REL_PPC_ABSOLUTE;
   }
   case FK_Data_2:
-    if (Fixup.isPCRel() || Target.getSpecifier() != PPC::S_None) {
+    if (Fixup.isPCRel() || (Target.getSpecifier() != PPC::S_None &&
+                            Target.getSpecifier() != PPC::S_PASM_BE)) {
       Ctx.reportError(Fixup.getLoc(),
                       "unsupported 16-bit PowerPC COFF relocation");
       return COFF::IMAGE_REL_PPC_ABSOLUTE;
@@ -68,6 +69,7 @@ unsigned PPCWinCOFFObjectWriter::getRelocType(
                       "relocation specifier unsupported on COFF targets");
       return COFF::IMAGE_REL_PPC_ABSOLUTE;
     case PPC::S_None:
+    case PPC::S_PASM_BE:
       return COFF::IMAGE_REL_PPC_ADDR32;
     case PPC::S_IFGLUE:
       return COFF::IMAGE_REL_PPC_IFGLUE;

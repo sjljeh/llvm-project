@@ -35,6 +35,8 @@ public:
   void operator=(const PPCMCCodeEmitter &) = delete;
   ~PPCMCCodeEmitter() override = default;
 
+  void setIsLittleEndian(bool Value) { IsLittleEndian = Value; }
+
   unsigned getDirectBrEncoding(const MCInst &MI, unsigned OpNo,
                                SmallVectorImpl<MCFixup> &Fixups,
                                const MCSubtargetInfo &STI) const;
