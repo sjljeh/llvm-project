@@ -167,6 +167,9 @@ def ADJUSTSTACKDOWN : PseudoInstAlpha<(outs), (ins s64imm:$amt1, s64imm:$amt2),
                 [(callseq_end timm:$amt1, timm:$amt2)], s_pseudo>;
 }
 
+let isCodeGenOnly = 1, hasSideEffects = 1, hasNoSchedulingInfo = 1 in
+def SEH_PrologEnd : PseudoInstAlpha<(outs), (ins), "", [], s_pseudo>;
+
 def ALTENT : PseudoInstAlpha<(outs), (ins s64imm:$TARGET), "$$$TARGET..ng:\n", [], s_pseudo>;
 def PCLABEL : PseudoInstAlpha<(outs), (ins s64imm:$num), "PCMARKER_$num:\n",[], s_pseudo>;
 def MEMLABEL : PseudoInstAlpha<(outs), (ins s64imm:$i, s64imm:$j, s64imm:$k, s64imm:$m),

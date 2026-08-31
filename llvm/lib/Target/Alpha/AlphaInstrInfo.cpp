@@ -216,15 +216,18 @@ AlphaInstrInfo::storeRegToStackSlot(MachineBasicBlock &MBB,
   if (RC == &Alpha::F4RCRegClass)
     BuildMI(MBB, MI, DL, get(Alpha::STS))
       .addReg(SrcReg, getKillRegState(isKill))
-      .addFrameIndex(FrameIdx).addReg(Alpha::F31);
+      .addFrameIndex(FrameIdx).addReg(Alpha::F31)
+      .setMIFlag(Flags);
   else if (RC == &Alpha::F8RCRegClass)
     BuildMI(MBB, MI, DL, get(Alpha::STT))
       .addReg(SrcReg, getKillRegState(isKill))
-      .addFrameIndex(FrameIdx).addReg(Alpha::F31);
+      .addFrameIndex(FrameIdx).addReg(Alpha::F31)
+      .setMIFlag(Flags);
   else if (RC == &Alpha::GPRCRegClass)
     BuildMI(MBB, MI, DL, get(Alpha::STQ))
       .addReg(SrcReg, getKillRegState(isKill))
-      .addFrameIndex(FrameIdx).addReg(Alpha::F31);
+      .addFrameIndex(FrameIdx).addReg(Alpha::F31)
+      .setMIFlag(Flags);
   else
     llvm_unreachable("Unhandled register class");
 }
@@ -244,13 +247,16 @@ AlphaInstrInfo::loadRegFromStackSlot(MachineBasicBlock &MBB,
 
   if (RC == &Alpha::F4RCRegClass)
     BuildMI(MBB, MI, DL, get(Alpha::LDS), DestReg)
-      .addFrameIndex(FrameIdx).addReg(Alpha::F31);
+      .addFrameIndex(FrameIdx).addReg(Alpha::F31)
+      .setMIFlag(Flags);
   else if (RC == &Alpha::F8RCRegClass)
     BuildMI(MBB, MI, DL, get(Alpha::LDT), DestReg)
-      .addFrameIndex(FrameIdx).addReg(Alpha::F31);
+      .addFrameIndex(FrameIdx).addReg(Alpha::F31)
+      .setMIFlag(Flags);
   else if (RC == &Alpha::GPRCRegClass)
     BuildMI(MBB, MI, DL, get(Alpha::LDQ), DestReg)
-      .addFrameIndex(FrameIdx).addReg(Alpha::F31);
+      .addFrameIndex(FrameIdx).addReg(Alpha::F31)
+      .setMIFlag(Flags);
   else
     llvm_unreachable("Unhandled register class");
 }
@@ -430,7 +436,9 @@ unsigned AlphaInstrInfo::getGlobalRetAddr(MachineFunction *MF) const {
 
   GlobalRetAddr = RegInfo.createVirtualRegister(&Alpha::GPRCRegClass);
   BuildMI(FirstMBB, MBBI, DebugLoc(), TII->get(TargetOpcode::COPY),
-          GlobalRetAddr).addReg(Alpha::R26);
+          GlobalRetAddr)
+      .addReg(Alpha::R26)
+      .setMIFlag(MachineInstr::FrameSetup);
   RegInfo.addLiveIn(Alpha::R26);
 
   AlphaFI->setGlobalRetAddr(GlobalRetAddr);
