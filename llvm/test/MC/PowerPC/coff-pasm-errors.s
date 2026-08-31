@@ -6,7 +6,9 @@ symbol:
         .ualong [unknown]symbol
         .uashort [secoff]symbol
         .ualong [secnum]symbol
+        lwz r.3,[secoff]symbol(r.2)
 
 # CHECK: error: unknown PASM relocation modifier 'unknown'
 # CHECK: error: '[secoff]' requires a 4-byte directive
 # CHECK: error: '[secnum]' requires a 2-byte directive
+# CHECK: error: expected 'toc' relocation modifier
