@@ -2517,6 +2517,7 @@ ExceptionHandling Triple::getDefaultExceptionHandling() const {
     return ExceptionHandling::DwarfCFI;
 
   switch (getArch()) {
+  case Triple::alpha:
   case Triple::arc:
   case Triple::csky:
   case Triple::hexagon:

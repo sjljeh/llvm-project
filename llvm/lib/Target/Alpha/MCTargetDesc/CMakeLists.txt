@@ -1,6 +1,7 @@
 add_llvm_component_library(LLVMAlphaDesc
   AlphaAsmBackend.cpp
   AlphaAsmParser.cpp
+  AlphaELFObjectWriter.cpp
   AlphaInstPrinter.cpp
   AlphaMCCodeEmitter.cpp
   AlphaMCTargetDesc.cpp

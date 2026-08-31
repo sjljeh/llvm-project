@@ -75,6 +75,23 @@ void AlphaFrameLowering::emitPrologue(MachineFunction &MF,
   DebugLoc dl = (MBBI != MBB.end() ? MBBI->getDebugLoc() : DebugLoc());
   bool FP = hasFP(MF);
 
+  // The ELF/OSF ABI enters a function with its procedure value in $27.  Form
+  // the function's $gp at every entry for now; later code-size tuning can omit
+  // this pair for functions that provably make no GP-relative references.
+  const AlphaSubtarget &STI = MF.getSubtarget<AlphaSubtarget>();
+  if (STI.getTargetTriple().isOSBinFormatELF()) {
+    BuildMI(MBB, MBBI, dl, TII.get(Alpha::LDAHg), Alpha::R29)
+        .addGlobalAddress(&MF.getFunction())
+        .addReg(Alpha::R27)
+        .addImm(1)
+        .setMIFlag(MachineInstr::FrameSetup);
+    BuildMI(MBB, MBBI, dl, TII.get(Alpha::LDAg), Alpha::R29)
+        .addGlobalAddress(&MF.getFunction())
+        .addReg(Alpha::R29)
+        .addImm(1)
+        .setMIFlag(MachineInstr::FrameSetup);
+  }
+
   // Get the number of bytes to allocate from the FrameInfo
   long NumBytes = MFI.getStackSize();
 
@@ -116,6 +133,15 @@ void AlphaFrameLowering::emitPrologue(MachineFunction &MF,
     report_fatal_error("Too big a stack frame at " + Twine(NumBytes));
   }
 
+  if (STI.getTargetTriple().isOSBinFormatELF() && MF.needsFrameMoves() &&
+      NumBytes != 0) {
+    unsigned CFIIndex =
+        MF.addFrameInst(MCCFIInstruction::cfiDefCfaOffset(nullptr, -NumBytes));
+    BuildMI(MBB, MBBI, dl, TII.get(TargetOpcode::CFI_INSTRUCTION))
+        .addCFIIndex(CFIIndex)
+        .setMIFlag(MachineInstr::FrameSetup);
+  }
+
   // Now if we need to, save the old FP and set the new
   if (FP) {
     BuildMI(MBB, MBBI, dl, TII.get(Alpha::STQ))
@@ -128,6 +154,44 @@ void AlphaFrameLowering::emitPrologue(MachineFunction &MF,
         .addReg(Alpha::R30)
         .addReg(Alpha::R30)
         .setMIFlag(MachineInstr::FrameSetup);
+
+    if (STI.getTargetTriple().isOSBinFormatELF() && MF.needsFrameMoves()) {
+      const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
+      unsigned DwarfFP = TRI->getDwarfRegNum(Alpha::R15, true);
+      unsigned CFIIndex = MF.addFrameInst(
+          MCCFIInstruction::createOffset(nullptr, DwarfFP, NumBytes));
+      BuildMI(MBB, MBBI, dl, TII.get(TargetOpcode::CFI_INSTRUCTION))
+          .addCFIIndex(CFIIndex)
+          .setMIFlag(MachineInstr::FrameSetup);
+      CFIIndex = MF.addFrameInst(
+          MCCFIInstruction::cfiDefCfa(nullptr, DwarfFP, -NumBytes));
+      BuildMI(MBB, MBBI, dl, TII.get(TargetOpcode::CFI_INSTRUCTION))
+          .addCFIIndex(CFIIndex)
+          .setMIFlag(MachineInstr::FrameSetup);
+    }
+  }
+
+  if (STI.getTargetTriple().isOSBinFormatELF() && MF.needsFrameMoves()) {
+    const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
+    for (const CalleeSavedInfo &CS : MFI.getCalleeSavedInfo()) {
+      if (CS.isSpilledToReg())
+        continue;
+      auto Save = llvm::find_if(
+          make_range(MBBI, MBB.end()), [&](const MachineInstr &MI) {
+            return MI.mayStore() && MI.getNumOperands() != 0 &&
+                   MI.getOperand(0).isReg() &&
+                   MI.getOperand(0).getReg() == CS.getReg();
+          });
+      if (Save == MBB.end())
+        continue;
+      int64_t Offset = MFI.getObjectOffset(CS.getFrameIdx());
+      unsigned DwarfReg = TRI->getDwarfRegNum(CS.getReg(), true);
+      unsigned CFIIndex = MF.addFrameInst(
+          MCCFIInstruction::createOffset(nullptr, DwarfReg, Offset));
+      BuildMI(MBB, std::next(Save), dl, TII.get(TargetOpcode::CFI_INSTRUCTION))
+          .addCFIIndex(CFIIndex)
+          .setMIFlag(MachineInstr::FrameSetup);
+    }
   }
 
   if (MF.hasWinCFI()) {

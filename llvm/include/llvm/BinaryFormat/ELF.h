@@ -246,6 +246,30 @@ enum {
 #include "ELFRelocs/AArch64.def"
 };
 
+// Alpha-specific e_flags.
+enum : unsigned {
+  EF_ALPHA_32BIT = 0x00000001U,
+  EF_ALPHA_CANRELAX = 0x00000002U,
+};
+
+// ELF relocation types for Alpha.
+enum {
+#include "ELFRelocs/Alpha.def"
+};
+
+// Alpha st_other values and literal-use relocation addends.
+enum {
+  STO_ALPHA_NOPV = 0x80,
+  STO_ALPHA_STD_GPLOAD = 0x88,
+  LITUSE_ALPHA_ADDR = 0,
+  LITUSE_ALPHA_BASE = 1,
+  LITUSE_ALPHA_BYTOFF = 2,
+  LITUSE_ALPHA_JSR = 3,
+  LITUSE_ALPHA_TLSGD = 4,
+  LITUSE_ALPHA_TLSLDM = 5,
+  LITUSE_ALPHA_JSRDIRECT = 6,
+};
+
 // Special values for the st_other field in the symbol table entry for AArch64.
 enum {
   // Symbol may follow different calling convention than base PCS.
@@ -1128,6 +1152,9 @@ enum : unsigned {
   // not set it; likewise, a small code model object can refer only to code in a
   // section that does not set this flag.
   SHF_X86_64_LARGE = 0x10000000,
+
+  // Section contributes to Alpha's GP-relative data area.
+  SHF_ALPHA_GPREL = 0x10000000,
 
   // All sections with the GPREL flag are grouped into a global data area
   // for faster accesses

@@ -1352,6 +1352,9 @@ StringRef ELFObjectFile<ELFT>::getFileFormatName() const {
       return "elf64-ve";
     case ELF::EM_LOONGARCH:
       return "elf64-loongarch";
+    case ELF::EM_ALPHA:
+    case ELF::EM_ALPHA_STD:
+      return "elf64-alpha";
     default:
       return "elf64-unknown";
     }
@@ -1364,6 +1367,9 @@ StringRef ELFObjectFile<ELFT>::getFileFormatName() const {
 template <class ELFT> Triple::ArchType ELFObjectFile<ELFT>::getArch() const {
   bool IsLittleEndian = ELFT::Endianness == llvm::endianness::little;
   switch (EF.getHeader().e_machine) {
+  case ELF::EM_ALPHA:
+  case ELF::EM_ALPHA_STD:
+    return Triple::alpha;
   case ELF::EM_68K:
     return Triple::m68k;
   case ELF::EM_386:

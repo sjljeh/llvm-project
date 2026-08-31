@@ -16,9 +16,11 @@
 #include "AlphaMCAsmInfo.h"
 #include "TargetInfo/AlphaTargetInfo.h"
 #include "llvm/DebugInfo/CodeView/CodeView.h"
+#include "llvm/MC/MCDwarf.h"
 #include "llvm/MC/MCInstrAnalysis.h"
 #include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCRegisterInfo.h"
+#include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/TargetRegistry.h"
 
@@ -124,11 +126,18 @@ static MCAsmInfo *createAlphaMCAsmInfo(const MCRegisterInfo &MRI,
                                        const MCTargetOptions &Options) {
   if (TT.isOSBinFormatCOFF())
     return new AlphaMCAsmInfoMicrosoftCOFF(TT, Options);
-  return new AlphaMCAsmInfo(TT, Options);
+  auto *MAI = new AlphaMCAsmInfo(TT, Options);
+  unsigned SP = MRI.getDwarfRegNum(Alpha::R30, true);
+  MAI->addInitialFrameState(MCCFIInstruction::cfiDefCfa(nullptr, SP, 0));
+  return MAI;
+}
+
+static MCTargetStreamer *createAlphaNullTargetStreamer(MCStreamer &S) {
+  return new MCTargetStreamer(S);
 }
 
 // Force static initialization.
-extern "C" void LLVMInitializeAlphaTargetMC() {
+extern "C" LLVM_ABI LLVM_EXTERNAL_VISIBILITY void LLVMInitializeAlphaTargetMC() {
   // Register the MC asm info.
   RegisterMCAsmInfoFn X(getTheAlphaTarget(), createAlphaMCAsmInfo);
 
@@ -162,6 +171,11 @@ extern "C" void LLVMInitializeAlphaTargetMC() {
   // Register the COFF streamer.
   TargetRegistry::RegisterCOFFStreamer(getTheAlphaTarget(),
                                        createAlphaWinCOFFStreamer);
+
+  // Register the null target streamer used by -filetype=null and by module
+  // inline asm symbol collection.
+  TargetRegistry::RegisterNullTargetStreamer(getTheAlphaTarget(),
+                                             createAlphaNullTargetStreamer);
 
   registerAlphaAsmParser();
 }

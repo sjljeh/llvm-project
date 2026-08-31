@@ -265,7 +265,8 @@ public:
     // EM_S390 and ELF::EM_ALPHA platforms use 8-bytes entries in SHT_HASH
     // sections. This violates the ELF specification.
     if (Obj.getHeader().e_machine == ELF::EM_S390 ||
-        Obj.getHeader().e_machine == ELF::EM_ALPHA)
+        Obj.getHeader().e_machine == ELF::EM_ALPHA ||
+        Obj.getHeader().e_machine == ELF::EM_ALPHA_STD)
       return 8;
     return 4;
   }

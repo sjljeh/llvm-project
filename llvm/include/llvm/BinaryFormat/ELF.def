@@ -40,7 +40,11 @@ ELF_MACHINE(EM_FR20,           37, "fr20", "Fujitsu FR20")
 ELF_MACHINE(EM_RH32,           38, "rh32", "TRW RH-32")
 ELF_MACHINE(EM_RCE,            39, "rce", "Motorola RCE")
 ELF_MACHINE(EM_ARM,            40, "arm", "ARM")
-ELF_MACHINE(EM_ALPHA,          41, "alpha", "EM_ALPHA") // DEC Alpha
+// The deployed Alpha ELF ABI predates the registry assignment of 41 and all
+// extant Alpha ELF systems use the experimental machine number 0x9026. Keep it
+// first so that the "alpha" arch name maps to the deployed value.
+ELF_MACHINE(EM_ALPHA,      0x9026, "alpha", "EM_ALPHA") // DEC Alpha
+ELF_MACHINE(EM_ALPHA_STD,      41, "alpha", "EM_ALPHA_STD") // Reserved ABI-assigned Alpha value (not deployed)
 ELF_MACHINE(EM_SH,             42, "sh", "Hitachi SH")
 ELF_MACHINE(EM_SPARCV9,        43, "sparcv9", "Sparc v9")
 ELF_MACHINE(EM_TRICORE,        44, "tricore", "Siemens Tricore")

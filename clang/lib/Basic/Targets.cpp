@@ -155,7 +155,18 @@ std::unique_ptr<TargetInfo> AllocateTarget(const llvm::Triple &Triple,
     }
     if (os == llvm::Triple::UEFI)
       return std::make_unique<WindowsAlpha64TargetInfo>(Triple, Opts);
-    return std::make_unique<AlphaTargetInfo>(Triple, Opts);
+    switch (os) {
+    case llvm::Triple::Linux:
+      return std::make_unique<LinuxTargetInfo<Alpha64TargetInfo>>(Triple, Opts);
+    case llvm::Triple::NetBSD:
+      return std::make_unique<NetBSDTargetInfo<Alpha64TargetInfo>>(Triple,
+                                                                   Opts);
+    case llvm::Triple::OpenBSD:
+      return std::make_unique<OpenBSDTargetInfo<Alpha64TargetInfo>>(Triple,
+                                                                    Opts);
+    default:
+      return std::make_unique<Alpha64TargetInfo>(Triple, Opts);
+    }
 
   case llvm::Triple::aarch64_32:
     if (Triple.isOSDarwin())

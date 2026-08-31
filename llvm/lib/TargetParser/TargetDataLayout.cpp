@@ -482,8 +482,9 @@ std::string Triple::computeDataLayout(StringRef ABIName) const {
            "f32:32:32-i64:32-f64:32-a:0:32-n32";
   case Triple::alpha:
     if (isOSWindows())
-      return "e-p:64:64-f64:64-n32:64";
-    return "e-p:64:64-f128:128:128-n64";
+      return ABIName == "taso" ? "e-p:32:32-f64:64-n32:64"
+                               : "e-p:64:64-f64:64-n32:64";
+    return "e-m:e-p:64:64-i64:64-i128:128-f128:128:128-n64-S128";
   case Triple::avr:
     return "e-P1-p:16:8-i8:8-i16:8-i32:8-i64:8-f32:8-f64:8-n8:16-a:8";
   case Triple::bpfel:
