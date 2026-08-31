@@ -15,7 +15,7 @@ symbol:
 # CHECK: error: unknown PASM relocation modifier 'unknown'
 # CHECK: error: '[secoff]' requires a 4-byte directive
 # CHECK: error: '[secnum]' requires a 2-byte directive
-# CHECK: error: expected 'toc' relocation modifier
+# CHECK: error: unknown PASM relocation modifier 'secoff'
 # CHECK: error: expected identifier in '.function' directive
 # CHECK: error: unexpected token in '.function' directive
 # CHECK: error: expected identifier in '.znop' directive
