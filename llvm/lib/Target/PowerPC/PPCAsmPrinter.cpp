@@ -980,6 +980,22 @@ void PPCAsmPrinter::emitInstruction(const MachineInstr *MI) {
   case PPC::SEH_PrologEnd:
     OutStreamer->emitWinCFIEndProlog();
     return;
+  case PPC::SEH_RecoverFrameOffset: {
+    const MCSymbolRefExpr *Offset = MCSymbolRefExpr::create(
+        MI->getOperand(1).getMCSymbol(), OutContext);
+    const MCExpr *Hi =
+        MCSpecifierExpr::create(Offset, PPC::S_HA, OutContext);
+    const MCExpr *Lo =
+        MCSpecifierExpr::create(Offset, PPC::S_LO, OutContext);
+    Register Dst = MI->getOperand(0).getReg();
+    EmitToStreamer(*OutStreamer,
+                   MCInstBuilder(PPC::LIS).addReg(Dst).addExpr(Hi));
+    EmitToStreamer(*OutStreamer, MCInstBuilder(PPC::ADDI)
+                                       .addReg(Dst)
+                                       .addReg(Dst)
+                                       .addExpr(Lo));
+    return;
+  }
   case PPC::CATCHRET: {
     const MCSymbolRefExpr *Target = MCSymbolRefExpr::create(
         MI->getOperand(0).getMBB()->getSymbol(), OutContext);

@@ -2110,6 +2110,29 @@ void CodeGenFunction::EmitCapturedLocals(CodeGenFunction &ParentCGF,
   CaptureFinder Finder(ParentCGF, ParentCGF.CXXABIThisDecl);
   Finder.Visit(OutlinedStmt);
   bool HasBailoutSlot = SEHFinallyBailoutParentAlloca.isValid();
+  CGBuilderTy Builder(CGM, AllocaInsertPt);
+
+  llvm::Value *PPCEntryFP = nullptr;
+  const llvm::Triple &Triple = CGM.getTarget().getTriple();
+  if (IsFilter && Triple.isOSWindows() && Triple.isPPC32()) {
+    llvm::Metadata *RegName = llvm::MDNode::get(
+        getLLVMContext(), llvm::MDString::get(getLLVMContext(), "r2"));
+    llvm::Value *RegNameValue =
+        llvm::MetadataAsValue::get(getLLVMContext(), RegName);
+    llvm::Function *ReadRegister =
+        CGM.getIntrinsic(llvm::Intrinsic::read_register, Int32Ty);
+    llvm::Value *EntryFPInt =
+        Builder.CreateCall(ReadRegister, {RegNameValue}, "seh.entryfp");
+    PPCEntryFP = Builder.CreateIntToPtr(EntryFPInt, Int8PtrTy);
+
+    llvm::Value *TOCAddr =
+        Builder.CreateConstInBoundsGEP1_32(Int8Ty, PPCEntryFP, 8);
+    llvm::Value *TOC =
+        Builder.CreateAlignedLoad(Int32Ty, TOCAddr, getIntAlign());
+    llvm::Function *WriteRegister =
+        CGM.getIntrinsic(llvm::Intrinsic::write_register, Int32Ty);
+    Builder.CreateCall(WriteRegister, {RegNameValue, TOC});
+  }
 
   // We can exit early on x86_64 when there are no captures. We just have to
   // save the exception code in filters so that __exception_code() works.
@@ -2121,7 +2144,6 @@ void CodeGenFunction::EmitCapturedLocals(CodeGenFunction &ParentCGF,
   }
 
   llvm::Value *EntryFP = nullptr;
-  CGBuilderTy Builder(CGM, AllocaInsertPt);
   if (IsFilter && CGM.getTarget().getTriple().getArch() == llvm::Triple::x86) {
     // 32-bit SEH filters need to be careful about FP recovery.  The end of the
     // EH registration is passed in as the EBP physical register.  We can
@@ -2129,6 +2151,11 @@ void CodeGenFunction::EmitCapturedLocals(CodeGenFunction &ParentCGF,
     EntryFP = Builder.CreateCall(
         CGM.getIntrinsic(llvm::Intrinsic::frameaddress, AllocaInt8PtrTy),
         {Builder.getInt32(1)});
+  } else if (PPCEntryFP) {
+    // The NT PowerPC dispatcher passes the establisher's incoming stack
+    // pointer in r2. The filter entry restores the parent's TOC from that
+    // frame before evaluating an expression that can call arbitrary code.
+    EntryFP = PPCEntryFP;
   } else {
     // Otherwise, for x64 and 32-bit finally functions, the parent FP is the
     // second parameter.

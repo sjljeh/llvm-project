@@ -283,6 +283,7 @@ PPCCOFFMCAsmInfo::PPCCOFFMCAsmInfo(const Triple &T,
   SupportsDebugInformation = true;
   ExceptionsType = ExceptionHandling::WinEH;
   WinEHEncodingType = WinEH::EncodingType::PPC;
+  HasCOFFAssociativeComdats = T.isWindowsMSVCEnvironment();
   InternalSymbolPrefix = ".L";
   initializeAtSpecifiers(coffAtSpecifiers);
 }

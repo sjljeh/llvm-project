@@ -693,6 +693,8 @@ PPCTargetLowering::PPCTargetLowering(const PPCTargetMachine &TM,
   setOperationAction(ISD::INTRINSIC_WO_CHAIN, MVT::ppcf128, Custom);
   setOperationAction(ISD::INTRINSIC_WO_CHAIN, MVT::v4f32, Custom);
   setOperationAction(ISD::INTRINSIC_WO_CHAIN, MVT::v2f64, Custom);
+  if (Subtarget.isPPCWinCOFFABI())
+    setOperationAction(ISD::INTRINSIC_WO_CHAIN, MVT::i32, Custom);
 
   // To handle counter-based loop conditions.
   setOperationAction(ISD::INTRINSIC_W_CHAIN, MVT::i1, Custom);
@@ -11163,6 +11165,35 @@ SDValue PPCTargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
   };
 
   switch (IntrinsicID) {
+  case Intrinsic::localaddress: {
+    const MachineFunction &MF = DAG.getMachineFunction();
+    const auto *FrameLowering = Subtarget.getFrameLowering();
+    Register Reg = FrameLowering->needsFP(MF) ? PPC::R31 : PPC::R1;
+    return DAG.getCopyFromReg(DAG.getEntryNode(), dl, Reg,
+                              Op.getSimpleValueType());
+  }
+
+  case Intrinsic::eh_recoverfp: {
+    SDValue FnOp = Op.getOperand(1);
+    SDValue IncomingFPOp = Op.getOperand(2);
+    GlobalAddressSDNode *GSD = dyn_cast<GlobalAddressSDNode>(FnOp);
+    auto *Fn = dyn_cast_or_null<Function>(GSD ? GSD->getGlobal() : nullptr);
+    if (!Fn || !Fn->hasPersonalityFn())
+      return IncomingFPOp;
+
+    MCSymbol *OffsetSym =
+        DAG.getMachineFunction()
+            .getContext()
+            .getOrCreateParentFrameOffsetSymbol(
+                GlobalValue::dropLLVMManglingEscape(Fn->getName()));
+    MVT PtrVT = IncomingFPOp.getValueType().getSimpleVT();
+    SDValue OffsetSymVal = DAG.getMCSymbol(OffsetSym, PtrVT);
+    SDValue Offset =
+        DAG.getNode(ISD::LOCAL_RECOVER, dl, PtrVT, OffsetSymVal);
+    return DAG.getNode(ISD::ADD, dl, Op.getSimpleValueType(), IncomingFPOp,
+                       Offset);
+  }
+
   case Intrinsic::thread_pointer:
     // Reads the thread pointer register, used for __builtin_thread_pointer.
     if (Subtarget.isPPC64())

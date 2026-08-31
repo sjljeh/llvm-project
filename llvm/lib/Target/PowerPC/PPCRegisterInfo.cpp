@@ -1737,6 +1737,21 @@ PPCRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
   MachineFrameInfo &MFI = MF.getFrameInfo();
   DebugLoc dl = MI.getDebugLoc();
 
+  // LOCAL_ESCAPE names a frame object offset rather than a memory operand.
+  // The generic WinEH lowering recovers this value relative to the local
+  // address register, so materialize the same finalized offset that ordinary
+  // frame-index references use. Treating it as a PPC ri-form instruction
+  // would look for a nonexistent displacement operand.
+  if (MI.getOpcode() == TargetOpcode::LOCAL_ESCAPE) {
+    int FrameIndex = MI.getOperand(FIOperandNum).getIndex();
+    int64_t Offset = MFI.getObjectOffset(FrameIndex);
+    if (!MF.getFunction().hasFnAttribute(Attribute::Naked) &&
+        !(hasBasePointer(MF) && FrameIndex < 0))
+      Offset += MFI.getStackSize();
+    MI.getOperand(FIOperandNum).ChangeToImmediate(Offset);
+    return false;
+  }
+
   unsigned OffsetOperandNo = getOffsetONFromFION(MI, FIOperandNum);
 
   // Get the frame index.

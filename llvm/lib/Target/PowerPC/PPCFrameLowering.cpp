@@ -27,6 +27,7 @@
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/RegisterScavenging.h"
 #include "llvm/CodeGen/WinEHFuncInfo.h"
+#include "llvm/IR/EHPersonalities.h"
 #include "llvm/IR/Function.h"
 #include "llvm/Target/TargetOptions.h"
 
@@ -641,6 +642,13 @@ void PPCFrameLowering::emitPrologue(MachineFunction &MF,
   int64_t NegFrameSize = -FrameSize;
   if (!isPPC64 && (!isInt<32>(FrameSize) || !isInt<32>(NegFrameSize)))
     llvm_unreachable("Unhandled stack size!");
+
+  if (Subtarget.isPPCWinCOFFABI() && !MBB.isEHFuncletEntry() &&
+      MF.getFunction().hasPersonalityFn() &&
+      classifyEHPersonality(MF.getFunction().getPersonalityFn()) ==
+          EHPersonality::MSVC_TableSEH)
+    MF.getWinEHFuncInfo()->SEHSetFrameOffset =
+        static_cast<int>(NegFrameSize);
 
   if (MFI.isFrameAddressTaken())
     replaceFPWithRealFP(MF);
