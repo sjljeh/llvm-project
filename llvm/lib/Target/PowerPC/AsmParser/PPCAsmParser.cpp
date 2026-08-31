@@ -1481,9 +1481,20 @@ bool PPCAsmParser::parsePrimaryExpr(const MCExpr *&Res, SMLoc &EndLoc) {
   if (IsPPCWinCOFF && getLexer().is(AsmToken::LBrac)) {
     SMLoc ModifierLoc = getParser().getTok().getLoc();
     getParser().Lex();
-    if (getLexer().isNot(AsmToken::Identifier) ||
-        !getParser().getTok().getIdentifier().equals_insensitive("toc"))
-      return Error(ModifierLoc, "expected 'toc' relocation modifier");
+    if (getLexer().isNot(AsmToken::Identifier))
+      return Error(ModifierLoc, "expected PASM relocation modifier");
+
+    StringRef Modifier = getParser().getTok().getIdentifier();
+    PPCMCExpr::Specifier Specifier;
+    if (Modifier.equals_insensitive("toc"))
+      Specifier = PPC::S_TOC;
+    else if (Modifier.equals_insensitive("hia"))
+      Specifier = PPC::S_HA;
+    else if (Modifier.equals_insensitive("lo"))
+      Specifier = PPC::S_LO;
+    else
+      return Error(ModifierLoc,
+                   "unknown PASM relocation modifier '" + Modifier + "'");
     getParser().Lex();
     if (parseToken(AsmToken::RBrac, "expected ']'"))
       return true;
@@ -1491,9 +1502,9 @@ bool PPCAsmParser::parsePrimaryExpr(const MCExpr *&Res, SMLoc &EndLoc) {
     MCSymbol *Symbol;
     if (getParser().parseSymbol(Symbol))
       return Error(getParser().getTok().getLoc(),
-                   "expected symbol after '[toc]'");
+                   "expected symbol after '[" + Modifier + "]'");
 
-    Res = MCSymbolRefExpr::create(Symbol, PPC::S_TOC, getContext());
+    Res = MCSymbolRefExpr::create(Symbol, Specifier, getContext());
     EndLoc = SMLoc::getFromPointer(getParser().getTok().getLoc().getPointer() -
                                    1);
     return false;
