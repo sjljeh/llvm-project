@@ -1,0 +1,71 @@
+# REQUIRES: alpha-registered-target
+# RUN: split-file %s %t
+# RUN: llvm-asaxp /? | FileCheck %s --check-prefix=HELP
+# RUN: llvm-asaxp /nologo /nopp /machine:alpha /Fo%t/alpha.obj %t/basic.s
+# RUN: llvm-readobj --file-headers --relocations %t/alpha.obj | \
+# RUN:   FileCheck %s --check-prefix=ALPHA
+# RUN: llvm-asaxp /nologo /nopp /Fo%t/alpha64.obj %t/basic.s
+# RUN: llvm-readobj --file-headers --relocations %t/alpha64.obj | \
+# RUN:   FileCheck %s --check-prefix=ALPHA64
+# RUN: llvm-asaxp /nologo /machine:alpha /DVALUE=42 \
+# RUN:   /Fo%t/preprocessed.obj %t/preprocessed.s
+# RUN: llvm-readobj --hex-dump=.text %t/preprocessed.obj | \
+# RUN:   FileCheck %s --check-prefix=PREPROCESSED
+# RUN: llvm-asaxp /nologo /nopp /machine:alpha /Fo%t/legacy.obj %t/legacy.s
+# RUN: llvm-readobj --sections %t/legacy.obj | FileCheck %s --check-prefix=LEGACY
+
+# HELP: OVERVIEW: LLVM Alpha AXP Assembler
+# HELP: -D <symbol>[=<value>]
+# HELP: -Fo <file>
+# HELP: -machine:<alpha|alpha64>
+
+# ALPHA:      AddressSize: 32bit
+# ALPHA:      Machine: IMAGE_FILE_MACHINE_ALPHA (0x184)
+# ALPHA:      IMAGE_REL_ALPHA_BRADDR external
+
+# ALPHA64:    AddressSize: 64bit
+# ALPHA64:    Machine: IMAGE_FILE_MACHINE_ALPHA64 (0x284)
+# ALPHA64:    IMAGE_REL_ALPHA_BRADDR external
+
+# PREPROCESSED: Hex dump of section '.text':
+# PREPROCESSED: 2a001f20
+
+# LEGACY:      Name: .text
+# LEGACY-NEXT: VirtualSize: 0x0
+# LEGACY:      RawDataSize: 36
+
+#--- basic.s
+        .text
+        .globl entry
+entry:
+        lda $0,1($31)
+        bsr $26,external
+        ret
+
+#--- preprocessed.s
+#define IMMEDIATE VALUE
+        .text
+        .globl entry
+entry:
+        lda $0,IMMEDIATE($31)
+        ret
+
+#--- legacy.s
+        .edata 0
+        .text
+        .align 4
+        .globl legacy
+        .ent legacy, 0
+legacy:
+        .frame $30, 0, $26
+        .prologue 0
+10:     ldq_u $1,0($17)
+        extwl $1,$17,$1
+        extwl $16,2,$2
+        cmplt $18,8,$27
+        cmpult $16,$1,$1
+        srl $16,16,$1
+        beq $0,20f
+        br 10b
+20:     ret $31,($26)
+        .end legacy
