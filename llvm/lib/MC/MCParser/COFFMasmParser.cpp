@@ -504,6 +504,7 @@ bool COFFMasmParser::parseDirectiveProc(StringRef Directive, SMLoc Loc) {
   if (!getStreamer().getCurrentFragment())
     return Error(getTok().getLoc(), "expected section directive");
 
+  StringRef DisplayName = getTok().getString();
   MCSymbol *Sym;
   if (getParser().parseSymbol(Sym))
     return Error(Loc, "expected identifier for procedure");
@@ -545,7 +546,7 @@ bool COFFMasmParser::parseDirectiveProc(StringRef Directive, SMLoc Loc) {
 
   CurrentProcedures.push_back(Sym->getName());
   CurrentProceduresFramed.push_back(Framed);
-  getParser().enterMasmProcedure();
+  getParser().enterMasmProcedure(Sym, DisplayName, Loc);
   return false;
 }
 bool COFFMasmParser::parseDirectiveEndProc(StringRef Directive, SMLoc Loc) {

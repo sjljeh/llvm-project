@@ -94,6 +94,15 @@ def ignore_include_envvar : MLFlag<"X">,
                             HelpText<"Ignore the INCLUDE environment variable">;
 def preserve_identifier_case : MLFlag<"Cp">,
                                HelpText<"Preserve identifier case">;
+def line_number_info : MLFlag<"Zd">,
+                       HelpText<"Add line number debug information">;
+def codeview_info : MLFlag<"Zi">,
+                    HelpText<"Add symbolic debug information">;
+def debug_hash_md5 : MLFlag<"ZH:MD5">,
+                     HelpText<"Use MD5 for checksums in debug information">;
+def debug_hash_sha256 : MLFlag<"ZH:SHA_256">,
+                        HelpText<"Use SHA256 for checksums in debug information "
+                                 "(default)">;
 
 def tiny_model_support : UnsupportedFlag<"AT">, HelpText<"">;
 def alternate_linker : UnsupportedJoined<"Bl">, HelpText<"">;
@@ -124,8 +133,8 @@ def listing_title : UnsupportedSeparate<"St">, HelpText<"">;
 def listing_false_conditionals : UnsupportedFlag<"Sx">, HelpText<"">;
 def extra_warnings : UnsupportedFlag<"w">, HelpText<"">;
 def warning_level : UnsupportedJoined<"W">, HelpText<"">;
-def line_number_info : UnsupportedFlag<"Zd">, HelpText<"">;
 def export_all_symbols : UnsupportedFlag<"Zf">, HelpText<"">;
-def codeview_info : UnsupportedFlag<"Zi">, HelpText<"">;
+def debug_hash_sha384 : UnsupportedFlag<"ZH:SHA384">, HelpText<"">;
+def debug_hash_sha512 : UnsupportedFlag<"ZH:SHA512">, HelpText<"">;
 def enable_m510_option : UnsupportedFlag<"Zm">, HelpText<"">;
 def structure_packing : UnsupportedJoined<"Zp">, HelpText<"">;
