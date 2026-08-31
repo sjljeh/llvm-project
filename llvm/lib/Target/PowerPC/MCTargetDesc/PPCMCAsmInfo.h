@@ -134,6 +134,7 @@ enum Specifier {
   S_TPREL_HIGHESTA, // symbol@tprel@highesta
   S_TPREL_LO,       // symbol@tprel@l
   S_U,              // symbol@u
+  S_IFGLUE,         // internal specifier for PASM .znop
 };
 
 bool evaluateAsConstant(const MCSpecifierExpr &Expr, int64_t &Res);

@@ -69,6 +69,8 @@ unsigned PPCWinCOFFObjectWriter::getRelocType(
       return COFF::IMAGE_REL_PPC_ABSOLUTE;
     case PPC::S_None:
       return COFF::IMAGE_REL_PPC_ADDR32;
+    case PPC::S_IFGLUE:
+      return COFF::IMAGE_REL_PPC_IFGLUE;
     case MCSymbolRefExpr::VK_COFF_IMGREL32:
       return COFF::IMAGE_REL_PPC_ADDR32NB;
     }
