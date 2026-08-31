@@ -22,6 +22,8 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/Config/llvm-config.h"
+#include "llvm/DebugInfo/CodeView/CodeView.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCCodeView.h"
 #include "llvm/MC/MCContext.h"
@@ -30,6 +32,7 @@
 #include "llvm/MC/MCInstPrinter.h"
 #include "llvm/MC/MCInstrDesc.h"
 #include "llvm/MC/MCInstrInfo.h"
+#include "llvm/MC/MCObjectFileInfo.h"
 #include "llvm/MC/MCParser/AsmCond.h"
 #include "llvm/MC/MCParser/AsmLexer.h"
 #include "llvm/MC/MCParser/MCAsmParser.h"
@@ -44,11 +47,13 @@
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/MD5.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/SHA256.h"
 #include "llvm/Support/SMLoc.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/raw_ostream.h"
@@ -470,6 +475,32 @@ private:
   bool CaseSensitiveIdentifiers = false;
   bool DotName = false;
 
+  MasmDebugInfoKind CodeViewKind = MasmDebugInfoKind::Disabled;
+  std::string CodeViewObjectFilename;
+  std::string CodeViewToolName;
+  bool CodeViewUseMD5 = false;
+
+  struct CodeViewSectionInfo {
+    MCSection *Section;
+    MCSymbol *Begin;
+    MCSymbol *End;
+    unsigned FunctionId;
+  };
+  SmallVector<CodeViewSectionInfo, 2> CodeViewSections;
+  SmallVector<std::pair<unsigned, unsigned>, 4> CodeViewFiles;
+
+  struct CodeViewProcedureInfo {
+    MCSymbol *Begin;
+    MCSymbol *End;
+    std::string DisplayName;
+  };
+  SmallVector<CodeViewProcedureInfo, 4> CodeViewProcedures;
+  SmallVector<unsigned, 1> ActiveCodeViewProcedures;
+
+  unsigned getCodeViewFileNumber(unsigned Buffer);
+  void recordCodeViewLine(SMLoc Loc);
+  void emitCodeViewDebugInfo();
+
   std::string identifierKey(StringRef Name) const {
     return CaseSensitiveIdentifiers ? Name.str() : Name.lower();
   }
@@ -539,7 +570,11 @@ public:
 
   bool isMasmDotName() const override { return DotName; }
 
-  void enterMasmProcedure() override { ProcedureContexts.emplace_back(); }
+  void setMasmDebugInfo(MasmDebugInfoKind Kind, StringRef ObjectFilename,
+                        StringRef ToolName, bool UseMD5) override;
+
+  void enterMasmProcedure(MCSymbol *Symbol, StringRef DisplayName,
+                          SMLoc Loc) override;
 
   void exitMasmProcedure() override;
 
@@ -1079,8 +1114,42 @@ MCSymbol *MasmParser::getProcedureSymbol(StringRef Name, bool IsDefinition) {
   return Symbol;
 }
 
+void MasmParser::setMasmDebugInfo(MasmDebugInfoKind Kind,
+                                  StringRef ObjectFilename, StringRef ToolName,
+                                  bool UseMD5) {
+  CodeViewKind = Kind;
+  CodeViewObjectFilename = ObjectFilename.str();
+  CodeViewToolName = ToolName.str();
+  CodeViewUseMD5 = UseMD5;
+  if (CodeViewKind == MasmDebugInfoKind::LineTablesOnly ||
+      CodeViewKind == MasmDebugInfoKind::Full)
+    (void)getCodeViewFileNumber(SrcMgr.getMainFileID());
+}
+
+void MasmParser::enterMasmProcedure(MCSymbol *Symbol, StringRef DisplayName,
+                                    SMLoc Loc) {
+  ProcedureContexts.emplace_back();
+  if (CodeViewKind == MasmDebugInfoKind::Disabled ||
+      CodeViewKind == MasmDebugInfoKind::None)
+    return;
+
+  recordCodeViewLine(Loc);
+  if (CodeViewKind != MasmDebugInfoKind::Full)
+    return;
+
+  MCSymbol *End = getContext().createTempSymbol("masm_proc_end");
+  ActiveCodeViewProcedures.push_back(CodeViewProcedures.size());
+  CodeViewProcedures.push_back({Symbol, End, DisplayName.str()});
+}
+
 void MasmParser::exitMasmProcedure() {
   assert(!ProcedureContexts.empty() && "exiting procedure outside PROC block");
+  if (CodeViewKind == MasmDebugInfoKind::Full) {
+    assert(!ActiveCodeViewProcedures.empty() &&
+           "missing CodeView procedure state");
+    getStreamer().emitLabel(
+        CodeViewProcedures[ActiveCodeViewProcedures.pop_back_val()].End);
+  }
   for (auto &Entry : ProcedureContexts.back().Symbols) {
     ProcedureSymbol &Local = Entry.getValue();
     if (!Local.Symbol->isUndefined())
@@ -1091,6 +1160,217 @@ void MasmParser::exitMasmProcedure() {
         MCSymbolRefExpr::create(Global, getContext()));
   }
   ProcedureContexts.pop_back();
+}
+
+unsigned MasmParser::getCodeViewFileNumber(unsigned Buffer) {
+  for (auto [ExistingBuffer, FileNumber] : CodeViewFiles)
+    if (ExistingBuffer == Buffer)
+      return FileNumber;
+
+  const MemoryBuffer *Source = SrcMgr.getMemoryBuffer(Buffer);
+  SmallString<256> Filename(Source->getBufferIdentifier());
+  if (!Filename.starts_with("<") && !sys::path::is_absolute(Filename)) {
+    SmallString<256> Absolute(getContext().getCompilationDir());
+    sys::path::append(Absolute, Filename);
+    Filename = Absolute;
+  }
+  sys::path::remove_dots(Filename, /*remove_dot_dot=*/true);
+
+  StringRef Contents = Source->getBuffer();
+  ArrayRef<uint8_t> Bytes(reinterpret_cast<const uint8_t *>(Contents.data()),
+                          Contents.size());
+  SmallVector<uint8_t, 32> Checksum;
+  unsigned ChecksumKind;
+  if (CodeViewUseMD5) {
+    MD5::MD5Result Result = MD5::hash(Bytes);
+    Checksum.append(Result.begin(), Result.end());
+    ChecksumKind = static_cast<unsigned>(codeview::FileChecksumKind::MD5);
+  } else {
+    std::array<uint8_t, 32> Result = SHA256::hash(Bytes);
+    Checksum.append(Result.begin(), Result.end());
+    ChecksumKind = static_cast<unsigned>(codeview::FileChecksumKind::SHA256);
+  }
+
+  void *ChecksumMemory = getContext().allocate(Checksum.size(), 1);
+  llvm::copy(Checksum, static_cast<uint8_t *>(ChecksumMemory));
+  ArrayRef<uint8_t> StoredChecksum(static_cast<uint8_t *>(ChecksumMemory),
+                                   Checksum.size());
+
+  unsigned FileNumber = CodeViewFiles.size() + 1;
+  if (!getStreamer().emitCVFileDirective(FileNumber, Filename, StoredChecksum,
+                                         ChecksumKind))
+    llvm_unreachable("duplicate CodeView file number");
+  CodeViewFiles.emplace_back(Buffer, FileNumber);
+  return FileNumber;
+}
+
+void MasmParser::recordCodeViewLine(SMLoc Loc) {
+  if (CodeViewKind == MasmDebugInfoKind::Disabled ||
+      CodeViewKind == MasmDebugInfoKind::None)
+    return;
+
+  MCSection *Section = getStreamer().getCurrentSectionOnly();
+  auto SectionIt = llvm::find_if(CodeViewSections, [Section](const auto &Info) {
+    return Info.Section == Section;
+  });
+  if (SectionIt == CodeViewSections.end()) {
+    unsigned FunctionId = CodeViewSections.size();
+    SmallString<16> BeginName;
+    raw_svector_ostream(BeginName) << "$$" << format("%06u", FunctionId);
+    MCSymbol *Begin = getContext().getOrCreateSymbol(BeginName);
+    MCSymbol *End = getContext().createTempSymbol("masm_code_end");
+    getStreamer().emitLabel(Begin, Loc);
+    if (!getStreamer().emitCVFuncIdDirective(FunctionId))
+      llvm_unreachable("duplicate CodeView function id");
+    CodeViewSections.push_back({Section, Begin, End, FunctionId});
+    SectionIt = std::prev(CodeViewSections.end());
+  }
+
+  unsigned Buffer = CurBuffer;
+  if (!ActiveMacros.empty()) {
+    Loc = ActiveMacros.front()->InstantiationLoc;
+    Buffer = ActiveMacros.front()->ExitBuffer;
+  }
+  unsigned FileNumber = getCodeViewFileNumber(Buffer);
+  unsigned Line = SrcMgr.FindLineNumber(Loc, Buffer);
+  getStreamer().emitCVLocDirective(SectionIt->FunctionId, FileNumber, Line,
+                                   /*Column=*/0, /*PrologueEnd=*/false,
+                                   /*IsStmt=*/true, StringRef(), Loc);
+}
+
+void MasmParser::emitCodeViewDebugInfo() {
+  using namespace codeview;
+
+  for (CodeViewSectionInfo &Section : CodeViewSections) {
+    getStreamer().switchSection(Section.Section);
+    getStreamer().emitLabel(Section.End);
+  }
+
+  MCStreamer &OS = getStreamer();
+  OS.switchSection(
+      getContext().getObjectFileInfo()->getCOFFDebugSymbolsSection());
+  OS.emitInt32(4); // CodeView debug section magic.
+
+  if (CodeViewKind == MasmDebugInfoKind::LineTablesOnly ||
+      CodeViewKind == MasmDebugInfoKind::Full) {
+    OS.emitCVStringTableDirective();
+    OS.emitCVFileChecksumsDirective();
+    for (const CodeViewSectionInfo &Section : CodeViewSections)
+      OS.emitCVLinetableDirective(Section.FunctionId, Section.Begin,
+                                  Section.End);
+  }
+
+  auto BeginSubsection = [&](DebugSubsectionKind Kind) {
+    MCSymbol *Begin = getContext().createTempSymbol();
+    MCSymbol *End = getContext().createTempSymbol();
+    OS.emitInt32(static_cast<unsigned>(Kind));
+    OS.emitAbsoluteSymbolDiff(End, Begin, 4);
+    OS.emitLabel(Begin);
+    return End;
+  };
+  auto EndSubsection = [&](MCSymbol *End) {
+    OS.emitLabel(End);
+    OS.emitValueToAlignment(Align(4));
+  };
+  auto BeginSymbolRecord = [&](SymbolKind Kind) {
+    MCSymbol *Begin = getContext().createTempSymbol();
+    MCSymbol *End = getContext().createTempSymbol();
+    OS.emitAbsoluteSymbolDiff(End, Begin, 2);
+    OS.emitLabel(Begin);
+    OS.emitInt16(static_cast<unsigned>(Kind));
+    return End;
+  };
+  auto EndSymbolRecord = [&](MCSymbol *End) {
+    OS.emitValueToAlignment(Align(4));
+    OS.emitLabel(End);
+  };
+  auto EmitCString = [&](StringRef Value) {
+    OS.emitBytes(Value);
+    OS.emitInt8(0);
+  };
+
+  MCSymbol *SymbolsEnd = BeginSubsection(DebugSubsectionKind::Symbols);
+  MCSymbol *RecordEnd = BeginSymbolRecord(SymbolKind::S_OBJNAME);
+  OS.emitInt32(0);
+  EmitCString(CodeViewObjectFilename);
+  EndSymbolRecord(RecordEnd);
+
+  RecordEnd = BeginSymbolRecord(SymbolKind::S_COMPILE3);
+  uint32_t Flags = 3; // CV_CFL_MASM.
+  if (CodeViewKind != MasmDebugInfoKind::Full)
+    Flags |= static_cast<uint32_t>(CompileSym3Flags::NoDbgInfo);
+  OS.emitInt32(Flags);
+  CPUType CPU = getContext().getTargetTriple().isArch64Bit()
+                    ? CPUType::X64
+                    : CPUType::Intel80386;
+  OS.emitInt16(static_cast<unsigned>(CPU));
+  for (unsigned I = 0; I != 4; ++I)
+    OS.emitInt16(0);
+  OS.emitInt16(LLVM_VERSION_MAJOR);
+  OS.emitInt16(LLVM_VERSION_MINOR);
+  OS.emitInt16(LLVM_VERSION_PATCH);
+  OS.emitInt16(0);
+  EmitCString("LLVM MASM Assembler " LLVM_VERSION_STRING);
+  EndSymbolRecord(RecordEnd);
+
+  if (CodeViewKind == MasmDebugInfoKind::Full) {
+    RecordEnd = BeginSymbolRecord(SymbolKind::S_ENVBLOCK);
+    OS.emitInt8(0);
+    EmitCString("cwd");
+    EmitCString(getContext().getCompilationDir());
+    EmitCString("exe");
+    EmitCString(CodeViewToolName);
+    EmitCString("src");
+    SmallString<256> SourceFilename(
+        SrcMgr.getMemoryBuffer(SrcMgr.getMainFileID())->getBufferIdentifier());
+    if (!SourceFilename.starts_with("<") &&
+        !sys::path::is_absolute(SourceFilename)) {
+      SmallString<256> Absolute(getContext().getCompilationDir());
+      sys::path::append(Absolute, SourceFilename);
+      SourceFilename = Absolute;
+    }
+    sys::path::remove_dots(SourceFilename, /*remove_dot_dot=*/true);
+    EmitCString(SourceFilename);
+    OS.emitInt8(0);
+    EndSymbolRecord(RecordEnd);
+
+    for (auto [Index, Procedure] : llvm::enumerate(CodeViewProcedures)) {
+      RecordEnd = BeginSymbolRecord(SymbolKind::S_GPROC32);
+      OS.emitInt32(0); // Parent.
+      OS.emitInt32(0); // End.
+      OS.emitInt32(0); // Next.
+      OS.emitAbsoluteSymbolDiff(Procedure.End, Procedure.Begin, 4);
+      OS.emitInt32(0); // Debug start.
+      OS.emitAbsoluteSymbolDiff(Procedure.End, Procedure.Begin, 4);
+      OS.emitInt32(0x1001 + 2 * Index); // void () type.
+      OS.emitCOFFSecRel32(Procedure.Begin, 0);
+      OS.emitCOFFSectionIndex(Procedure.Begin);
+      OS.emitInt8(0);
+      EmitCString(Procedure.DisplayName);
+      EndSymbolRecord(RecordEnd);
+      OS.emitInt16(2);
+      OS.emitInt16(static_cast<unsigned>(SymbolKind::S_END));
+    }
+  }
+  EndSubsection(SymbolsEnd);
+
+  if (CodeViewKind == MasmDebugInfoKind::Full && !CodeViewProcedures.empty()) {
+    OS.switchSection(
+        getContext().getObjectFileInfo()->getCOFFDebugTypesSection());
+    OS.emitInt32(4); // CodeView debug section magic.
+    for (size_t Index = 0; Index != CodeViewProcedures.size(); ++Index) {
+      OS.emitInt16(6);
+      OS.emitInt16(0x1201); // LF_ARGLIST.
+      OS.emitInt32(0);
+      OS.emitInt16(14);
+      OS.emitInt16(0x1008);             // LF_PROCEDURE.
+      OS.emitInt32(3);                  // void.
+      OS.emitInt8(0);                   // Near C calling convention.
+      OS.emitInt8(0);                   // Function options.
+      OS.emitInt16(0);                  // Parameter count.
+      OS.emitInt32(0x1000 + 2 * Index); // Argument list type.
+    }
+  }
 }
 
 void MasmParser::printMacroInstantiations() {
@@ -1367,8 +1647,11 @@ bool MasmParser::Run(bool NoInitialTextSection, bool NoFinalize) {
 
   // Finalize the output stream if there are no errors and if the client wants
   // us to.
-  if (!HadError && !NoFinalize)
+  if (!HadError && !NoFinalize) {
+    if (CodeViewKind != MasmDebugInfoKind::Disabled)
+      emitCodeViewDebugInfo();
     Out.finish(Lexer.getLoc());
+  }
 
   return HadError || getContext().hadError();
 }
@@ -2481,6 +2764,11 @@ bool MasmParser::parseStatement(ParseStatementInfo &Info,
   // Fail even if ParseInstruction erroneously returns false.
   if (hasPendingError() || ParseHadError)
     return true;
+
+  // Record the source location before emitting the instruction so the line
+  // table points at its first byte.
+  if (!ParseHadError)
+    recordCodeViewLine(IDLoc);
 
   // If parsing succeeded, match the instruction.
   if (!ParseHadError) {

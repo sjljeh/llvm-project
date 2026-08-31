@@ -31,8 +31,11 @@ class MCExpr;
 class MCInstPrinter;
 class MCInstrInfo;
 class MCStreamer;
+class MCSymbol;
 class MCTargetAsmParser;
 class SourceMgr;
+
+enum class MasmDebugInfoKind { Disabled, None, LineTablesOnly, Full };
 
 struct InlineAsmIdentifierInfo {
   enum IdKind {
@@ -199,7 +202,10 @@ public:
 
   virtual bool isMasmDotName() const { return false; }
 
-  virtual void enterMasmProcedure() {}
+  virtual void setMasmDebugInfo(MasmDebugInfoKind, StringRef ObjectFilename,
+                                StringRef ToolName, bool UseMD5) {}
+
+  virtual void enterMasmProcedure(MCSymbol *, StringRef DisplayName, SMLoc) {}
 
   virtual void exitMasmProcedure() {}
 

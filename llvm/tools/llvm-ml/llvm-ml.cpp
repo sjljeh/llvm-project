@@ -127,7 +127,8 @@ static int AsLexInput(SourceMgr &SrcMgr, MCAsmInfo &MAI, raw_ostream &OS) {
   return Error;
 }
 
-static int AssembleInput(StringRef ProgName, const Target *TheTarget,
+static int AssembleInput(StringRef ProgName, StringRef ToolName,
+                         StringRef ObjectFilename, const Target *TheTarget,
                          SourceMgr &SrcMgr, MCContext &Ctx, MCStreamer &Str,
                          MCAsmInfo &MAI, MCSubtargetInfo &STI,
                          MCInstrInfo &MCII, MCTargetOptions &MCOptions,
@@ -157,6 +158,19 @@ static int AssembleInput(StringRef ProgName, const Target *TheTarget,
 
   std::unique_ptr<MCAsmParser> Parser(
       createMCMasmParser(SrcMgr, Ctx, Str, MAI, TM, 0));
+  MasmDebugInfoKind DebugInfoKind = MasmDebugInfoKind::Disabled;
+  if (InputArgs.getLastArgValue(OPT_filetype, "obj") == "obj") {
+    DebugInfoKind = MasmDebugInfoKind::None;
+    if (InputArgs.hasArg(OPT_codeview_info))
+      DebugInfoKind = MasmDebugInfoKind::Full;
+    else if (InputArgs.hasArg(OPT_line_number_info))
+      DebugInfoKind = MasmDebugInfoKind::LineTablesOnly;
+  }
+  bool UseMD5 = false;
+  if (const Arg *Hash =
+          InputArgs.getLastArg(OPT_debug_hash_md5, OPT_debug_hash_sha256))
+    UseMD5 = Hash->getOption().matches(OPT_debug_hash_md5);
+  Parser->setMasmDebugInfo(DebugInfoKind, ObjectFilename, ToolName, UseMD5);
   Parser->setMasmIdentifierCaseSensitive(
       InputArgs.hasArg(OPT_preserve_identifier_case));
   std::unique_ptr<MCTargetAsmParser> TAP(
@@ -364,6 +378,13 @@ int llvm_ml_main(int Argc, char **Argv, const llvm::ToolContext &) {
   }
   const StringRef OutputFilename =
       InputArgs.getLastArgValue(OPT_output_file, DefaultOutputFilename);
+  SmallString<255> ObjectFilenameForDebug(OutputFilename);
+  if (ObjectFilenameForDebug != "-" &&
+      !sys::path::is_absolute(ObjectFilenameForDebug))
+    (void)sys::fs::make_absolute(ObjectFilenameForDebug);
+  SmallString<255> ToolNameForDebug(Argv[0]);
+  if (!sys::path::is_absolute(ToolNameForDebug))
+    (void)sys::fs::make_absolute(ToolNameForDebug);
   std::unique_ptr<ToolOutputFile> Out = GetOutputStream(OutputFilename);
   if (!Out)
     return 1;
@@ -447,8 +468,9 @@ int llvm_ml_main(int Argc, char **Argv, const llvm::ToolContext &) {
     // -as-lex; Lex only, and output a stream of tokens
     Res = AsLexInput(SrcMgr, *MAI, Out->os());
   } else {
-    Res = AssembleInput(ProgName, TheTarget, SrcMgr, Ctx, *Str, *MAI, *STI,
-                        *MCII, MCOptions, InputArgs);
+    Res = AssembleInput(ProgName, ToolNameForDebug, ObjectFilenameForDebug,
+                        TheTarget, SrcMgr, Ctx, *Str, *MAI, *STI, *MCII,
+                        MCOptions, InputArgs);
   }
 
   // Keep output if no errors.
