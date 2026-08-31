@@ -269,6 +269,7 @@ public:
   static bool classof(const Chunk *c) { return c->kind() <= SectionECKind; }
   size_t getSize() const { return header->SizeOfRawData; }
   ArrayRef<uint8_t> getContents() const;
+  int64_t getPPCBranchAddend(const coff_relocation &rel) const;
   void writeTo(uint8_t *buf) const;
   MachineTypes getMachine() const;
 
@@ -700,6 +701,24 @@ public:
 
 private:
   MachineTypes machine;
+};
+
+// A position-independent PowerPC range extension thunk. It preserves the
+// caller's link register and TOC pointer and tail-branches through CTR.
+class RangeExtensionThunkPPC : public NonSectionCodeChunk {
+public:
+  RangeExtensionThunkPPC(Defined *target, int64_t addend)
+      : target(target), addend(addend) {
+    setAlignment(4);
+  }
+  size_t getSize() const override;
+  void writeTo(uint8_t *buf) const override;
+  MachineTypes getMachine() const override {
+    return llvm::COFF::IMAGE_FILE_MACHINE_POWERPC;
+  }
+
+  Defined *target;
+  int64_t addend;
 };
 
 // A chunk used to guarantee the same address for a function in both views of

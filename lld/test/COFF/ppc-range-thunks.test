@@ -1,0 +1,89 @@
+# RUN: yaml2obj %s -o %t.obj
+# RUN: lld-link /machine:ppc /entry:entry /subsystem:native /nodefaultlib \
+# RUN:   /align:33554432 /verbose /out:%t.exe %t.obj 2>&1 | \
+# RUN:   FileCheck %s --check-prefix=VERBOSE
+# RUN: llvm-readobj --sections --hex-dump=.text --hex-dump=.far %t.exe | \
+# RUN:   FileCheck %s --check-prefix=LINKED
+# RUN: llvm-objdump -d %t.exe | FileCheck %s --check-prefix=DISASM
+
+# Microsoft LINK diagnoses an overflowing PPC REL24 rather than creating a
+# thunk. LLD extends that behavior with position-independent thunks which use
+# only the ABI scratch registers r0, r12, and CTR, preserve LR and r2, and tail
+# branch to the original code entry. A large section alignment forces .far to
+# be exactly 32 MiB after .text without creating a large test file.
+#
+# The second input branch carries source addend A=8. At relocation offset O=4,
+# its encoded Microsoft addend is E=A-O=4. The two thunks must therefore branch
+# to target and target+8 respectively, while both input branches are redirected
+# to the nearby thunk itself.
+
+# VERBOSE: Added 2 thunks with margin {{[0-9]+}} in 1 passes
+
+# LINKED:      Name: .text
+# LINKED-NEXT: VirtualSize: 0x4C
+# LINKED:      Name: .far
+# LINKED-NEXT: VirtualSize: 0xC
+# LINKED-NOT:  Name: .reloc
+# LINKED:      Hex dump of section '.text':
+# LINKED-NEXT: {{.*}} 0d000048 29000048 2000804e a602087c
+# LINKED-NEXT: {{.*}} 05009f42 a602887d 00028c3d ecff8c39
+# LINKED-NEXT: {{.*}} a603087c a603897d 2004804e a602087c
+# LINKED-NEXT: {{.*}} 05009f42 a602887d 00028c3d d4ff8c39
+# LINKED-NEXT: {{.*}} a603087c a603897d 2004804e
+# LINKED:      Hex dump of section '.far':
+# LINKED-NEXT: {{.*}} 00000060 00000060 2000804e
+
+# DISASM:      bl {{.*}} <.text+0xc>
+# DISASM-NEXT: bl {{.*}} <.text+0x2c>
+# DISASM-NEXT: blr
+# DISASM-NEXT: mflr 0
+# DISASM-NEXT: bcl 20, 31, {{.*}} <.text+0x14>
+# DISASM-NEXT: mflr 12
+# DISASM-NEXT: addis 12, 12, 512
+# DISASM-NEXT: addi 12, 12, -20
+# DISASM-NEXT: mtlr 0
+# DISASM-NEXT: mtctr 12
+# DISASM-NEXT: bctr
+# DISASM-NEXT: mflr 0
+# DISASM-NEXT: bcl 20, 31, {{.*}} <.text+0x34>
+# DISASM-NEXT: mflr 12
+# DISASM-NEXT: addis 12, 12, 512
+# DISASM-NEXT: addi 12, 12, -44
+# DISASM-NEXT: mtlr 0
+# DISASM-NEXT: mtctr 12
+# DISASM-NEXT: bctr
+
+--- !COFF
+header:
+  Machine:         IMAGE_FILE_MACHINE_POWERPC
+  Characteristics: []
+sections:
+  - Name:            .text
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     01000048050000482000804E
+    Relocations:
+      - VirtualAddress:  0
+        SymbolName:      target
+        Type:            6 # IMAGE_REL_PPC_REL24, A=0, E=0
+      - VirtualAddress:  4
+        SymbolName:      target
+        Type:            6 # IMAGE_REL_PPC_REL24, A=8, E=4
+  - Name:            .far
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     00000060000000602000804E
+symbols:
+  - Name:            entry
+    Value:           0
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_FUNCTION
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+  - Name:            target
+    Value:           0
+    SectionNumber:   2
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_FUNCTION
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+...
