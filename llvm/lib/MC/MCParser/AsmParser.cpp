@@ -63,6 +63,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <sstream>
@@ -123,6 +124,9 @@ private:
   std::unique_ptr<MCAsmParserExtension> LFIParser;
   SMLoc StartTokLoc;
   std::optional<SMLoc> CFIStartProcLoc;
+
+  /// Current offset while parsing a GNU .struct absolute layout.
+  std::optional<uint64_t> StructOffset;
 
   /// This is the current buffer index we're lexing from as managed by the
   /// SourceMgr object.
@@ -420,6 +424,7 @@ private:
     DK_P2ALIGNL,
     DK_PREFALIGN,
     DK_ORG,
+    DK_STRUCT,
     DK_FILL,
     DK_ENDR,
     DK_BUNDLE_ALIGN_MODE,
@@ -640,6 +645,7 @@ private:
 
   // ".space", ".skip"
   bool parseDirectiveSpace(StringRef IDVal);
+  bool parseDirectiveStruct();
 
   // ".dcb"
   bool parseDirectiveDCB(StringRef IDVal, unsigned Size);
@@ -1847,7 +1853,7 @@ bool AsmParser::parseStatement(ParseStatementInfo &Info,
   //   ::= identifier ':'
   //   ::= number ':'
   if (Lexer.is(AsmToken::Colon) && getTargetParser().isLabel(ID)) {
-    if (checkForValidSection())
+    if (!StructOffset && checkForValidSection())
       return true;
 
     Lex(); // Consume the ':'.
@@ -1902,6 +1908,12 @@ bool AsmParser::parseStatement(ParseStatementInfo &Info,
     if (discardLTOSymbol(IDVal))
       return false;
 
+    if (StructOffset) {
+      Out.emitAssignment(Sym,
+                         MCConstantExpr::create(*StructOffset, getContext()));
+      return false;
+    }
+
     getTargetParser().doBeforeLabelEmit(Sym, IDLoc);
 
     // Emit the label.
@@ -1947,6 +1959,24 @@ bool AsmParser::parseStatement(ParseStatementInfo &Info,
     //    all targets and platforms.
 
     getTargetParser().flushPendingInstructions(getStreamer());
+
+    // .struct switches to an absolute layout counter. A subsequent section
+    // switching directive returns to normal section-relative assembly.
+    if (StructOffset &&
+        (IDVal.equals_insensitive(".text") ||
+         IDVal.equals_insensitive(".data") ||
+         IDVal.equals_insensitive(".bss") ||
+         IDVal.equals_insensitive(".section") ||
+         IDVal.equals_insensitive(".pushsection") ||
+         IDVal.equals_insensitive(".popsection") ||
+         IDVal.equals_insensitive(".previous") ||
+         IDVal.equals_insensitive(".subsection") ||
+         IDVal.equals_insensitive(".rdata") ||
+         IDVal.equals_insensitive(".ydata") ||
+         IDVal.equals_insensitive(".pdata") ||
+         IDVal.equals_insensitive(".reldata") ||
+         IDVal.equals_insensitive(".debug$S")))
+      StructOffset.reset();
 
     ParseStatus TPDirectiveReturn = getTargetParser().parseDirective(ID);
     assert(TPDirectiveReturn.isFailure() == hasPendingError() &&
@@ -2035,6 +2065,8 @@ bool AsmParser::parseStatement(ParseStatementInfo &Info,
       return parseDirectivePrefAlign();
     case DK_ORG:
       return parseDirectiveOrg();
+    case DK_STRUCT:
+      return parseDirectiveStruct();
     case DK_FILL:
       return parseDirectiveFill();
     case DK_ZERO:
@@ -3189,11 +3221,32 @@ bool AsmParser::parseDirectiveReloc(SMLoc DirectiveLoc) {
 /// parseDirectiveValue
 ///  ::= (.byte | .short | ... ) [ expression (, expression)* ]
 bool AsmParser::parseDirectiveValue(StringRef IDVal, unsigned Size) {
+  uint64_t StructSize = 0;
   auto parseOp = [&]() -> bool {
+    if (StructOffset && Size == 1 && getLexer().is(AsmToken::String)) {
+      std::string Data;
+      if (parseEscapedString(Data))
+        return true;
+      if (Data.size() >
+          std::numeric_limits<int64_t>::max() - StructSize)
+        return Error(StartTokLoc, "'.struct' offset overflow");
+      StructSize += Data.size();
+      return false;
+    }
+
     const MCExpr *Value;
     SMLoc ExprLoc = getLexer().getLoc();
-    if (checkForValidSection())
+    if (!StructOffset && checkForValidSection())
       return true;
+
+    if (StructOffset) {
+      if (getTargetParser().parseDataExpr(Value))
+        return true;
+      if (Size > std::numeric_limits<int64_t>::max() - StructSize)
+        return Error(ExprLoc, "'.struct' offset overflow");
+      StructSize += Size;
+      return false;
+    }
 
     ParseStatus Result =
         getTargetParser().tryParseDataDirectiveOperand(IDVal, Size);
@@ -3214,7 +3267,14 @@ bool AsmParser::parseDirectiveValue(StringRef IDVal, unsigned Size) {
     return false;
   };
 
-  return parseMany(parseOp);
+  if (parseMany(parseOp))
+    return true;
+  if (StructOffset) {
+    if (StructSize > std::numeric_limits<int64_t>::max() - *StructOffset)
+      return Error(StartTokLoc, "'.struct' offset overflow");
+    *StructOffset += StructSize;
+  }
+  return false;
 }
 
 static bool parseHexOcta(AsmParser &Asm, uint64_t &hi, uint64_t &lo) {
@@ -3433,7 +3493,7 @@ bool AsmParser::parseDirectiveAlign(bool IsPow2, uint8_t ValueSize) {
     return parseEOL();
   };
 
-  if (checkForValidSection())
+  if (!StructOffset && checkForValidSection())
     return true;
   // Ignore empty '.p2align' directives for GNU-as compatibility
   if (IsPow2 && (ValueSize == 1) && getTok().is(AsmToken::EndOfStatement)) {
@@ -3485,6 +3545,17 @@ bool AsmParser::parseDirectiveAlign(bool IsPow2, uint8_t ValueSize) {
                            "has no effect");
       MaxBytesToFill = 0;
     }
+  }
+
+  if (StructOffset) {
+    if (*StructOffset > std::numeric_limits<int64_t>::max() -
+                            (uint64_t(Alignment) - 1))
+      return Error(AlignmentLoc, "'.struct' offset overflow");
+    uint64_t AlignedOffset = alignTo(*StructOffset, uint64_t(Alignment));
+    if (!MaxBytesToFill ||
+        AlignedOffset - *StructOffset <= uint64_t(MaxBytesToFill))
+      *StructOffset = AlignedOffset;
+    return ReturnVal;
   }
 
   const MCSection *Section = getStreamer().getCurrentSectionOnly();
@@ -5006,6 +5077,26 @@ bool AsmParser::parseDirectivePurgeMacro(SMLoc DirectiveLoc) {
 /// ::= (.skip | .space) expression [ , expression ]
 bool AsmParser::parseDirectiveSpace(StringRef IDVal) {
   SMLoc NumBytesLoc = Lexer.getLoc();
+
+  if (StructOffset) {
+    int64_t NumBytes;
+    if (parseAbsoluteExpression(NumBytes))
+      return true;
+    if (parseOptionalToken(AsmToken::Comma)) {
+      int64_t FillExpr;
+      if (parseAbsoluteExpression(FillExpr))
+        return true;
+    }
+    if (parseEOL())
+      return true;
+    if (NumBytes < 0 ||
+        uint64_t(NumBytes) >
+            std::numeric_limits<int64_t>::max() - *StructOffset)
+      return Error(NumBytesLoc, "invalid '.struct' space size");
+    *StructOffset += NumBytes;
+    return false;
+  }
+
   const MCExpr *NumBytes;
   if (checkForValidSection() || parseExpression(NumBytes))
     return true;
@@ -5020,6 +5111,17 @@ bool AsmParser::parseDirectiveSpace(StringRef IDVal) {
   // FIXME: Sometimes the fill expr is 'nop' if it isn't supplied, instead of 0.
   getStreamer().emitFill(*NumBytes, FillExpr, NumBytesLoc);
 
+  return false;
+}
+
+bool AsmParser::parseDirectiveStruct() {
+  SMLoc OffsetLoc = Lexer.getLoc();
+  int64_t Offset;
+  if (parseAbsoluteExpression(Offset) || parseEOL())
+    return true;
+  if (Offset < 0)
+    return Error(OffsetLoc, "'.struct' offset must be non-negative");
+  StructOffset = Offset;
   return false;
 }
 
@@ -5622,6 +5724,7 @@ void AsmParser::initializeDirectiveKindMap() {
   DirectiveKindMap[".p2alignl"] = DK_P2ALIGNL;
   DirectiveKindMap[".prefalign"] = DK_PREFALIGN;
   DirectiveKindMap[".org"] = DK_ORG;
+  DirectiveKindMap[".struct"] = DK_STRUCT;
   DirectiveKindMap[".fill"] = DK_FILL;
   DirectiveKindMap[".zero"] = DK_ZERO;
   DirectiveKindMap[".extern"] = DK_EXTERN;
