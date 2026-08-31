@@ -5227,6 +5227,45 @@ let PPC970_Unit = 7, isBranch = 1, hasSideEffects = 0 in {
                            "bcctrl $BO, $BI, $BH", IIC_BrB, []>;
 }
 
+// Internal parser opcodes for PASM's direction-sensitive branch hints. Keep
+// these separate from gBC and friends so assembly output prints a raw numeric
+// BO instead of choosing a direction-independent '+' or '-' alias.
+let isCodeGenOnly = 1, hasNoSchedulingInfo = 1, PPC970_Unit = 7,
+    isBranch = 1, hasSideEffects = 0 in {
+  let Defs = [CTR], Uses = [CTR, RM] in {
+    def PASM_BC : BForm_3<16, 0, 0, (outs),
+                        (ins u5imm:$BO, crbitrc:$BI, condbrtarget:$BD),
+                        "bc $BO, $BI, $BD">;
+    def PASM_BCA : BForm_3<16, 1, 0, (outs),
+                         (ins u5imm:$BO, crbitrc:$BI, abscondbrtarget:$BD),
+                         "bca $BO, $BI, $BD">;
+  }
+  let Defs = [LR, CTR], Uses = [CTR, RM] in {
+    def PASM_BCL : BForm_3<16, 0, 1, (outs),
+                         (ins u5imm:$BO, crbitrc:$BI, condbrtarget:$BD),
+                         "bcl $BO, $BI, $BD">;
+    def PASM_BCLA : BForm_3<16, 1, 1, (outs),
+                          (ins u5imm:$BO, crbitrc:$BI, abscondbrtarget:$BD),
+                          "bcla $BO, $BI, $BD">;
+  }
+  let Defs = [CTR], Uses = [CTR, LR, RM] in
+    def PASM_BCLR : XLForm_2<19, 16, 0, (outs),
+                            (ins u5imm:$BO, crbitrc:$BI, i32imm:$BH),
+                            "bclr $BO, $BI, $BH", IIC_BrB, []>;
+  let Defs = [LR, CTR], Uses = [CTR, LR, RM] in
+    def PASM_BCLRL : XLForm_2<19, 16, 1, (outs),
+                             (ins u5imm:$BO, crbitrc:$BI, i32imm:$BH),
+                             "bclrl $BO, $BI, $BH", IIC_BrB, []>;
+  let Defs = [CTR], Uses = [CTR, LR, RM] in
+    def PASM_BCCTR : XLForm_2<19, 528, 0, (outs),
+                             (ins u5imm:$BO, crbitrc:$BI, i32imm:$BH),
+                             "bcctr $BO, $BI, $BH", IIC_BrB, []>;
+  let Defs = [LR, CTR], Uses = [CTR, LR, RM] in
+    def PASM_BCCTRL : XLForm_2<19, 528, 1, (outs),
+                              (ins u5imm:$BO, crbitrc:$BI, i32imm:$BH),
+                              "bcctrl $BO, $BI, $BH", IIC_BrB, []>;
+}
+
 multiclass BranchSimpleMnemonicAT<string pm, int at> {
   def : InstAlias<"bc"#pm#" $bo, $bi, $dst", (gBCat u5imm:$bo, at, crbitrc:$bi,
                                                     condbrtarget:$dst)>;
@@ -5268,6 +5307,10 @@ defm : BranchSimpleMnemonic1<"dnzt", "", 8>;
 defm : BranchSimpleMnemonic1<"dnzf", "", 0>;
 defm : BranchSimpleMnemonic1<"dzt", "", 10>;
 defm : BranchSimpleMnemonic1<"dzf", "", 2>;
+defm : BranchSimpleMnemonic1<"dnzt", "+", 9>;
+defm : BranchSimpleMnemonic1<"dnzf", "+", 1>;
+defm : BranchSimpleMnemonic1<"dzt", "+", 11>;
+defm : BranchSimpleMnemonic1<"dzf", "+", 3>;
 
 multiclass BranchExtendedMnemonicPM<string name, string pm, int bibo> {
   def : InstAlias<"b"#name#pm#" $cc, $dst",

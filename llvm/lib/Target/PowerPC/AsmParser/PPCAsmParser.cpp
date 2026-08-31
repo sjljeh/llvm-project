@@ -12,6 +12,7 @@
 #include "PPCInstrInfo.h"
 #include "TargetInfo/PowerPCTargetInfo.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/BinaryFormat/COFF.h"
 #include "llvm/MC/MCContext.h"
@@ -27,6 +28,7 @@
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/MCSymbolELF.h"
+#include "llvm/MC/MCValue.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/SourceMgr.h"
@@ -105,9 +107,13 @@ namespace {
 struct PPCOperand;
 
 class PPCAsmParser : public MCTargetAsmParser {
+  enum class PASMBranchHint { None, Minus, Plus };
+
   const bool IsPPC64;
   const bool IsPPCWinCOFF;
   bool PASMIsLittleEndian = true;
+  PASMBranchHint CurrentPASMBranchHint = PASMBranchHint::None;
+  std::string CurrentPASMBranchMnemonic;
 
   void Warning(SMLoc L, const Twine &Msg) { getParser().Warning(L, Msg); }
 
@@ -145,7 +151,9 @@ class PPCAsmParser : public MCTargetAsmParser {
                                uint64_t &ErrorInfo,
                                bool MatchingInlineAsm) override;
 
-  void processInstruction(MCInst &Inst, const OperandVector &Ops);
+  void processInstruction(MCInst &Inst, const OperandVector &Ops,
+                          MCStreamer &Out);
+  void applyPASMBranchHint(MCInst &Inst, MCStreamer &Out);
 
   /// @name Auto-generated Match Functions
   /// {
@@ -868,8 +876,167 @@ addNegOperand(MCInst &Inst, MCOperand &Op, MCContext &Ctx) {
   Inst.addOperand(MCOperand::createExpr(MCUnaryExpr::createMinus(Expr, Ctx)));
 }
 
+static bool isPASMBackwardBranch(const MCInst &Inst, MCStreamer &Out) {
+  if (Inst.getNumOperands()) {
+    const MCOperand &Target = Inst.getOperand(Inst.getNumOperands() - 1);
+    if (Target.isImm() && Target.getImm() < 0)
+      return true;
+  }
+
+  for (const MCOperand &Op : llvm::reverse(Inst)) {
+    if (!Op.isExpr())
+      continue;
+
+    MCValue Value;
+    if (!Op.getExpr()->evaluateAsRelocatable(Value, nullptr))
+      return false;
+    if (Value.isAbsolute())
+      return Value.getConstant() < 0;
+    if (!Value.getAddSym())
+      return false;
+    const MCSymbol &Symbol = *Value.getAddSym();
+    MCSection *Section = Out.getCurrentSectionOnly();
+    return Symbol.isInSection() && Section && &Symbol.getSection() == Section;
+  }
+  return false;
+}
+
+void PPCAsmParser::applyPASMBranchHint(MCInst &Inst, MCStreamer &Out) {
+  if (!IsPPCWinCOFF || CurrentPASMBranchHint == PASMBranchHint::None)
+    return;
+
+  bool IsBackward = isPASMBackwardBranch(Inst, Out);
+  bool Toggle = (CurrentPASMBranchHint == PASMBranchHint::Plus) ^ IsBackward;
+  StringRef Mnemonic = CurrentPASMBranchMnemonic;
+
+  // The 601-era BO hint used by PASM is the low BO bit. Its interpretation is
+  // reversed for backward branches, so '+' and '-' cannot be represented by
+  // LLVM's direction-independent extended branch aliases.
+  StringRef Suffix = Mnemonic;
+  unsigned BaseBO;
+  if (Suffix.consume_front("bdnz"))
+    BaseBO = 16;
+  else if (Suffix.consume_front("bdz"))
+    BaseBO = 18;
+  else
+    BaseBO = 0;
+
+  unsigned GenericOpcode = 0;
+  bool IsRegisterBranch = false;
+  if (BaseBO) {
+    if (Suffix.empty())
+      GenericOpcode = PPC::PASM_BC;
+    else if (Suffix == "a")
+      GenericOpcode = PPC::PASM_BCA;
+    else if (Suffix == "l")
+      GenericOpcode = PPC::PASM_BCL;
+    else if (Suffix == "la")
+      GenericOpcode = PPC::PASM_BCLA;
+    else if (Suffix == "lr") {
+      GenericOpcode = PPC::PASM_BCLR;
+      IsRegisterBranch = true;
+    } else if (Suffix == "lrl") {
+      GenericOpcode = PPC::PASM_BCLRL;
+      IsRegisterBranch = true;
+    }
+  }
+
+  if (GenericOpcode) {
+    MCInst TmpInst;
+    TmpInst.setOpcode(GenericOpcode);
+    TmpInst.addOperand(MCOperand::createImm(BaseBO | Toggle));
+    TmpInst.addOperand(MCOperand::createReg(CRBITRegs[0]));
+    if (IsRegisterBranch)
+      TmpInst.addOperand(MCOperand::createImm(0));
+    else
+      TmpInst.addOperand(Inst.getOperand(0));
+    Inst = TmpInst;
+    return;
+  }
+
+  switch (Inst.getOpcode()) {
+  case PPC::BCC:
+    GenericOpcode = PPC::PASM_BC;
+    break;
+  case PPC::BCCA:
+    GenericOpcode = PPC::PASM_BCA;
+    break;
+  case PPC::BCCL:
+    GenericOpcode = PPC::PASM_BCL;
+    break;
+  case PPC::BCCLA:
+    GenericOpcode = PPC::PASM_BCLA;
+    break;
+  case PPC::BCCLR:
+    GenericOpcode = PPC::PASM_BCLR;
+    IsRegisterBranch = true;
+    break;
+  case PPC::BCCLRL:
+    GenericOpcode = PPC::PASM_BCLRL;
+    IsRegisterBranch = true;
+    break;
+  case PPC::BCCCTR:
+    GenericOpcode = PPC::PASM_BCCTR;
+    IsRegisterBranch = true;
+    break;
+  case PPC::BCCCTRL:
+    GenericOpcode = PPC::PASM_BCCTRL;
+    IsRegisterBranch = true;
+    break;
+  default:
+    break;
+  }
+
+  if (GenericOpcode) {
+    int64_t Predicate = Inst.getOperand(0).getImm();
+    unsigned CRField = 0;
+    while (CRField != 8 && CRRegs[CRField] != Inst.getOperand(1).getReg())
+      ++CRField;
+    assert(CRField != 8 && "expected a condition register field");
+
+    unsigned BO = (Predicate & 31) & ~3U;
+    unsigned BI = CRField * 4 + (Predicate >> 5);
+    MCInst TmpInst;
+    TmpInst.setOpcode(GenericOpcode);
+    TmpInst.addOperand(MCOperand::createImm(BO | Toggle));
+    TmpInst.addOperand(MCOperand::createReg(CRBITRegs[BI]));
+    if (IsRegisterBranch)
+      TmpInst.addOperand(MCOperand::createImm(0));
+    else
+      TmpInst.addOperand(Inst.getOperand(2));
+    Inst = TmpInst;
+    return;
+  }
+
+  switch (Inst.getOpcode()) {
+  case PPC::gBC:
+    Inst.setOpcode(PPC::PASM_BC);
+    break;
+  case PPC::gBCA:
+    Inst.setOpcode(PPC::PASM_BCA);
+    break;
+  case PPC::gBCL:
+    Inst.setOpcode(PPC::PASM_BCL);
+    break;
+  case PPC::gBCLA:
+    Inst.setOpcode(PPC::PASM_BCLA);
+    break;
+  case PPC::gBCLR:
+    Inst.setOpcode(PPC::PASM_BCLR);
+    break;
+  case PPC::gBCLRL:
+    Inst.setOpcode(PPC::PASM_BCLRL);
+    break;
+  default:
+    return;
+  }
+  BaseBO = Inst.getOperand(0).getImm() & ~1U;
+  Inst.getOperand(0).setImm(BaseBO | Toggle);
+}
+
 void PPCAsmParser::processInstruction(MCInst &Inst,
-                                      const OperandVector &Operands) {
+                                      const OperandVector &Operands,
+                                      MCStreamer &Out) {
   int Opcode = Inst.getOpcode();
   switch (Opcode) {
   case PPC::DCBTx:
@@ -1297,6 +1464,8 @@ void PPCAsmParser::processInstruction(MCInst &Inst,
     break;
   }
   }
+
+  applyPASMBranchHint(Inst, Out);
 }
 
 static std::string PPCMnemonicSpellCheck(StringRef S, const FeatureBitset &FBS,
@@ -1326,7 +1495,7 @@ bool PPCAsmParser::matchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
     if (!validateMemOp(Operands, TII->isMemriOp(Inst.getOpcode())))
       return Error(IDLoc, "invalid operand for instruction");
     // Post-process instructions (typically extended mnemonics)
-    processInstruction(Inst, Operands);
+    processInstruction(Inst, Operands, Out);
     Inst.setLoc(IDLoc);
     if (IsPPCWinCOFF && Out.getAssemblerPtr()) {
       MCSection *Section = Out.getCurrentSectionOnly();
@@ -1702,6 +1871,9 @@ bool PPCAsmParser::parseOperand(OperandVector &Operands) {
 /// Parse an instruction mnemonic followed by its operands.
 bool PPCAsmParser::parseInstruction(ParseInstructionInfo &Info, StringRef Name,
                                     SMLoc NameLoc, OperandVector &Operands) {
+  CurrentPASMBranchHint = PASMBranchHint::None;
+  CurrentPASMBranchMnemonic.clear();
+
   // The first operand is the token for the instruction name.
   // If the next character is a '+' or '-', we need to add it to the
   // instruction name, to match what TableGen is doing.
@@ -1710,11 +1882,25 @@ bool PPCAsmParser::parseInstruction(ParseInstructionInfo &Info, StringRef Name,
     NewOpcode = std::string(Name);
     NewOpcode += '+';
     Name = NewOpcode;
-  }
-  if (parseOptionalToken(AsmToken::Minus)) {
+  } else if (parseOptionalToken(AsmToken::Minus)) {
     NewOpcode = std::string(Name);
     NewOpcode += '-';
     Name = NewOpcode;
+  }
+  if (IsPPCWinCOFF && (Name.ends_with('+') || Name.ends_with('-'))) {
+    CurrentPASMBranchHint =
+        Name.ends_with('+') ? PASMBranchHint::Plus : PASMBranchHint::Minus;
+    StringRef BaseMnemonic = Name.drop_back();
+    CurrentPASMBranchMnemonic = BaseMnemonic.str();
+
+    // LLVM has no aliases for these redundant '-' spellings. Normalize them
+    // for matching and recover PASM's direction-sensitive BO value later.
+    if (CurrentPASMBranchHint == PASMBranchHint::Minus &&
+        (BaseMnemonic == "bdnzt" || BaseMnemonic == "bdnzf" ||
+         BaseMnemonic == "bdzt" || BaseMnemonic == "bdzf")) {
+      NewOpcode = BaseMnemonic.str();
+      Name = NewOpcode;
+    }
   }
   // If the instruction ends in a '.', we need to create a separate
   // token for it, to match what TableGen is doing.
