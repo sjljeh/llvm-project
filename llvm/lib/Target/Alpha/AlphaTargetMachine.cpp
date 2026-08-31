@@ -105,7 +105,7 @@ public:
   }
 
   void addPreEmitPass() override {
-    addPass(createAlphaLLRPPass(getAlphaTargetMachine()));
+    addPass(createAlphaLLRPPass());
   }
 };
 } // end anonymous namespace

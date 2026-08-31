@@ -33,7 +33,7 @@ namespace llvm {
 
   FunctionPass *createAlphaISelDag(AlphaTargetMachine &TM);
   FunctionPass *createAlphaPatternInstructionSelector(TargetMachine &TM);
-  FunctionPass *createAlphaLLRPPass(AlphaTargetMachine &tm);
+  FunctionPass *createAlphaLLRPPass();
   FunctionPass *createAlphaBranchSelectionPass();
 
 } // end namespace llvm;
