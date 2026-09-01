@@ -1,35 +1,43 @@
-## Hello! 
-This is my LLVM fork in which I aim to improve compatibility with Microsoft tools broadly.
+## Hello!  
+This is my LLVM fork in which I aim to improve compatibility with Microsoft tools broadly.  
 
-Work is happening here on the main branch. I update the patch set when I see fit with upstream LLVM, which often sees fixes trickle in for the same work that happens here. A typical rebase averages 3 merge conflicts per week of upstream work.
+Work is happening here on the main branch. I update the patch set when I see fit with upstream LLVM, which often sees fixes trickle in for the same work that happens here. A typical rebase averages 3 merge conflicts per week of upstream work.  
 
-### Work items done:
-* New program llvm-armasm64. Aims for compatibility with the Microsoft ARM64 assembler (armasm64.exe).
-* Much improved compatibility in llvm-ml64 against Microsoft's AMD64 assembler (ml64.exe).
-* Well-featured C++ EH4 / FH4 support.
-* MSVC-flavored PowerPC, MIPS and Alpha Windows support with legacy __CxxFrameHandler C++ SEH.
+### Work items done:  
+* New program llvm-armasm64. Aims for compatibility with the Microsoft ARM64 assembler (armasm64.exe).  
+* New program llvm-asaxp. Aims for compatibility with the DEC Alpha assembler used by Microsoft (asaxp.exe).  
+* Much improved compatibility in llvm-mc with IBM's PowerPC assembler (pasm.exe).  
+* Much improved compatibility in llvm-ml64 with Microsoft's AMD64 assembler (ml64.exe). Same for IA32 llvm-ml.  
+* Well-featured C++ EH4 / FH4 support in AMD64.  
+* MSVC-flavored PowerPC, MIPS and Alpha Windows support.  
+* Windows PowerPC and Alpha have SEH and C++ EH support.  
 * GNU-flavored PowerPC, MIPS and Alpha Windows assemblers.
-* lld-link compatibility fixes.
-* New program llvm-ms-mc. Aims for compatibility with the Microsoft Message Compiler (mc.exe).
-* Improved compatibility in llvm-rc against Microsoft's Resource Compiler (rc.exe).
-* Misc improvements with MSVC-like template handling
-* Misc improvements with MSVC-like token parsing
-* Misc improvements with MSVC-like SEH
-* Clang-cl gains many MSVC intrinsics
+* Alpha Linux / NetBSD / OpenBSD targets.  
+* Broad lld-link compatibility fixes.  
+* New program llvm-ms-mc. Aims for compatibility with the Microsoft Message Compiler (mc.exe).  
+* Improved compatibility in llvm-rc against Microsoft's Resource Compiler (rc.exe).  
+* Misc improvements with MSVC-like template handling.  
+* Misc improvements with MSVC-like token parsing.  
+* Misc improvements with MSVC-like SEH for IA32 and AMD64.  
+* Clang-cl gains many MSVC intrinsics for multiple architectures. (IA32, AMD64, ARM64, Alpha, PPC)  
 
 ### What is tested:
-* Removing all references to Clang in ReactOS and fully pretending to be MSVC and successfully assembling, compiling, linking and running AMD64 ReactOS, with the full suite of tools (llvm-ms-mc, llvm-rc, llvm-ml64, lld-link, clang-cl, ...)
-* Compiling and running userspace Windows SDK sample programs from the Alpha and MIPS SDKs and running them on emulated machines
+* Removing all references to Clang in ReactOS and fully pretending to be MSVC and successfully assembling, compiling, linking and running AMD64/IA32 ReactOS and its automated tests, with the full suite of tools (llvm-ms-mc, llvm-rc, llvm-ml/ml64, lld-link, clang-cl, ...)  
+* Compiling and running userspace Windows SDK sample programs from the Alpha and MIPS SDKs and running them on emulated machines  
 
-### What is NOT tested:
-* Utilizing the llvm-armasm64 assembler in real-world programs
-* Anything related to PowerPC
+### What is NOT tested:  
+* Utilizing the llvm-armasm64 assembler in real-world programs.  
+* Anything related to PowerPC.  
+* A lot of other things!  
 
-### Items to be worked on in the future
-* llvm-ms-asaxp as the Microsoft-flavored Alpha assembler.
-* llvm-ms-asmips as the Microsoft-flavored MIPS assembler.
-* llvm-pasm as the Microsoft-flavored PowerPC assembler.  
-And any other items that come up in my work/interests.
+### Items to be worked on in the future  
+* Improve MIPS support, i.e. C++ EH, SEH, assembler, further validate linker support.  
+* Build out hypothetical RISCV64 COFF target, then Windows target.  
+* Bring up ARMv7 Windows support.  
+* Anything else that comes up.
+
+### Prebuilt binaries?
+TBD.  
 
 ### Disclaimer.
 These improvements are highly assisted by LLM. However I have done my best in ensuring excellent input and testing where possible. My goal here is to leave everyone with a much better fork to work with than nothing at all. Feel free to file bugs or feature requests.
