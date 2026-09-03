@@ -4,6 +4,7 @@
 # RUN: llvm-objdump --no-print-imm-hex -d %t.obj | FileCheck %s --check-prefix BEFORE
 # RUN: lld-link /entry:main /subsystem:console /out:%t.exe %t.obj %p/Inputs/library-arm64.lib
 # RUN: llvm-objdump --no-print-imm-hex -d %t.exe | FileCheck %s --check-prefix AFTER
+# RUN: llvm-readobj --coff-basereloc %t.exe | FileCheck %s --check-prefix BASEREL
 
 # BEFORE: Disassembly of section .text:
 # BEFORE-EMPTY:
@@ -95,6 +96,17 @@
 # AFTER:  1400010a4:      b0000010        adrp    x16, 0x140002000
 # AFTER:  1400010a8:      f9402a10        ldr     x16, [x16, #80]
 # AFTER:  1400010ac:      d61f0200        br      x16
+
+# BASEREL:      BaseReloc [
+# BASEREL-NEXT:   Entry {
+# BASEREL-NEXT:     Type: DIR64
+# BASEREL-NEXT:     Address: 0x1070
+# BASEREL-NEXT:   }
+# BASEREL-NEXT:   Entry {
+# BASEREL-NEXT:     Type: ABSOLUTE
+# BASEREL-NEXT:     Address: 0x1000
+# BASEREL-NEXT:   }
+# BASEREL-NEXT: ]
 
 --- !COFF
 header:

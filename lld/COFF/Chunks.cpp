@@ -90,10 +90,6 @@ int64_t SectionChunk::getAlphaBranchAddend(
   return SignExtend64<21>(inst & 0x1fffff) * 4;
 }
 
-static uint16_t readPPC16(uint8_t *off, bool isLE) {
-  return isLE ? read16le(off) : read16be(off);
-}
-
 static uint32_t readPPC32(const uint8_t *off, bool isLE) {
   return isLE ? read32le(off) : read32be(off);
 }
@@ -321,88 +317,12 @@ void SectionChunk::addAssociative(SectionChunk *child) {
   child->assocChildren = next;
 }
 
-static uint8_t getBaserelType(const coff_relocation &rel,
-                              Triple::ArchType arch) {
-  switch (arch) {
-  case Triple::x86_64:
-    if (rel.Type == IMAGE_REL_AMD64_ADDR64)
-      return IMAGE_REL_BASED_DIR64;
-    if (rel.Type == IMAGE_REL_AMD64_ADDR32)
-      return IMAGE_REL_BASED_HIGHLOW;
-    return IMAGE_REL_BASED_ABSOLUTE;
-  case Triple::x86:
-    if (rel.Type == IMAGE_REL_I386_DIR32)
-      return IMAGE_REL_BASED_HIGHLOW;
-    return IMAGE_REL_BASED_ABSOLUTE;
-  case Triple::alpha:
-    if (rel.Type == IMAGE_REL_ALPHA_REFLONG)
-      return IMAGE_REL_BASED_HIGHLOW;
-    if (rel.Type == IMAGE_REL_ALPHA_REFQUAD)
-      return IMAGE_REL_BASED_DIR64;
-    return IMAGE_REL_BASED_ABSOLUTE;
-  case Triple::ppcle:
-    if ((rel.Type & IMAGE_REL_PPC_TYPEMASK) == IMAGE_REL_PPC_ADDR64)
-      return IMAGE_REL_BASED_DIR64;
-    if ((rel.Type & IMAGE_REL_PPC_TYPEMASK) == IMAGE_REL_PPC_ADDR32)
-      return IMAGE_REL_BASED_HIGHLOW;
-    return IMAGE_REL_BASED_ABSOLUTE;
-  case Triple::thumb:
-    if (rel.Type == IMAGE_REL_ARM_ADDR32)
-      return IMAGE_REL_BASED_HIGHLOW;
-    if (rel.Type == IMAGE_REL_ARM_MOV32T)
-      return IMAGE_REL_BASED_ARM_MOV32T;
-    return IMAGE_REL_BASED_ABSOLUTE;
-  case Triple::aarch64:
-    if (rel.Type == IMAGE_REL_ARM64_ADDR64)
-      return IMAGE_REL_BASED_DIR64;
-    return IMAGE_REL_BASED_ABSOLUTE;
-  case Triple::mipsel:
-    switch (rel.Type) {
-    case IMAGE_REL_MIPS_REFHALF:
-      return IMAGE_REL_BASED_HIGH;
-    case IMAGE_REL_MIPS_REFWORD:
-      return IMAGE_REL_BASED_HIGHLOW;
-    case IMAGE_REL_MIPS_REFHI:
-      return IMAGE_REL_BASED_HIGHADJ;
-    case IMAGE_REL_MIPS_REFLO:
-      return IMAGE_REL_BASED_LOW;
-    case IMAGE_REL_MIPS_JMPADDR:
-      return IMAGE_REL_BASED_MIPS_JMPADDR;
-    default:
-      return IMAGE_REL_BASED_ABSOLUTE;
-    }
-  default:
-    llvm_unreachable("unknown machine type");
-  }
-}
-
-static bool addPPCBaserelHighLow(const SectionChunk *sec,
-                                 const coff_relocation &rel, Defined *target,
-                                 uint16_t type, std::vector<Baserel> *res) {
-  if (type == IMAGE_REL_PPC_REFHI) {
-    ArrayRef<uint8_t> data = sec->getContents();
-    if (rel.VirtualAddress + 2 <= data.size()) {
-      uint16_t hi = readPPC16(
-          const_cast<uint8_t *>(data.data() + rel.VirtualAddress), true);
-      uint64_t v = target->getRVA() + sec->file->symtab.ctx.config.imageBase +
-                   (uint64_t(hi) << 16) + getPPCPairAddend(sec, rel);
-      res->emplace_back(sec->rva + rel.VirtualAddress,
-                        IMAGE_REL_BASED_HIGHADJ, v & 0xffff);
-    }
-    return true;
-  }
-  if (type == IMAGE_REL_PPC_REFLO) {
-    res->emplace_back(sec->rva + rel.VirtualAddress, IMAGE_REL_BASED_LOW);
-    return true;
-  }
-  return false;
-}
-
 // Windows-specific.
 // Collect all locations that contain absolute addresses, which need to be
 // fixed by the loader if load-time relocation is needed.
 // Only called when base relocation is enabled.
 void SectionChunk::getBaserels(std::vector<Baserel> *res) {
+  COFFLinkerContext &ctx = file->symtab.ctx;
   for (const coff_relocation &rel : getRelocs()) {
     if (getArch() == Triple::mipsel && rel.Type == IMAGE_REL_MIPS_PAIR)
       continue;
@@ -414,65 +334,25 @@ void SectionChunk::getBaserels(std::vector<Baserel> *res) {
         continue;
     }
 
-    Symbol *target = file->getSymbol(rel.SymbolTableIndex);
-    if (!isa_and_nonnull<Defined>(target) || isa<DefinedAbsolute>(target))
+    auto *target =
+        dyn_cast_or_null<Defined>(file->getSymbol(rel.SymbolTableIndex));
+    if (!target || isa<DefinedAbsolute>(target))
       continue;
 
-    if (getArch() == Triple::mipsel) {
-      if (rel.Type == IMAGE_REL_MIPS_REFHI) {
-        ArrayRef<uint8_t> data = getContents();
-        if (rel.VirtualAddress + 2 <= data.size()) {
-          uint16_t hi = read16le(data.data() + rel.VirtualAddress);
-          uint64_t v = cast<Defined>(target)->getRVA() +
-                       file->symtab.ctx.config.imageBase +
-                       (uint64_t(hi) << 16) + getMipsPairAddend(this, rel);
-          res->emplace_back(rva + rel.VirtualAddress,
-                            IMAGE_REL_BASED_HIGHADJ, v & 0xffff);
-        }
-        continue;
-      }
-      if (rel.Type == IMAGE_REL_MIPS_REFLO) {
-        res->emplace_back(rva + rel.VirtualAddress, IMAGE_REL_BASED_LOW);
-        continue;
-      }
-    }
+    std::optional<uint16_t> relocationValue;
+    ArrayRef<uint8_t> data = getContents();
+    if (rel.VirtualAddress + sizeof(uint16_t) <= data.size())
+      relocationValue = read16le(data.data() + rel.VirtualAddress);
 
-    if (getArch() == Triple::alpha) {
-      if (rel.Type == IMAGE_REL_ALPHA_REFHI) {
-        ArrayRef<uint8_t> data = getContents();
-        if (rel.VirtualAddress + 2 <= data.size()) {
-          uint16_t hi = read16le(data.data() + rel.VirtualAddress);
-          uint64_t v = cast<Defined>(target)->getRVA() +
-                       file->symtab.ctx.config.imageBase +
-                       (uint64_t(hi) << 16) + getAlphaPairAddend(this, rel);
-          res->emplace_back(rva + rel.VirtualAddress,
-                            IMAGE_REL_BASED_HIGHADJ, v & 0xffff);
-        }
-        continue;
-      }
-      if (rel.Type == IMAGE_REL_ALPHA_REFLO) {
-        res->emplace_back(rva + rel.VirtualAddress, IMAGE_REL_BASED_LOW);
-        continue;
-      }
-    }
-
-    if (getArch() == Triple::ppcle) {
-      uint16_t type = rel.Type & IMAGE_REL_PPC_TYPEMASK;
-      if (addPPCBaserelHighLow(this, rel, cast<Defined>(target), type, res))
-        continue;
-    }
-
-    uint8_t ty = getBaserelType(rel, getArch());
-    if (ty == IMAGE_REL_BASED_ABSOLUTE)
-      continue;
-    res->emplace_back(rva + rel.VirtualAddress, ty);
+    if (std::optional<BaserelInfo> baserel = ctx.target->getBaserel(
+            *this, rel, target->getRVA(), relocationValue))
+      res->emplace_back(rva + baserel->offset, baserel->type, baserel->extra);
   }
 
   // Insert a 64-bit relocation for CHPEMetadataPointer in the native load
   // config of a hybrid ARM64X image. Its value will be set in prepareLoadConfig
   // to match the value in the EC load config, which is expected to be
   // a relocatable pointer to the __chpe_metadata symbol.
-  COFFLinkerContext &ctx = file->symtab.ctx;
   if (ctx.config.machine == ARM64X && ctx.hybridSymtab->loadConfigSym &&
       ctx.hybridSymtab->loadConfigSym->getChunk() == this &&
       ctx.symtab.loadConfigSym &&

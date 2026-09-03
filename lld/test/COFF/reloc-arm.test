@@ -1,6 +1,7 @@
 # RUN: yaml2obj %s -o %t.obj
 # RUN: lld-link /out:%t.exe /entry:main %t.obj
 # RUN: llvm-objdump -s %t.exe | FileCheck %s
+# RUN: llvm-readobj --coff-basereloc %t.exe | FileCheck %s --check-prefix=BASEREL
 
 # CHECK: .text:
 # CHECK: 401000 01204000 00000000 00000000 00000000
@@ -11,6 +12,17 @@
 # CHECK: 401050 0000d62f 00000000 00000000 00000000
 # CHECK: 401060 00f1cef7 00000000 00000000 00000000
 # CHECK: 401070 00005000 00000000 00000000 00000000
+
+# BASEREL:      BaseReloc [
+# BASEREL-NEXT:   Entry {
+# BASEREL-NEXT:     Type: HIGHLOW
+# BASEREL-NEXT:     Address: 0x1000
+# BASEREL-NEXT:   }
+# BASEREL-NEXT:   Entry {
+# BASEREL-NEXT:     Type: ARM_MOV32(T)
+# BASEREL-NEXT:     Address: 0x1020
+# BASEREL-NEXT:   }
+# BASEREL-NEXT: ]
 
 --- !COFF
 header:

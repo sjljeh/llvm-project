@@ -12,12 +12,19 @@
 #include "llvm/Object/COFF.h"
 #include <cstdint>
 #include <memory>
+#include <optional>
 
 namespace lld::coff {
 
 class COFFLinkerContext;
 class OutputSection;
 class SectionChunk;
+
+struct BaserelInfo {
+  uint32_t offset;
+  uint8_t type;
+  uint16_t extra = 0;
+};
 
 class TargetInfo {
 public:
@@ -27,6 +34,11 @@ public:
   virtual void applyRelocation(const SectionChunk &section, uint8_t *off,
                                const llvm::object::coff_relocation &rel,
                                OutputSection *os, uint64_t s, uint64_t p) const;
+
+  virtual std::optional<BaserelInfo>
+  getBaserel(const SectionChunk &section,
+             const llvm::object::coff_relocation &rel, uint64_t targetRVA,
+             std::optional<uint16_t> relocationValue) const = 0;
 
 protected:
   COFFLinkerContext &ctx;
