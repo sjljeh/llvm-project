@@ -247,22 +247,7 @@ public:
   public:
     symbol_iterator() = default;
 
-    Symbol *operator*() const {
-      if (file->getMachineType() == llvm::COFF::IMAGE_FILE_MACHINE_R4000 &&
-          I->Type == llvm::COFF::IMAGE_REL_MIPS_PAIR)
-        return nullptr;
-      if ((file->getMachineType() == llvm::COFF::IMAGE_FILE_MACHINE_ALPHA ||
-           file->getMachineType() == llvm::COFF::IMAGE_FILE_MACHINE_ALPHA64) &&
-          I->Type == llvm::COFF::IMAGE_REL_ALPHA_PAIR)
-        return nullptr;
-      if (file->getMachineType() == llvm::COFF::IMAGE_FILE_MACHINE_POWERPC) {
-        uint16_t type = I->Type & llvm::COFF::IMAGE_REL_PPC_TYPEMASK;
-        if (type == llvm::COFF::IMAGE_REL_PPC_PAIR ||
-            type == llvm::COFF::IMAGE_REL_PPC_IMGLUE)
-          return nullptr;
-      }
-      return file->getSymbol(I->SymbolTableIndex);
-    }
+    Symbol *operator*() const;
   };
 
   SectionChunk(ObjFile *file, const coff_section *header, Kind k = SectionKind);
@@ -419,12 +404,6 @@ private:
   uint32_t relocsSize = 0;
   uint32_t sectionNameSize = 0;
 };
-
-int64_t getAlphaPairAddend(const SectionChunk *sec, const coff_relocation &rel);
-int64_t getAlphaPairAddend32(const SectionChunk *sec,
-                             const coff_relocation &rel);
-int64_t getMipsPairAddend(const SectionChunk *sec, const coff_relocation &rel);
-int64_t getPPCPairAddend(const SectionChunk *sec, const coff_relocation &rel);
 
 // A section chunk corresponding a section of an EC input file.
 class SectionChunkEC final : public SectionChunk {

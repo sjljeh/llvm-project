@@ -3,6 +3,7 @@
 # RUN:   /out:%t.exe %t.obj
 # RUN: llvm-readobj --coff-basereloc %t.exe | FileCheck %s
 # RUN: llvm-objdump -s -j .reloc %t.exe | FileCheck %s --check-prefix=HEX
+# RUN: llvm-readobj --hex-dump=.text %t.exe | FileCheck %s --check-prefix=DATA
 
 # CHECK:      BaseReloc [
 # CHECK:      Type: HIGHLOW
@@ -18,9 +19,14 @@
 # CHECK-NEXT: }
 # CHECK-NEXT: ]
 
-# The REFHI PAIR addend contributes to the HIGHADJ relocation's extra word.
-# HEX:      00100000 14000000 003004a0 0c401d10
+# The signed REFHI PAIR addend contributes to the HIGHADJ relocation's extra
+# word. The SECRELHI pair affects the linked contents but needs no base reloc.
+# HEX:      00100000 14000000 003004a0 0c401f10
 # HEX-NEXT: {{.*}} 10200000
+
+# DATA:      0x{{0*}}401000 20104000 20104000 00000000 40000000
+# DATA-NEXT: 0x{{0*}}401010 20100000 20100000 00000000 01000000
+# DATA-NEXT: 0x{{0*}}401020 00000000
 
 --- !COFF
 header:
@@ -30,7 +36,7 @@ sections:
   - Name:            .text
     Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
     Alignment:       4
-    SectionData:     0000000000000000000000000000000000000000000000000000000000000000
+    SectionData:     000000000000000000000000000000000000000000000000000000000000000000000000
     Relocations:
       - VirtualAddress:  0
         SymbolName:      target
@@ -40,9 +46,10 @@ sections:
         Type:            1 # IMAGE_REL_PPC_ADDR64
       - VirtualAddress:  12
         SymbolName:      target
-        Type:            16 # IMAGE_REL_PPC_REFHI
+        Type:            272 # IMAGE_REL_PPC_REFHI | IMAGE_REL_PPC_NEG
       - VirtualAddress:  12
-        SymbolTableIndex: 1
+        # The PAIR field is a signed addend, not an ordinary symbol index.
+        SymbolTableIndex: 65535
         Type:            18 # IMAGE_REL_PPC_PAIR
       - VirtualAddress:  16
         SymbolName:      target
@@ -53,15 +60,21 @@ sections:
       - VirtualAddress:  24
         SymbolName:      target
         Type:            0 # IMAGE_REL_PPC_ABSOLUTE
+      - VirtualAddress:  28
+        SymbolName:      target
+        Type:            20 # IMAGE_REL_PPC_SECRELHI
+      - VirtualAddress:  28
+        SymbolTableIndex: 32767
+        Type:            18 # IMAGE_REL_PPC_PAIR
 symbols:
   - Name:            entry
-    Value:           28
+    Value:           32
     SectionNumber:   1
     SimpleType:      IMAGE_SYM_TYPE_NULL
     ComplexType:     IMAGE_SYM_DTYPE_FUNCTION
     StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
   - Name:            target
-    Value:           28
+    Value:           32
     SectionNumber:   1
     SimpleType:      IMAGE_SYM_TYPE_NULL
     ComplexType:     IMAGE_SYM_DTYPE_NULL
