@@ -196,26 +196,34 @@ static std::unique_ptr<TargetLoweringObjectFile> createTLOF(const Triple &TT) {
   return std::make_unique<PPC64LinuxTargetObjectFile>();
 }
 
-static PPCTargetMachine::PPCABI computeTargetABI(const Triple &TT,
-                                                 const TargetOptions &Options) {
+static PPCABIKind computeTargetABI(const Triple &TT,
+                                   const TargetOptions &Options) {
+  if (TT.isOSAIX())
+    return PPCABIKind::AIX;
+  if (TT.isOSBinFormatCOFF() &&
+      (TT.getArch() == Triple::ppc || TT.getArch() == Triple::ppcle))
+    return PPCABIKind::Win32;
+  if (TT.isOSBinFormatMachO())
+    return PPCABIKind::Darwin;
+
   if (Options.MCOptions.getABIName().starts_with("elfv1"))
-    return PPCTargetMachine::PPC_ABI_ELFv1;
+    return PPCABIKind::ELF64v1;
   else if (Options.MCOptions.getABIName().starts_with("elfv2"))
-    return PPCTargetMachine::PPC_ABI_ELFv2;
+    return PPCABIKind::ELF64v2;
 
   assert(Options.MCOptions.getABIName().empty() &&
          "Unknown target-abi option!");
 
   switch (TT.getArch()) {
   case Triple::ppc64le:
-    return PPCTargetMachine::PPC_ABI_ELFv2;
+    return PPCABIKind::ELF64v2;
   case Triple::ppc64:
     if (TT.isPPC64ELFv2ABI())
-      return PPCTargetMachine::PPC_ABI_ELFv2;
+      return PPCABIKind::ELF64v2;
     else
-      return PPCTargetMachine::PPC_ABI_ELFv1;
+      return PPCABIKind::ELF64v1;
   default:
-    return PPCTargetMachine::PPC_ABI_UNKNOWN;
+    return PPCABIKind::ELF32;
   }
 }
 

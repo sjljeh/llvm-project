@@ -348,11 +348,6 @@ public:
 
 } // end anonymous namespace
 
-static bool isPPCWinCOFFABI(const Triple &TT) {
-  return TT.isOSBinFormatCOFF() &&
-         (TT.getArch() == Triple::ppc || TT.getArch() == Triple::ppcle);
-}
-
 static MCSymbol *getPPCWinCOFFEntryPointSymbol(MCContext &Ctx, StringRef Name) {
   return Ctx.getOrCreateSymbol(Twine("..") + Name);
 }
@@ -785,7 +780,7 @@ void PPCAsmPrinter::emitTlsCall(const MachineInstr *MI,
 
   MCSymbol *TlsGetAddr = OutContext.getOrCreateSymbol("__tls_get_addr");
 
-  if (Subtarget->is32BitELFABI() && isPositionIndependent())
+  if (Subtarget->usesPPC32SVR4RegisterConvention() && isPositionIndependent())
     Kind = PPC::S_PLT;
 
   const MCExpr *TlsRef = MCSymbolRefExpr::create(TlsGetAddr, Kind, OutContext);
@@ -3505,10 +3500,11 @@ void PPCAIXAsmPrinter::emitRefMetadata(const GlobalObject *GO) {
 static AsmPrinter *
 createPPCAsmPrinterPass(TargetMachine &tm,
                         std::unique_ptr<MCStreamer> &&Streamer) {
-  if (tm.getTargetTriple().isOSAIX())
+  const auto &PPCTM = static_cast<const PPCTargetMachine &>(tm);
+  if (PPCTM.getABIKind() == PPCABIKind::AIX)
     return new PPCAIXAsmPrinter(tm, std::move(Streamer));
 
-  if (isPPCWinCOFFABI(tm.getTargetTriple()))
+  if (PPCTM.isWin32ABI())
     return new PPCWinCOFFAsmPrinter(tm, std::move(Streamer));
 
   return new PPCLinuxAsmPrinter(tm, std::move(Streamer));

@@ -248,7 +248,7 @@ CodeModel::Model PPCSubtarget::getCodeModel(const TargetMachine &TM,
   return ModuleModel;
 }
 
-bool PPCSubtarget::isELFv2ABI() const { return TM.isELFv2ABI(); }
+PPCABIKind PPCSubtarget::getABIKind() const { return TM.getABIKind(); }
 
 bool PPCSubtarget::isUsingPCRelativeCalls() const {
   return isPPC64() && hasPCRelativeMemops() && isELFv2ABI() &&

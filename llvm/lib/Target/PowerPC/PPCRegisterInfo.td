@@ -458,7 +458,7 @@ def G8pRC : PPCRegisterClassWithSize<[untyped], 128,
                    G8p15, G8p6, G8p0), 128> {
   let AltOrders = [(add (sub G8pRC, G8p1), G8p1)];
   let AltOrderSelect = [{
-    return MF.getSubtarget<PPCSubtarget>().is64BitELFABI();
+    return MF.getSubtarget<PPCSubtarget>().usesPPC64SVR4RegisterConvention();
   }];
 }
 

@@ -68,6 +68,14 @@ enum {
 
 class GlobalValue;
 
+/// The platform ABI selected for a PowerPC subtarget.
+///
+/// This records the platform ABI directly instead of requiring callers to
+/// infer it from object format and register width. Some ABI implementations
+/// share parts of the SVR4 lowering, but callers should query the property they
+/// need instead of treating those targets as ELF.
+enum class PPCABIKind { ELF32, ELF64v1, ELF64v2, Darwin, AIX, Win32 };
+
 class PPCSubtarget : public PPCGenSubtargetInfo {
 public:
   enum POPCNTDKind {
@@ -204,17 +212,26 @@ public:
   bool isTargetMachO() const { return getTargetTriple().isOSBinFormatMachO(); }
   bool isTargetLinux() const { return getTargetTriple().isOSLinux(); }
 
-  bool isAIXABI() const { return getTargetTriple().isOSAIX(); }
-  bool isPPCWinCOFFABI() const {
-    const Triple &TT = getTargetTriple();
-    return TT.isOSBinFormatCOFF() &&
-           (TT.getArch() == Triple::ppc || TT.getArch() == Triple::ppcle);
-  }
-  bool isSVR4ABI() const { return !isAIXABI(); }
-  bool isELFv2ABI() const;
+  PPCABIKind getABIKind() const;
+  bool isAIXABI() const { return getABIKind() == PPCABIKind::AIX; }
+  bool isWin32ABI() const { return getABIKind() == PPCABIKind::Win32; }
+  bool isELFv2ABI() const { return getABIKind() == PPCABIKind::ELF64v2; }
 
-  bool is64BitELFABI() const { return isSVR4ABI() && isPPC64(); }
-  bool is32BitELFABI() const { return isSVR4ABI() && !isPPC64(); }
+  /// AIX has its own register convention. The remaining supported ABIs share
+  /// the SVR4 register convention even when their object format is not ELF.
+  bool usesSVR4RegisterConvention() const { return !isAIXABI(); }
+  bool usesPPC64SVR4RegisterConvention() const {
+    return usesSVR4RegisterConvention() && isPPC64();
+  }
+  bool usesPPC32SVR4RegisterConvention() const {
+    return usesSVR4RegisterConvention() && !isPPC64();
+  }
+
+  bool usesWindowsCallingConvention() const { return isWin32ABI(); }
+  bool usesWindowsVarArgs() const { return isWin32ABI(); }
+  bool usesTOCBase() const {
+    return usesPPC64SVR4RegisterConvention() || isAIXABI() || isWin32ABI();
+  }
   bool isUsingPCRelativeCalls() const;
 
   /// Originally, this function return hasISEL(). Now we always enable it,
@@ -254,8 +271,12 @@ public:
   bool usesFunctionDescriptors() const {
     // Both 32-bit and 64-bit AIX are descriptor based. For ELF only the 64-bit
     // v1 ABI uses descriptors.
-    return isAIXABI() || isPPCWinCOFFABI() ||
-           (is64BitELFABI() && !isELFv2ABI());
+    return isAIXABI() || isWin32ABI() ||
+           (usesPPC64SVR4RegisterConvention() && !isELFv2ABI());
+  }
+
+  bool functionDescriptorHasEnvironmentPointer() const {
+    return usesFunctionDescriptors() && !isWin32ABI();
   }
 
   unsigned descriptorTOCAnchorOffset() const {
@@ -277,13 +298,13 @@ public:
   }
 
   MCRegister getTOCPointerRegister() const {
-    assert((is64BitELFABI() || isAIXABI() || isPPCWinCOFFABI()) &&
+    assert(usesTOCBase() &&
            "Should only be called when the target is a TOC based ABI.");
     return IsPPC64 ? PPC::X2 : PPC::R2;
   }
 
   MCRegister getThreadPointerRegister() const {
-    assert((is64BitELFABI() || isAIXABI()) &&
+    assert((usesPPC64SVR4RegisterConvention() || isAIXABI()) &&
            "Should only be called for targets with a thread pointer register.");
     return IsPPC64 ? PPC::X13 : PPC::R13;
   }
@@ -305,7 +326,7 @@ public:
   // Select allocation orders of GPRC and G8RC. It should be strictly consistent
   // with corresponding AltOrders in PPCRegisterInfo.td.
   unsigned getGPRAllocationOrderIdx() const {
-    if (is64BitELFABI())
+    if (usesPPC64SVR4RegisterConvention())
       return 1;
     if (isAIXABI())
       return 2;

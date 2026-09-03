@@ -51,7 +51,7 @@ static unsigned computeReturnSaveOffset(const PPCSubtarget &STI) {
 }
 
 static unsigned computeTOCSaveOffset(const PPCSubtarget &STI) {
-  if (STI.isPPCWinCOFFABI())
+  if (STI.isWin32ABI())
     return 8;
   if (STI.isAIXABI())
     return STI.isPPC64() ? 40 : 20;
@@ -64,7 +64,7 @@ static unsigned computeFramePointerSaveOffset(const PPCSubtarget &STI) {
 }
 
 static unsigned computeLinkageSize(const PPCSubtarget &STI) {
-  if (STI.isPPCWinCOFFABI())
+  if (STI.isWin32ABI())
     return 56;
   if (STI.isAIXABI() || STI.isPPC64())
     return (STI.isELFv2ABI() ? 4 : 6) * (STI.isPPC64() ? 8 : 4);
@@ -75,7 +75,8 @@ static unsigned computeLinkageSize(const PPCSubtarget &STI) {
 
 static unsigned computeBasePointerSaveOffset(const PPCSubtarget &STI) {
   // Third slot in the general purpose register save area.
-  if (STI.is32BitELFABI() && STI.getTargetMachine().isPositionIndependent())
+  if (STI.usesPPC32SVR4RegisterConvention() &&
+      STI.getTargetMachine().isPositionIndependent())
     return -12U;
 
   // Second slot in the general purpose register save area.
@@ -235,12 +236,12 @@ const PPCFrameLowering::SpillSlot *PPCFrameLowering::getCalleeSavedSpillSlots(
   static const SpillSlot AIXOffsets64[] = {
       CALLEE_SAVED_FPRS, CALLEE_SAVED_GPRS64, CALLEE_SAVED_VRS};
 
-  if (Subtarget.is64BitELFABI()) {
+  if (Subtarget.usesPPC64SVR4RegisterConvention()) {
     NumEntries = std::size(ELFOffsets64);
     return ELFOffsets64;
   }
 
-  if (Subtarget.is32BitELFABI()) {
+  if (Subtarget.usesPPC32SVR4RegisterConvention()) {
     NumEntries = std::size(ELFOffsets32);
     return ELFOffsets32;
   }
@@ -386,7 +387,7 @@ bool PPCFrameLowering::needsFP(const MachineFunction &MF) const {
   return MF.getTarget().Options.DisableFramePointerElim(MF) ||
          MFI.hasVarSizedObjects() || MFI.hasStackMap() || MFI.hasPatchPoint() ||
          MF.exposesReturnsTwice() ||
-         (MF.hasEHFunclets() && Subtarget.isPPCWinCOFFABI()) ||
+         (MF.hasEHFunclets() && Subtarget.isWin32ABI()) ||
          (MF.getTarget().Options.GuaranteedTailCallOpt &&
           MF.getInfo<PPCFunctionInfo>()->hasFastCall());
 }
@@ -549,7 +550,8 @@ PPCFrameLowering::twoUniqueScratchRegsRequired(MachineBasicBlock *MBB) const {
   bool IsLargeFrame = !isInt<16>(NegFrameSize);
   MachineFrameInfo &MFI = MF.getFrameInfo();
   Align MaxAlign = MFI.getMaxAlign();
-  bool HasRedZone = Subtarget.isPPC64() || !Subtarget.isSVR4ABI();
+  bool HasRedZone =
+      Subtarget.isPPC64() || !Subtarget.usesSVR4RegisterConvention();
   const PPCTargetLowering &TLI = *Subtarget.getTargetLowering();
 
   return ((IsLargeFrame || !HasRedZone) && HasBP && MaxAlign > 1) ||
@@ -631,9 +633,10 @@ void PPCFrameLowering::emitPrologue(MachineFunction &MF,
   // Get processor type.
   bool isPPC64 = Subtarget.isPPC64();
   // Get the ABI.
-  bool isSVR4ABI = Subtarget.isSVR4ABI();
+  bool UsesSVR4RegisterConvention = Subtarget.usesSVR4RegisterConvention();
   bool isELFv2ABI = Subtarget.isELFv2ABI();
-  assert((isSVR4ABI || Subtarget.isAIXABI()) && "Unsupported PPC ABI.");
+  assert((UsesSVR4RegisterConvention || Subtarget.isAIXABI()) &&
+         "Unsupported PPC ABI.");
 
   // Work out frame sizes.
   uint64_t FrameSize = MBB.isEHFuncletEntry()
@@ -643,7 +646,7 @@ void PPCFrameLowering::emitPrologue(MachineFunction &MF,
   if (!isPPC64 && (!isInt<32>(FrameSize) || !isInt<32>(NegFrameSize)))
     llvm_unreachable("Unhandled stack size!");
 
-  if (Subtarget.isPPCWinCOFFABI() && !MBB.isEHFuncletEntry() &&
+  if (Subtarget.isWin32ABI() && !MBB.isEHFuncletEntry() &&
       MF.getFunction().hasPersonalityFn() &&
       classifyEHPersonality(MF.getFunction().getPersonalityFn()) ==
           EHPersonality::MSVC_TableSEH)
@@ -657,16 +660,15 @@ void PPCFrameLowering::emitPrologue(MachineFunction &MF,
   PPCFunctionInfo *FI = MF.getInfo<PPCFunctionInfo>();
   bool MustSaveLR = FI->mustSaveLR();
   bool MustSaveTOC = FI->mustSaveTOC();
-  const bool IsWinEHFunclet =
-      Subtarget.isPPCWinCOFFABI() && MBB.isEHFuncletEntry();
-  const bool IsWinEHParent = Subtarget.isPPCWinCOFFABI() &&
-                             MF.hasEHFunclets() && !MBB.isEHFuncletEntry();
+  const bool IsWinEHFunclet = Subtarget.isWin32ABI() && MBB.isEHFuncletEntry();
+  const bool IsWinEHParent =
+      Subtarget.isWin32ABI() && MF.hasEHFunclets() && !MBB.isEHFuncletEntry();
   const SmallVectorImpl<Register> &MustSaveCRs = FI->getMustSaveCRs();
   bool MustSaveCR = !MustSaveCRs.empty();
   // Do we have a frame pointer and/or base pointer for this function?
   bool HasFP = hasFP(MF);
   bool HasBP = RegInfo->hasBasePointer(MF);
-  bool HasRedZone = isPPC64 || !isSVR4ABI;
+  bool HasRedZone = isPPC64 || !UsesSVR4RegisterConvention;
   const bool HasROPProtect = Subtarget.hasROPProtect();
   bool HasPrivileged = Subtarget.hasPrivileged();
 
@@ -700,9 +702,8 @@ void PPCFrameLowering::emitPrologue(MachineFunction &MF,
                       : (HasPrivileged ? PPC::HASHSTP : PPC::HASHST));
 
   auto EmitPrologEnd = [&]() {
-    if (Subtarget.isPPCWinCOFFABI() &&
-        (MF.hasWinCFI() || MF.hasEHFunclets() ||
-         MF.getFunction().needsUnwindTableEntry()))
+    if (Subtarget.isWin32ABI() && (MF.hasWinCFI() || MF.hasEHFunclets() ||
+                                   MF.getFunction().needsUnwindTableEntry()))
       BuildMI(MBB, MBBI, dl, TII.get(PPC::SEH_PrologEnd))
           .setMIFlag(MachineInstr::FrameSetup);
   };
@@ -711,7 +712,8 @@ void PPCFrameLowering::emitPrologue(MachineFunction &MF,
   // LROffset is positive), that slot is callee-owned. Because PPC32 SVR4 has no
   // Red Zone, an asynchronous event (a form of "callee") could claim a frame &
   // overwrite it, so PPC32 SVR4 must claim at least a minimal frame to save LR.
-  assert((isPPC64 || !isSVR4ABI || !(!FrameSize && (MustSaveLR || HasFP))) &&
+  assert((isPPC64 || !UsesSVR4RegisterConvention ||
+          !(!FrameSize && (MustSaveLR || HasFP))) &&
          "FrameSize must be >0 to save/restore the FP or LR for 32-bit SVR4.");
 
   // Using the same bool variable as below to suppress compiler warnings.
@@ -1257,7 +1259,8 @@ void PPCFrameLowering::emitPrologue(MachineFunction &MF,
 
       // For 64-bit SVR4 when we have spilled CRs, the spill location
       // is SP+8, not a frame-relative slot.
-      if (isSVR4ABI && isPPC64 && (PPC::CR2 <= Reg && Reg <= PPC::CR4)) {
+      if (UsesSVR4RegisterConvention && isPPC64 &&
+          (PPC::CR2 <= Reg && Reg <= PPC::CR4)) {
         // In the ELFv1 ABI, only CR2 is noted in CFI and stands in for
         // the whole CR word.  In the ELFv2 ABI, every CR that was
         // actually saved gets its own CFI record.
@@ -1326,7 +1329,8 @@ void PPCFrameLowering::inlineStackProbe(MachineFunction &MF,
   bool HasBP = RegInfo->hasBasePointer(MF);
   Register BPReg = RegInfo->getBaseRegister(MF);
   Align MaxAlign = MFI.getMaxAlign();
-  bool HasRedZone = Subtarget.isPPC64() || !Subtarget.isSVR4ABI();
+  bool HasRedZone =
+      Subtarget.isPPC64() || !Subtarget.usesSVR4RegisterConvention();
   const MCInstrDesc &CopyInst = TII.get(isPPC64 ? PPC::OR8 : PPC::OR);
   // Subroutines to generate .cfi_* directives.
   auto buildDefCFAReg = [&](MachineBasicBlock &MBB,
@@ -1626,7 +1630,8 @@ void PPCFrameLowering::emitEpilogue(MachineFunction &MF,
   // Do we have a frame pointer and/or base pointer for this function?
   bool HasFP = hasFP(MF);
   bool HasBP = RegInfo->hasBasePointer(MF);
-  bool HasRedZone = Subtarget.isPPC64() || !Subtarget.isSVR4ABI();
+  bool HasRedZone =
+      Subtarget.isPPC64() || !Subtarget.usesSVR4RegisterConvention();
   bool HasROPProtect = Subtarget.hasROPProtect();
   bool HasPrivileged = Subtarget.hasPrivileged();
 
@@ -2148,7 +2153,7 @@ void PPCFrameLowering::processFunctionBeforeFrameFinalized(MachineFunction &MF,
   // Get callee saved register information.
   MachineFrameInfo &MFI = MF.getFrameInfo();
 
-  if (Subtarget.isPPCWinCOFFABI()) {
+  if (Subtarget.isWin32ABI()) {
     if (MF.getFunction().needsUnwindTableEntry() || MF.hasEHFunclets())
       MF.setHasWinCFI(true);
 
@@ -2350,7 +2355,7 @@ void PPCFrameLowering::processFunctionBeforeFrameFinalized(MachineFunction &MF,
   // to the stack pointer and hence does not need an adjustment here.
   // Only CR2 (the first nonvolatile spilled) has an associated frame
   // index so that we have a single uniform save area.
-  if (spillsCR(MF) && Subtarget.is32BitELFABI()) {
+  if (spillsCR(MF) && Subtarget.usesPPC32SVR4RegisterConvention()) {
     // Adjust the frame index of the CR spill slot.
     for (const auto &CSInfo : CSI) {
       if (CSInfo.getReg() == PPC::CR2) {
@@ -2566,7 +2571,7 @@ bool PPCFrameLowering::spillCalleeSavedRegisters(
     // Insert the spill to the stack frame.
     if (IsCRField) {
       PPCFunctionInfo *FuncInfo = MF->getInfo<PPCFunctionInfo>();
-      if (!Subtarget.is32BitELFABI()) {
+      if (!Subtarget.usesPPC32SVR4RegisterConvention()) {
         // The actual spill will happen at the start of the prologue.
         FuncInfo->addMustSaveCR(Reg);
       } else {
@@ -2745,7 +2750,7 @@ bool PPCFrameLowering::restoreCalleeSavedRegisters(
 
     // Restore of callee saved condition register field is handled during
     // epilogue insertion.
-    if (isCalleeSavedCR(Reg) && !Subtarget.is32BitELFABI())
+    if (isCalleeSavedCR(Reg) && !Subtarget.usesPPC32SVR4RegisterConvention())
       continue;
 
     if (Reg == PPC::CR2) {
@@ -2824,7 +2829,7 @@ bool PPCFrameLowering::restoreCalleeSavedRegisters(
 
   // If we haven't yet spilled the CRs, do so now.
   if (CR2Spilled || CR3Spilled || CR4Spilled) {
-    assert(Subtarget.is32BitELFABI() &&
+    assert(Subtarget.usesPPC32SVR4RegisterConvention() &&
            "Only set CR[2|3|4]Spilled on 32-bit SVR4.");
     bool is31 = needsFP(*MF);
     restoreCRs(is31, CR2Spilled, CR3Spilled, CR4Spilled, MBB, I, CSI, CSIIndex);
@@ -2848,7 +2853,7 @@ uint64_t PPCFrameLowering::getBasePointerSaveOffset() const {
 bool PPCFrameLowering::enableShrinkWrapping(const MachineFunction &MF) const {
   if (MF.getInfo<PPCFunctionInfo>()->shrinkWrapDisabled())
     return false;
-  return !MF.getSubtarget<PPCSubtarget>().is32BitELFABI();
+  return !MF.getSubtarget<PPCSubtarget>().usesPPC32SVR4RegisterConvention();
 }
 
 void PPCFrameLowering::updateCalleeSaves(const MachineFunction &MF,
