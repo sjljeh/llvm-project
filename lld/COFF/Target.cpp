@@ -652,6 +652,119 @@ static void applyRelMIPS(COFFLinkerContext &ctx, const SectionChunk &sec,
   }
 }
 
+static BaserelInfo makeBaserel(const coff_relocation &rel, uint8_t type,
+                               uint16_t extra = 0) {
+  return {rel.VirtualAddress, type, extra};
+}
+
+static std::optional<BaserelInfo> getBaserelX64(const coff_relocation &rel) {
+  switch (rel.Type) {
+  case IMAGE_REL_AMD64_ADDR64:
+    return makeBaserel(rel, IMAGE_REL_BASED_DIR64);
+  case IMAGE_REL_AMD64_ADDR32:
+    return makeBaserel(rel, IMAGE_REL_BASED_HIGHLOW);
+  default:
+    return std::nullopt;
+  }
+}
+
+static std::optional<BaserelInfo> getBaserelX86(const coff_relocation &rel) {
+  if (rel.Type == IMAGE_REL_I386_DIR32)
+    return makeBaserel(rel, IMAGE_REL_BASED_HIGHLOW);
+  return std::nullopt;
+}
+
+static std::optional<BaserelInfo>
+getBaserelAlpha(COFFLinkerContext &ctx, const SectionChunk &sec,
+                const coff_relocation &rel, uint64_t targetRVA,
+                std::optional<uint16_t> relocationValue) {
+  switch (rel.Type) {
+  case IMAGE_REL_ALPHA_REFLONG:
+    return makeBaserel(rel, IMAGE_REL_BASED_HIGHLOW);
+  case IMAGE_REL_ALPHA_REFQUAD:
+    return makeBaserel(rel, IMAGE_REL_BASED_DIR64);
+  case IMAGE_REL_ALPHA_REFHI: {
+    if (!relocationValue)
+      return std::nullopt;
+    uint64_t v = targetRVA + ctx.config.imageBase +
+                 (uint64_t(*relocationValue) << 16) +
+                 getAlphaPairAddend(&sec, rel);
+    return makeBaserel(rel, IMAGE_REL_BASED_HIGHADJ, v & 0xffff);
+  }
+  case IMAGE_REL_ALPHA_REFLO:
+    return makeBaserel(rel, IMAGE_REL_BASED_LOW);
+  default:
+    return std::nullopt;
+  }
+}
+
+static std::optional<BaserelInfo> getBaserelARM(const coff_relocation &rel) {
+  switch (rel.Type) {
+  case IMAGE_REL_ARM_ADDR32:
+    return makeBaserel(rel, IMAGE_REL_BASED_HIGHLOW);
+  case IMAGE_REL_ARM_MOV32T:
+    return makeBaserel(rel, IMAGE_REL_BASED_ARM_MOV32T);
+  default:
+    return std::nullopt;
+  }
+}
+
+static std::optional<BaserelInfo> getBaserelARM64(const coff_relocation &rel) {
+  if (rel.Type == IMAGE_REL_ARM64_ADDR64)
+    return makeBaserel(rel, IMAGE_REL_BASED_DIR64);
+  return std::nullopt;
+}
+
+static std::optional<BaserelInfo>
+getBaserelMIPS(COFFLinkerContext &ctx, const SectionChunk &sec,
+               const coff_relocation &rel, uint64_t targetRVA,
+               std::optional<uint16_t> relocationValue) {
+  switch (rel.Type) {
+  case IMAGE_REL_MIPS_REFHALF:
+    return makeBaserel(rel, IMAGE_REL_BASED_HIGH);
+  case IMAGE_REL_MIPS_REFWORD:
+    return makeBaserel(rel, IMAGE_REL_BASED_HIGHLOW);
+  case IMAGE_REL_MIPS_REFHI: {
+    if (!relocationValue)
+      return std::nullopt;
+    uint64_t v = targetRVA + ctx.config.imageBase +
+                 (uint64_t(*relocationValue) << 16) +
+                 getMipsPairAddend(&sec, rel);
+    return makeBaserel(rel, IMAGE_REL_BASED_HIGHADJ, v & 0xffff);
+  }
+  case IMAGE_REL_MIPS_REFLO:
+    return makeBaserel(rel, IMAGE_REL_BASED_LOW);
+  case IMAGE_REL_MIPS_JMPADDR:
+    return makeBaserel(rel, IMAGE_REL_BASED_MIPS_JMPADDR);
+  default:
+    return std::nullopt;
+  }
+}
+
+static std::optional<BaserelInfo>
+getBaserelPPC(COFFLinkerContext &ctx, const SectionChunk &sec,
+              const coff_relocation &rel, uint64_t targetRVA,
+              std::optional<uint16_t> relocationValue) {
+  switch (rel.Type & IMAGE_REL_PPC_TYPEMASK) {
+  case IMAGE_REL_PPC_ADDR64:
+    return makeBaserel(rel, IMAGE_REL_BASED_DIR64);
+  case IMAGE_REL_PPC_ADDR32:
+    return makeBaserel(rel, IMAGE_REL_BASED_HIGHLOW);
+  case IMAGE_REL_PPC_REFHI: {
+    if (!relocationValue)
+      return std::nullopt;
+    uint64_t v = targetRVA + ctx.config.imageBase +
+                 (uint64_t(*relocationValue) << 16) +
+                 getPPCPairAddend(&sec, rel);
+    return makeBaserel(rel, IMAGE_REL_BASED_HIGHADJ, v & 0xffff);
+  }
+  case IMAGE_REL_PPC_REFLO:
+    return makeBaserel(rel, IMAGE_REL_BASED_LOW);
+  default:
+    return std::nullopt;
+  }
+}
+
 class AMD64TargetInfo final : public TargetInfo {
 public:
   using TargetInfo::TargetInfo;
@@ -660,6 +773,12 @@ public:
                        const coff_relocation &rel, OutputSection *os,
                        uint64_t s, uint64_t p) const override {
     applyRelX64(ctx, sec, off, rel.Type, os, s, p, ctx.config.imageBase);
+  }
+
+  std::optional<BaserelInfo>
+  getBaserel(const SectionChunk &, const coff_relocation &rel, uint64_t,
+             std::optional<uint16_t>) const override {
+    return getBaserelX64(rel);
   }
 };
 
@@ -672,6 +791,12 @@ public:
                        uint64_t s, uint64_t p) const override {
     applyRelX86(ctx, sec, off, rel.Type, os, s, p, ctx.config.imageBase);
   }
+
+  std::optional<BaserelInfo>
+  getBaserel(const SectionChunk &, const coff_relocation &rel, uint64_t,
+             std::optional<uint16_t>) const override {
+    return getBaserelX86(rel);
+  }
 };
 
 class AlphaTargetInfo final : public TargetInfo {
@@ -683,6 +808,13 @@ public:
                        uint64_t s, uint64_t p) const override {
     applyRelAlpha(ctx, sec, off, rel, os, s, p, ctx.config.imageBase);
   }
+
+  std::optional<BaserelInfo>
+  getBaserel(const SectionChunk &sec, const coff_relocation &rel,
+             uint64_t targetRVA,
+             std::optional<uint16_t> relocationValue) const override {
+    return getBaserelAlpha(ctx, sec, rel, targetRVA, relocationValue);
+  }
 };
 
 class ARMTargetInfo final : public TargetInfo {
@@ -693,6 +825,12 @@ public:
                        const coff_relocation &rel, OutputSection *os,
                        uint64_t s, uint64_t p) const override {
     applyRelARM(ctx, sec, off, rel.Type, os, s, p, ctx.config.imageBase);
+  }
+
+  std::optional<BaserelInfo>
+  getBaserel(const SectionChunk &, const coff_relocation &rel, uint64_t,
+             std::optional<uint16_t>) const override {
+    return getBaserelARM(rel);
   }
 };
 
@@ -709,6 +847,14 @@ public:
     }
     applyRelARM64(ctx, sec, off, rel.Type, os, s, p, ctx.config.imageBase);
   }
+
+  std::optional<BaserelInfo>
+  getBaserel(const SectionChunk &sec, const coff_relocation &rel, uint64_t,
+             std::optional<uint16_t>) const override {
+    if (sec.getArch() == Triple::x86_64)
+      return getBaserelX64(rel);
+    return getBaserelARM64(rel);
+  }
 };
 
 class MIPSTargetInfo final : public TargetInfo {
@@ -720,6 +866,13 @@ public:
                        uint64_t s, uint64_t p) const override {
     applyRelMIPS(ctx, sec, off, rel, os, s, p, ctx.config.imageBase);
   }
+
+  std::optional<BaserelInfo>
+  getBaserel(const SectionChunk &sec, const coff_relocation &rel,
+             uint64_t targetRVA,
+             std::optional<uint16_t> relocationValue) const override {
+    return getBaserelMIPS(ctx, sec, rel, targetRVA, relocationValue);
+  }
 };
 
 class PPCTargetInfo final : public TargetInfo {
@@ -730,6 +883,13 @@ public:
                        const coff_relocation &rel, OutputSection *os,
                        uint64_t s, uint64_t p) const override {
     applyRelPPC(ctx, sec, off, rel, os, s, p, ctx.config.imageBase);
+  }
+
+  std::optional<BaserelInfo>
+  getBaserel(const SectionChunk &sec, const coff_relocation &rel,
+             uint64_t targetRVA,
+             std::optional<uint16_t> relocationValue) const override {
+    return getBaserelPPC(ctx, sec, rel, targetRVA, relocationValue);
   }
 };
 
