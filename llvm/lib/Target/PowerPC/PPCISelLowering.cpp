@@ -23,6 +23,7 @@
 #include "PPCSelectionDAGInfo.h"
 #include "PPCSubtarget.h"
 #include "PPCTargetMachine.h"
+#include "PPCWin32ABIInfo.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/APSInt.h"
@@ -3983,8 +3984,10 @@ SDValue PPCTargetLowering::LowerVASTART(SDValue Op, SelectionDAG &DAG) const {
 
   SDLoc dl(Op);
 
-  if (Subtarget.isPPC64() || Subtarget.isAIXABI() ||
-      Subtarget.usesWindowsVarArgs()) {
+  if (Subtarget.usesWindowsVarArgs())
+    return PPCWin32ABIInfo::lowerVASTART(Op, DAG);
+
+  if (Subtarget.isPPC64() || Subtarget.isAIXABI()) {
     // vastart just stores the address of the VarArgsFrameIndex slot into the
     // memory location argument.
     SDValue FR = DAG.getFrameIndex(FuncInfo->getVarArgsFrameIndex(), PtrVT);
@@ -4245,12 +4248,13 @@ SDValue PPCTargetLowering::LowerFormalArguments_32SVR4(
   CCState CCInfo(CallConv, isVarArg, DAG.getMachineFunction(), ArgLocs,
                  *DAG.getContext());
 
-  // Reserve space up to the parameter area. The NT frame's first parameter
-  // word is at SP+24; its eight-word minimum is accounted for below.
   unsigned LinkageSize = Subtarget.getFrameLowering()->getLinkageSize();
-  CCInfo.AllocateStack(IsWin ? 24 : LinkageSize, PtrAlign);
-  CCInfo.AnalyzeFormalArguments(Ins,
-                                IsWin ? CC_PPC32_Win : CC_PPC32_SVR4);
+  if (IsWin) {
+    PPCWin32ABIInfo::analyzeFormalArguments(CCInfo, Ins);
+  } else {
+    CCInfo.AllocateStack(LinkageSize, PtrAlign);
+    CCInfo.AnalyzeFormalArguments(Ins, CC_PPC32_SVR4);
+  }
 
   for (unsigned i = 0, e = ArgLocs.size(); i != e; ++i) {
     CCValAssign &VA = ArgLocs[i];
@@ -4355,7 +4359,9 @@ SDValue PPCTargetLowering::LowerFormalArguments_32SVR4(
 
   // Area that is at least reserved in the caller of this function.
   unsigned MinReservedArea = CCByValInfo.getStackSize();
-  MinReservedArea = std::max(MinReservedArea, LinkageSize);
+  MinReservedArea =
+      IsWin ? PPCWin32ABIInfo::ensureMinimumFrameSize(MinReservedArea)
+            : std::max(MinReservedArea, LinkageSize);
 
   // Set the size that is at least reserved in caller of this function.  Tail
   // call optimized function's reserved stack space needs to be aligned so that
@@ -4367,31 +4373,8 @@ SDValue PPCTargetLowering::LowerFormalArguments_32SVR4(
 
   SmallVector<SDValue, 8> MemOps;
 
-  // Windows exposes one contiguous parameter stream beginning at SP+24.
-  if (isVarArg && IsWin) {
-    static const MCPhysReg GPArgRegs[] = {
-      PPC::R3, PPC::R4, PPC::R5, PPC::R6,
-      PPC::R7, PPC::R8, PPC::R9, PPC::R10,
-    };
-
-    FuncInfo->setVarArgsFrameIndex(
-        MFI.CreateFixedObject(4, CCInfo.getStackSize(), true));
-
-    // The caller supplies register shadows for floating variadic arguments,
-    // so homing r3-r10 creates one addressable stream for every argument kind.
-    for (auto [Index, GPArgReg] : llvm::enumerate(GPArgRegs)) {
-      Register VReg = MF.getRegInfo().getLiveInVirtReg(GPArgReg);
-      if (!VReg)
-        VReg = MF.addLiveIn(GPArgReg, &PPC::GPRCRegClass);
-
-      int FI = MFI.CreateFixedObject(4, 24 + Index * 4,
-                                     /*IsImmutable=*/false);
-      SDValue FIN = DAG.getFrameIndex(FI, PtrVT);
-      SDValue Val = DAG.getCopyFromReg(Chain, dl, VReg, PtrVT);
-      MemOps.push_back(
-          DAG.getStore(Val.getValue(1), dl, Val, FIN, MachinePointerInfo()));
-    }
-  }
+  if (isVarArg && IsWin)
+    PPCWin32ABIInfo::homeVarArgRegisters(Chain, dl, DAG, CCInfo, MemOps);
 
   // If the function takes variable number of arguments, make a frame index for
   // the start of the first vararg value... for expansion of llvm.va_start.
@@ -5339,6 +5322,15 @@ static bool isFunctionGlobalAddress(const GlobalValue *GV) {
   return false;
 }
 
+static CCAssignFn *getReturnAssignFn(const PPCSubtarget &Subtarget,
+                                     CallingConv::ID CallConv) {
+  if (Subtarget.usesWindowsCallingConvention())
+    return PPCWin32ABIInfo::getReturnAssignFn(CallConv);
+  return Subtarget.usesSVR4RegisterConvention() && CallConv == CallingConv::Cold
+             ? RetCC_PPC_Cold
+             : RetCC_PPC;
+}
+
 SDValue PPCTargetLowering::LowerCallResult(
     SDValue Chain, SDValue InGlue, CallingConv::ID CallConv, bool isVarArg,
     const SmallVectorImpl<ISD::InputArg> &Ins, const SDLoc &dl,
@@ -5347,10 +5339,7 @@ SDValue PPCTargetLowering::LowerCallResult(
   CCState CCRetInfo(CallConv, isVarArg, DAG.getMachineFunction(), RVLocs,
                     *DAG.getContext());
 
-  CCRetInfo.AnalyzeCallResult(Ins, (Subtarget.usesSVR4RegisterConvention() &&
-                                    CallConv == CallingConv::Cold)
-                                       ? RetCC_PPC_Cold
-                                       : RetCC_PPC);
+  CCRetInfo.AnalyzeCallResult(Ins, getReturnAssignFn(Subtarget, CallConv));
 
   // Copy all of the result registers out of their specified physreg.
   for (unsigned i = 0, e = RVLocs.size(); i != e; ++i) {
@@ -6042,9 +6031,7 @@ SDValue PPCTargetLowering::LowerCall_32SVR4(
   CCState CCInfo(CallConv, IsVarArg, MF, ArgLocs, *DAG.getContext());
 
   if (IsWin) {
-    // The NT parameter stream begins after the six-word frame header.
-    CCInfo.AllocateStack(24, PtrAlign);
-    CCInfo.AnalyzeCallOperands(Outs, CC_PPC32_Win);
+    PPCWin32ABIInfo::analyzeCallOperands(CCInfo, Outs);
   } else {
     // Reserve space for the linkage area on the stack.
     CCInfo.AllocateStack(Subtarget.getFrameLowering()->getLinkageSize(),
@@ -6098,8 +6085,7 @@ SDValue PPCTargetLowering::LowerCall_32SVR4(
   // stored.
   unsigned NumBytes = CCByValInfo.getStackSize();
   if (IsWin)
-    NumBytes = std::max(NumBytes,
-                        Subtarget.getFrameLowering()->getLinkageSize());
+    NumBytes = PPCWin32ABIInfo::ensureMinimumFrameSize(NumBytes);
 
   // Calculate by how many bytes the stack has to be adjusted in case of tail
   // call optimization.
@@ -6124,7 +6110,7 @@ SDValue PPCTargetLowering::LowerCall_32SVR4(
   SmallVector<TailCallArgumentInfo, 8> TailCallArguments;
   SmallVector<SDValue, 8> MemOpChains;
 
-  unsigned WinArgOffset = 24;
+  unsigned WinArgOffset = PPCWin32ABIInfo::ParameterAreaOffset;
   bool seenFloatArg = false;
   // Walk the register/memloc assignments, inserting copies/loads.
   // i - Tracks the index into the list of registers allocated for the call
@@ -6138,13 +6124,9 @@ SDValue PPCTargetLowering::LowerCall_32SVR4(
     ISD::ArgFlagsTy Flags = Outs[RealArgIdx].Flags;
 
     unsigned CurWinArgOffset = 0;
-    if (IsWin) {
-      unsigned ArgSize =
-          std::max<unsigned>(Outs[RealArgIdx].VT.getStoreSize(), 4);
-      WinArgOffset = alignTo(WinArgOffset, ArgSize >= 8 ? 8 : 4);
-      CurWinArgOffset = WinArgOffset;
-      WinArgOffset += ArgSize;
-    }
+    if (IsWin)
+      CurWinArgOffset =
+          PPCWin32ABIInfo::allocateArgument(WinArgOffset, Outs[RealArgIdx].VT);
 
     if (Flags.isByVal()) {
       // Argument is an aggregate which is passed by value, thus we need to
@@ -6191,39 +6173,21 @@ SDValue PPCTargetLowering::LowerCall_32SVR4(
                         dl, MVT::i32, Arg);
 
     if (IsWin && IsVarArg && Arg.getValueType().isFloatingPoint()) {
-      static const MCPhysReg GPRs[] = {PPC::R3, PPC::R4, PPC::R5, PPC::R6,
-                                       PPC::R7, PPC::R8, PPC::R9, PPC::R10};
-      SmallVector<SDValue, 2> Words;
-      if (Arg.getValueType() == MVT::f32) {
-        Words.push_back(DAG.getBitcast(MVT::i32, Arg));
-      } else if (Arg.getValueType() == MVT::f64) {
-        SDValue Bits = DAG.getBitcast(MVT::i64, Arg);
-        Words.push_back(DAG.getNode(ISD::EXTRACT_ELEMENT, dl, MVT::i32, Bits,
-                                    DAG.getConstant(0, dl, MVT::i32)));
-        Words.push_back(DAG.getNode(ISD::EXTRACT_ELEMENT, dl, MVT::i32, Bits,
-                                    DAG.getConstant(1, dl, MVT::i32)));
-        if (!Subtarget.isLittleEndian())
-          std::swap(Words[0], Words[1]);
-      }
-
-      // A variadic float remains in its FPR and is also copied to the GPR or
-      // stack words that a variadic callee will expose through va_list.
-      for (auto [WordIndex, Word] : llvm::enumerate(Words)) {
-        unsigned Offset = CurWinArgOffset + WordIndex * 4;
-        if (Offset < 56) {
-          RegsToPass.emplace_back(GPRs[(Offset - 24) / 4], Word);
-        } else if (!IsTailCall) {
-          SDValue PtrOff = DAG.getIntPtrConstant(Offset, dl);
-          PtrOff = DAG.getNode(ISD::ADD, dl,
-                               getPointerTy(MF.getDataLayout()), StackPtr,
-                               PtrOff);
-          MemOpChains.push_back(
-              DAG.getStore(Chain, dl, Word, PtrOff, MachinePointerInfo()));
-        } else {
-          CalculateTailCallArgDest(DAG, MF, false, Word, SPDiff, Offset,
-                                   TailCallArguments);
-        }
-      }
+      PPCWin32ABIInfo::duplicateVarArgFloatingPoint(
+          Arg, CurWinArgOffset, Subtarget.isLittleEndian(), Chain, dl, DAG,
+          RegsToPass, [&](SDValue Word, unsigned Offset) {
+            if (!IsTailCall) {
+              SDValue PtrOff = DAG.getIntPtrConstant(Offset, dl);
+              PtrOff =
+                  DAG.getNode(ISD::ADD, dl, getPointerTy(MF.getDataLayout()),
+                              StackPtr, PtrOff);
+              MemOpChains.push_back(
+                  DAG.getStore(Chain, dl, Word, PtrOff, MachinePointerInfo()));
+            } else {
+              CalculateTailCallArgDest(DAG, MF, false, Word, SPDiff, Offset,
+                                       TailCallArguments);
+            }
+          });
     }
 
     if (VA.isRegLoc()) {
@@ -6263,16 +6227,9 @@ SDValue PPCTargetLowering::LowerCall_32SVR4(
   if (!MemOpChains.empty())
     Chain = DAG.getNode(ISD::TokenFactor, dl, MVT::Other, MemOpChains);
 
-  if (CFlags.IsIndirect && Subtarget.isWin32ABI()) {
-    const unsigned TOCSaveOffset =
-        Subtarget.getFrameLowering()->getTOCSaveOffset();
+  if (CFlags.IsIndirect && IsWin) {
     setUsesTOCBasePtr(DAG);
-    SDValue TOCVal = DAG.getCopyFromReg(Chain, dl, PPC::R2, MVT::i32);
-    SDValue TOCOff = DAG.getIntPtrConstant(TOCSaveOffset, dl);
-    SDValue TOCSlot = DAG.getNode(ISD::ADD, dl, MVT::i32, StackPtr, TOCOff);
-    Chain = DAG.getStore(
-        TOCVal.getValue(1), dl, TOCVal, TOCSlot,
-        MachinePointerInfo::getStack(DAG.getMachineFunction(), TOCSaveOffset));
+    Chain = PPCWin32ABIInfo::saveTOCBase(Chain, StackPtr, dl, DAG);
   }
 
   // Build a sequence of copy-to-reg nodes chained together with token chain
@@ -7987,10 +7944,7 @@ PPCTargetLowering::CanLowerReturn(CallingConv::ID CallConv,
                                   const Type *RetTy) const {
   SmallVector<CCValAssign, 16> RVLocs;
   CCState CCInfo(CallConv, isVarArg, MF, RVLocs, Context);
-  return CCInfo.CheckReturn(Outs, (Subtarget.usesSVR4RegisterConvention() &&
-                                   CallConv == CallingConv::Cold)
-                                      ? RetCC_PPC_Cold
-                                      : RetCC_PPC);
+  return CCInfo.CheckReturn(Outs, getReturnAssignFn(Subtarget, CallConv));
 }
 
 SDValue
@@ -8002,10 +7956,7 @@ PPCTargetLowering::LowerReturn(SDValue Chain, CallingConv::ID CallConv,
   SmallVector<CCValAssign, 16> RVLocs;
   CCState CCInfo(CallConv, isVarArg, DAG.getMachineFunction(), RVLocs,
                  *DAG.getContext());
-  CCInfo.AnalyzeReturn(Outs, (Subtarget.usesSVR4RegisterConvention() &&
-                              CallConv == CallingConv::Cold)
-                                 ? RetCC_PPC_Cold
-                                 : RetCC_PPC);
+  CCInfo.AnalyzeReturn(Outs, getReturnAssignFn(Subtarget, CallConv));
 
   SDValue Glue;
   SmallVector<SDValue, 4> RetOps(1, Chain);
