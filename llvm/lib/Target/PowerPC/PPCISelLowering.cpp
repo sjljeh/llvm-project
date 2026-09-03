@@ -3983,7 +3983,8 @@ SDValue PPCTargetLowering::LowerVASTART(SDValue Op, SelectionDAG &DAG) const {
 
   SDLoc dl(Op);
 
-  if (Subtarget.isPPC64() || Subtarget.isAIXABI()) {
+  if (Subtarget.isPPC64() || Subtarget.isAIXABI() ||
+      Subtarget.isPPCWinCOFFABI()) {
     // vastart just stores the address of the VarArgsFrameIndex slot into the
     // memory location argument.
     SDValue FR = DAG.getFrameIndex(FuncInfo->getVarArgsFrameIndex(), PtrVT);
@@ -4231,6 +4232,7 @@ SDValue PPCTargetLowering::LowerFormalArguments_32SVR4(
   MachineFunction &MF = DAG.getMachineFunction();
   MachineFrameInfo &MFI = MF.getFrameInfo();
   PPCFunctionInfo *FuncInfo = MF.getInfo<PPCFunctionInfo>();
+  const bool IsWin = Subtarget.isPPCWinCOFFABI();
 
   EVT PtrVT = getPointerTy(MF.getDataLayout());
   // Potential tail calls could cause overwriting of argument stack slots.
@@ -4243,10 +4245,12 @@ SDValue PPCTargetLowering::LowerFormalArguments_32SVR4(
   CCState CCInfo(CallConv, isVarArg, DAG.getMachineFunction(), ArgLocs,
                  *DAG.getContext());
 
-  // Reserve space for the linkage area on the stack.
+  // Reserve space up to the parameter area. The NT frame's first parameter
+  // word is at SP+24; its eight-word minimum is accounted for below.
   unsigned LinkageSize = Subtarget.getFrameLowering()->getLinkageSize();
-  CCInfo.AllocateStack(LinkageSize, PtrAlign);
-  CCInfo.AnalyzeFormalArguments(Ins, CC_PPC32_SVR4);
+  CCInfo.AllocateStack(IsWin ? 24 : LinkageSize, PtrAlign);
+  CCInfo.AnalyzeFormalArguments(Ins,
+                                IsWin ? CC_PPC32_Win : CC_PPC32_SVR4);
 
   for (unsigned i = 0, e = ArgLocs.size(); i != e; ++i) {
     CCValAssign &VA = ArgLocs[i];
@@ -4346,7 +4350,8 @@ SDValue PPCTargetLowering::LowerFormalArguments_32SVR4(
   // Reserve stack space for the allocations in CCInfo.
   CCByValInfo.AllocateStack(CCInfo.getStackSize(), PtrAlign);
 
-  CCByValInfo.AnalyzeFormalArguments(Ins, CC_PPC32_SVR4_ByVal);
+  if (!IsWin)
+    CCByValInfo.AnalyzeFormalArguments(Ins, CC_PPC32_SVR4_ByVal);
 
   // Area that is at least reserved in the caller of this function.
   unsigned MinReservedArea = CCByValInfo.getStackSize();
@@ -4362,9 +4367,35 @@ SDValue PPCTargetLowering::LowerFormalArguments_32SVR4(
 
   SmallVector<SDValue, 8> MemOps;
 
+  // Windows exposes one contiguous parameter stream beginning at SP+24.
+  if (isVarArg && IsWin) {
+    static const MCPhysReg GPArgRegs[] = {
+      PPC::R3, PPC::R4, PPC::R5, PPC::R6,
+      PPC::R7, PPC::R8, PPC::R9, PPC::R10,
+    };
+
+    FuncInfo->setVarArgsFrameIndex(
+        MFI.CreateFixedObject(4, CCInfo.getStackSize(), true));
+
+    // The caller supplies register shadows for floating variadic arguments,
+    // so homing r3-r10 creates one addressable stream for every argument kind.
+    for (auto [Index, GPArgReg] : llvm::enumerate(GPArgRegs)) {
+      Register VReg = MF.getRegInfo().getLiveInVirtReg(GPArgReg);
+      if (!VReg)
+        VReg = MF.addLiveIn(GPArgReg, &PPC::GPRCRegClass);
+
+      int FI = MFI.CreateFixedObject(4, 24 + Index * 4,
+                                     /*IsImmutable=*/false);
+      SDValue FIN = DAG.getFrameIndex(FI, PtrVT);
+      SDValue Val = DAG.getCopyFromReg(Chain, dl, VReg, PtrVT);
+      MemOps.push_back(
+          DAG.getStore(Val.getValue(1), dl, Val, FIN, MachinePointerInfo()));
+    }
+  }
+
   // If the function takes variable number of arguments, make a frame index for
   // the start of the first vararg value... for expansion of llvm.va_start.
-  if (isVarArg) {
+  if (isVarArg && !IsWin) {
     static const MCPhysReg GPArgRegs[] = {
       PPC::R3, PPC::R4, PPC::R5, PPC::R6,
       PPC::R7, PPC::R8, PPC::R9, PPC::R10,
@@ -5757,8 +5788,9 @@ buildCallOperands(SmallVectorImpl<SDValue> &Ops,
        !CFlags.IsPatchPoint && !Subtarget.isUsingPCRelativeCalls())
     Ops.push_back(DAG.getRegister(Subtarget.getTOCPointerRegister(), RegVT));
 
-  // Add implicit use of CR bit 6 for 32-bit SVR4 vararg calls
-  if (CFlags.IsVarArg && Subtarget.is32BitELFABI())
+  // Add implicit use of CR bit 6 for 32-bit SVR4 vararg calls.
+  if (CFlags.IsVarArg && Subtarget.is32BitELFABI() &&
+      !Subtarget.isPPCWinCOFFABI())
     Ops.push_back(DAG.getRegister(PPC::CR1EQ, MVT::i32));
 
   // Add a register mask operand representing the call-preserved registers.
@@ -5982,6 +6014,7 @@ SDValue PPCTargetLowering::LowerCall_32SVR4(
   const CallingConv::ID CallConv = CFlags.CallConv;
   const bool IsVarArg = CFlags.IsVarArg;
   const bool IsTailCall = CFlags.IsTailCall;
+  const bool IsWin = Subtarget.isPPCWinCOFFABI();
 
   assert((CallConv == CallingConv::C ||
           CallConv == CallingConv::Cold ||
@@ -6008,40 +6041,46 @@ SDValue PPCTargetLowering::LowerCall_32SVR4(
   SmallVector<CCValAssign, 16> ArgLocs;
   CCState CCInfo(CallConv, IsVarArg, MF, ArgLocs, *DAG.getContext());
 
-  // Reserve space for the linkage area on the stack.
-  CCInfo.AllocateStack(Subtarget.getFrameLowering()->getLinkageSize(),
-                       PtrAlign);
-
-  if (IsVarArg) {
-    // Handle fixed and variable vector arguments differently.
-    // Fixed vector arguments go into registers as long as registers are
-    // available. Variable vector arguments always go into memory.
-    unsigned NumArgs = Outs.size();
-
-    for (unsigned i = 0; i != NumArgs; ++i) {
-      MVT ArgVT = Outs[i].VT;
-      ISD::ArgFlagsTy ArgFlags = Outs[i].Flags;
-      bool Result;
-
-      if (!ArgFlags.isVarArg()) {
-        Result = CC_PPC32_SVR4(i, ArgVT, ArgVT, CCValAssign::Full, ArgFlags,
-                               Outs[i].OrigTy, CCInfo);
-      } else {
-        Result = CC_PPC32_SVR4_VarArg(i, ArgVT, ArgVT, CCValAssign::Full,
-                                      ArgFlags, Outs[i].OrigTy, CCInfo);
-      }
-
-      if (Result) {
-#ifndef NDEBUG
-        errs() << "Call operand #" << i << " has unhandled type "
-               << ArgVT << "\n";
-#endif
-        llvm_unreachable(nullptr);
-      }
-    }
+  if (IsWin) {
+    // The NT parameter stream begins after the six-word frame header.
+    CCInfo.AllocateStack(24, PtrAlign);
+    CCInfo.AnalyzeCallOperands(Outs, CC_PPC32_Win);
   } else {
-    // All arguments are treated the same.
-    CCInfo.AnalyzeCallOperands(Outs, CC_PPC32_SVR4);
+    // Reserve space for the linkage area on the stack.
+    CCInfo.AllocateStack(Subtarget.getFrameLowering()->getLinkageSize(),
+                         PtrAlign);
+
+    if (IsVarArg) {
+      // Handle fixed and variable vector arguments differently.
+      // Fixed vector arguments go into registers as long as registers are
+      // available. Variable vector arguments always go into memory.
+      unsigned NumArgs = Outs.size();
+
+      for (unsigned i = 0; i != NumArgs; ++i) {
+        MVT ArgVT = Outs[i].VT;
+        ISD::ArgFlagsTy ArgFlags = Outs[i].Flags;
+        bool Result;
+
+        if (!ArgFlags.isVarArg()) {
+          Result = CC_PPC32_SVR4(i, ArgVT, ArgVT, CCValAssign::Full, ArgFlags,
+                                 Outs[i].OrigTy, CCInfo);
+        } else {
+          Result = CC_PPC32_SVR4_VarArg(i, ArgVT, ArgVT, CCValAssign::Full,
+                                        ArgFlags, Outs[i].OrigTy, CCInfo);
+        }
+
+        if (Result) {
+#ifndef NDEBUG
+          errs() << "Call operand #" << i << " has unhandled type "
+                 << ArgVT << "\n";
+#endif
+          llvm_unreachable(nullptr);
+        }
+      }
+    } else {
+      // All arguments are treated the same.
+      CCInfo.AnalyzeCallOperands(Outs, CC_PPC32_SVR4);
+    }
   }
 
   // Assign locations to all of the outgoing aggregate by value arguments.
@@ -6051,12 +6090,16 @@ SDValue PPCTargetLowering::LowerCall_32SVR4(
   // Reserve stack space for the allocations in CCInfo.
   CCByValInfo.AllocateStack(CCInfo.getStackSize(), PtrAlign);
 
-  CCByValInfo.AnalyzeCallOperands(Outs, CC_PPC32_SVR4_ByVal);
+  if (!IsWin)
+    CCByValInfo.AnalyzeCallOperands(Outs, CC_PPC32_SVR4_ByVal);
 
   // Size of the linkage area, parameter list area and the part of the local
   // space variable where copies of aggregates which are passed by value are
   // stored.
   unsigned NumBytes = CCByValInfo.getStackSize();
+  if (IsWin)
+    NumBytes = std::max(NumBytes,
+                        Subtarget.getFrameLowering()->getLinkageSize());
 
   // Calculate by how many bytes the stack has to be adjusted in case of tail
   // call optimization.
@@ -6081,6 +6124,7 @@ SDValue PPCTargetLowering::LowerCall_32SVR4(
   SmallVector<TailCallArgumentInfo, 8> TailCallArguments;
   SmallVector<SDValue, 8> MemOpChains;
 
+  unsigned WinArgOffset = 24;
   bool seenFloatArg = false;
   // Walk the register/memloc assignments, inserting copies/loads.
   // i - Tracks the index into the list of registers allocated for the call
@@ -6092,6 +6136,15 @@ SDValue PPCTargetLowering::LowerCall_32SVR4(
     CCValAssign &VA = ArgLocs[i];
     SDValue Arg = OutVals[RealArgIdx];
     ISD::ArgFlagsTy Flags = Outs[RealArgIdx].Flags;
+
+    unsigned CurWinArgOffset = 0;
+    if (IsWin) {
+      unsigned ArgSize =
+          std::max<unsigned>(Outs[RealArgIdx].VT.getStoreSize(), 4);
+      WinArgOffset = alignTo(WinArgOffset, ArgSize >= 8 ? 8 : 4);
+      CurWinArgOffset = WinArgOffset;
+      WinArgOffset += ArgSize;
+    }
 
     if (Flags.isByVal()) {
       // Argument is an aggregate which is passed by value, thus we need to
@@ -6136,6 +6189,42 @@ SDValue PPCTargetLowering::LowerCall_32SVR4(
     if (Arg.getValueType() == MVT::i1)
       Arg = DAG.getNode(Flags.isSExt() ? ISD::SIGN_EXTEND : ISD::ZERO_EXTEND,
                         dl, MVT::i32, Arg);
+
+    if (IsWin && IsVarArg && Arg.getValueType().isFloatingPoint()) {
+      static const MCPhysReg GPRs[] = {PPC::R3, PPC::R4, PPC::R5, PPC::R6,
+                                       PPC::R7, PPC::R8, PPC::R9, PPC::R10};
+      SmallVector<SDValue, 2> Words;
+      if (Arg.getValueType() == MVT::f32) {
+        Words.push_back(DAG.getBitcast(MVT::i32, Arg));
+      } else if (Arg.getValueType() == MVT::f64) {
+        SDValue Bits = DAG.getBitcast(MVT::i64, Arg);
+        Words.push_back(DAG.getNode(ISD::EXTRACT_ELEMENT, dl, MVT::i32, Bits,
+                                    DAG.getConstant(0, dl, MVT::i32)));
+        Words.push_back(DAG.getNode(ISD::EXTRACT_ELEMENT, dl, MVT::i32, Bits,
+                                    DAG.getConstant(1, dl, MVT::i32)));
+        if (!Subtarget.isLittleEndian())
+          std::swap(Words[0], Words[1]);
+      }
+
+      // A variadic float remains in its FPR and is also copied to the GPR or
+      // stack words that a variadic callee will expose through va_list.
+      for (auto [WordIndex, Word] : llvm::enumerate(Words)) {
+        unsigned Offset = CurWinArgOffset + WordIndex * 4;
+        if (Offset < 56) {
+          RegsToPass.emplace_back(GPRs[(Offset - 24) / 4], Word);
+        } else if (!IsTailCall) {
+          SDValue PtrOff = DAG.getIntPtrConstant(Offset, dl);
+          PtrOff = DAG.getNode(ISD::ADD, dl,
+                               getPointerTy(MF.getDataLayout()), StackPtr,
+                               PtrOff);
+          MemOpChains.push_back(
+              DAG.getStore(Chain, dl, Word, PtrOff, MachinePointerInfo()));
+        } else {
+          CalculateTailCallArgDest(DAG, MF, false, Word, SPDiff, Offset,
+                                   TailCallArguments);
+        }
+      }
+    }
 
     if (VA.isRegLoc()) {
       seenFloatArg |= VA.getLocVT().isFloatingPoint();
@@ -6194,9 +6283,9 @@ SDValue PPCTargetLowering::LowerCall_32SVR4(
     InGlue = Chain.getValue(1);
   }
 
-  // Set CR bit 6 to true if this is a vararg call with floating args passed in
-  // registers.
-  if (IsVarArg) {
+  // Set CR bit 6 to true if this is an SVR4 vararg call with floating args
+  // passed in registers.
+  if (IsVarArg && !IsWin) {
     SDVTList VTs = DAG.getVTList(MVT::Other, MVT::Glue);
     SDValue Ops[] = { Chain, InGlue };
 

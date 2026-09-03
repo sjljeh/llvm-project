@@ -383,11 +383,36 @@ public:
                    AggValueSlot Slot) const override;
 };
 
+/// PPC32_Win_ABIInfo - The 32-bit Windows NT PowerPC ABI information.
+///
+/// Windows uses a single, contiguous parameter-word stream. The first eight
+/// words have register shadows in r3-r10, and every caller reserves those
+/// words in its minimum stack frame. This is deliberately unlike the SVR4
+/// va_list structure with independent GPR and FPR cursors.
+class PPC32_Win_ABIInfo : public PPC32_SVR4_ABIInfo {
+  llvm::Type *getPaddingType(uint64_t OrigOffset, uint64_t Offset) const;
+  ABIArgInfo classifyArgumentType(QualType Ty, uint64_t &Offset) const;
+
+public:
+  PPC32_Win_ABIInfo(CodeGen::CodeGenTypes &CGT, bool SoftFloatABI,
+                    bool RetSmallStructInRegABI)
+      : PPC32_SVR4_ABIInfo(CGT, SoftFloatABI, RetSmallStructInRegABI) {}
+
+  void computeInfo(CGFunctionInfo &FI) const override;
+
+  RValue EmitVAArg(CodeGenFunction &CGF, Address VAListAddr, QualType Ty,
+                   AggValueSlot Slot) const override;
+};
+
 class PPC32TargetCodeGenInfo : public TargetCodeGenInfo {
+protected:
+  PPC32TargetCodeGenInfo(std::unique_ptr<ABIInfo> Info)
+      : TargetCodeGenInfo(std::move(Info)) {}
+
 public:
   PPC32TargetCodeGenInfo(CodeGenTypes &CGT, bool SoftFloatABI,
                          bool RetSmallStructInRegABI)
-      : TargetCodeGenInfo(std::make_unique<PPC32_SVR4_ABIInfo>(
+      : PPC32TargetCodeGenInfo(std::make_unique<PPC32_SVR4_ABIInfo>(
             CGT, SoftFloatABI, RetSmallStructInRegABI)) {}
 
   static bool isStructReturnInRegABI(const llvm::Triple &Triple,
@@ -406,7 +431,8 @@ class WindowsPPC32TargetCodeGenInfo : public PPC32TargetCodeGenInfo {
 public:
   WindowsPPC32TargetCodeGenInfo(CodeGenTypes &CGT, bool SoftFloatABI,
                                 bool RetSmallStructInRegABI)
-      : PPC32TargetCodeGenInfo(CGT, SoftFloatABI, RetSmallStructInRegABI) {}
+      : PPC32TargetCodeGenInfo(std::make_unique<PPC32_Win_ABIInfo>(
+            CGT, SoftFloatABI, RetSmallStructInRegABI)) {}
 
   void getDependentLibraryOption(llvm::StringRef Lib,
                                  llvm::SmallString<24> &Opt) const override {
@@ -627,6 +653,79 @@ RValue PPC32_SVR4_ABIInfo::EmitVAArg(CodeGenFunction &CGF, Address VAList,
   }
 
   return CGF.EmitLoadOfAnyValue(CGF.MakeAddrLValue(Result, Ty), Slot);
+}
+
+llvm::Type *PPC32_Win_ABIInfo::getPaddingType(uint64_t OrigOffset,
+                                              uint64_t Offset) const {
+  if (OrigOffset == Offset)
+    return nullptr;
+  return llvm::IntegerType::get(getVMContext(), (Offset - OrigOffset) * 8);
+}
+
+ABIArgInfo PPC32_Win_ABIInfo::classifyArgumentType(QualType Ty,
+                                                   uint64_t &Offset) const {
+  Ty = useFirstFieldIfTransparentUnion(Ty);
+
+  uint64_t OrigOffset = Offset;
+  uint64_t TySize = getContext().getTypeSize(Ty);
+
+  if (isAggregateTypeForABI(Ty)) {
+    if (TySize == 0)
+      return ABIArgInfo::getIgnore();
+
+    // Records requiring a C++ copy or destruction operation are represented
+    // by a pointer in the parameter stream. Plain C aggregates are inline.
+    if (getRecordArgABI(Ty, getCXXABI())) {
+      Offset += 4;
+      return getNaturalAlignIndirect(Ty, getDataLayout().getAllocaAddrSpace(),
+                                     /*ByVal=*/false);
+    }
+  }
+
+  // Microsoft aligns every argument of at least eight bytes to an
+  // eight-byte boundary. All smaller arguments use four-byte parameter words.
+  uint64_t Align = TySize >= 64 ? 8 : 4;
+  uint64_t CurrOffset = llvm::alignTo(Offset, Align);
+  Offset = CurrOffset + llvm::alignTo(TySize, 32) / 8;
+  llvm::Type *Padding = getPaddingType(OrigOffset, CurrOffset);
+
+  if (isAggregateTypeForABI(Ty) || Ty->isVectorType()) {
+    SmallVector<llvm::Type *, 8> ArgTys;
+    llvm::IntegerType *I32 = llvm::Type::getInt32Ty(getVMContext());
+    for (uint64_t Bits = TySize; Bits >= 32; Bits -= 32)
+      ArgTys.push_back(I32);
+    if (unsigned TailBits = TySize % 32)
+      ArgTys.push_back(llvm::IntegerType::get(getVMContext(), TailBits));
+
+    ABIArgInfo Info = ABIArgInfo::getDirect(
+        llvm::StructType::get(getVMContext(), ArgTys), 0, Padding);
+    Info.setInReg(true);
+    return Info;
+  }
+
+  if (getContext().isPromotableIntegerType(Ty))
+    return ABIArgInfo::getExtend(Ty, /*T=*/nullptr, Padding);
+  return ABIArgInfo::getDirect(/*T=*/nullptr, 0, Padding);
+}
+
+void PPC32_Win_ABIInfo::computeInfo(CGFunctionInfo &FI) const {
+  if (!getCXXABI().classifyReturnType(FI))
+    FI.getReturnInfo() = classifyReturnType(FI.getReturnType());
+
+  // An indirect result pointer is the first parameter word.
+  uint64_t Offset = FI.getReturnInfo().isIndirect() ? 4 : 0;
+  for (auto &I : FI.arguments())
+    I.info = classifyArgumentType(I.type, Offset);
+}
+
+RValue PPC32_Win_ABIInfo::EmitVAArg(CodeGenFunction &CGF, Address VAListAddr,
+                                    QualType Ty, AggValueSlot Slot) const {
+  auto TypeInfo = getContext().getTypeInfoInChars(Ty);
+  TypeInfo.Align =
+      CharUnits::fromQuantity(TypeInfo.Width.getQuantity() >= 8 ? 8 : 4);
+  return emitVoidPtrVAArg(CGF, VAListAddr, Ty, /*Indirect=*/false, TypeInfo,
+                          CharUnits::fromQuantity(4),
+                          /*AllowHigherAlign=*/true, Slot);
 }
 
 bool PPC32TargetCodeGenInfo::isStructReturnInRegABI(
