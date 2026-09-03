@@ -16,4 +16,5 @@ set(LLVM_LINK_COMPONENTS
 add_llvm_unittest(PowerPCTests
   AIXRelocModelTest.cpp
   PPCABIKindTest.cpp
+  PPCWin32ABIInfoTest.cpp
   )
