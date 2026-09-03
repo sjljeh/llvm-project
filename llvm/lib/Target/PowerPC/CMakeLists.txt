@@ -52,6 +52,7 @@ add_llvm_target(PowerPCCodeGen
   PPCTOCRegDeps.cpp
   PPCTLSDynamicCall.cpp
   PPCVSXWACCCopy.cpp
+  PPCWin32ABIInfo.cpp
   PPCReduceCRLogicals.cpp
   PPCVSXFMAMutate.cpp
   PPCVSXSwapRemoval.cpp

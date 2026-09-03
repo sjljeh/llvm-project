@@ -17,6 +17,7 @@
 #include "PPCMachineFunctionInfo.h"
 #include "PPCSubtarget.h"
 #include "PPCTargetMachine.h"
+#include "PPCWin32ABIInfo.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/CodeGen/Analysis.h"
 #include "llvm/CodeGen/LivePhysRegs.h"
@@ -44,6 +45,8 @@ EnablePEVectorSpills("ppc-enable-pe-vector-spills",
                      cl::init(false), cl::Hidden);
 
 static unsigned computeReturnSaveOffset(const PPCSubtarget &STI) {
+  if (STI.isWin32ABI())
+    return PPCWin32ABIInfo::ReturnSaveOffset;
   if (STI.isAIXABI())
     return STI.isPPC64() ? 16 : 8;
   // SVR4 ABI:
@@ -52,7 +55,7 @@ static unsigned computeReturnSaveOffset(const PPCSubtarget &STI) {
 
 static unsigned computeTOCSaveOffset(const PPCSubtarget &STI) {
   if (STI.isWin32ABI())
-    return 8;
+    return PPCWin32ABIInfo::TOCSaveOffset;
   if (STI.isAIXABI())
     return STI.isPPC64() ? 40 : 20;
   return STI.isELFv2ABI() ? 24 : 40;
@@ -65,7 +68,7 @@ static unsigned computeFramePointerSaveOffset(const PPCSubtarget &STI) {
 
 static unsigned computeLinkageSize(const PPCSubtarget &STI) {
   if (STI.isWin32ABI())
-    return 56;
+    return PPCWin32ABIInfo::MinimumFrameSize;
   if (STI.isAIXABI() || STI.isPPC64())
     return (STI.isELFv2ABI() ? 4 : 6) * (STI.isPPC64() ? 8 : 4);
 
