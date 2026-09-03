@@ -15,6 +15,7 @@
 #include "PPC.h"
 #include "PPCMachineFunctionInfo.h"
 #include "PPCSubtarget.h"
+#include "PPCTargetMachine.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/CodeGen/AsmPrinter.h"
@@ -31,11 +32,6 @@
 #include "llvm/Target/TargetLoweringObjectFile.h"
 #include "llvm/TargetParser/Triple.h"
 using namespace llvm;
-
-static bool isPPCWinCOFFABI(const Triple &TT) {
-  return TT.isOSBinFormatCOFF() &&
-         (TT.getArch() == Triple::ppc || TT.getArch() == Triple::ppcle);
-}
 
 static bool isDirectCallLikeOpcode(unsigned Opcode) {
   switch (Opcode) {
@@ -73,8 +69,8 @@ static MCSymbol *getPPCWinCOFFEntryPointSymbol(const MachineOperand &MO,
 static MCSymbol *GetSymbolFromOperand(const MachineOperand &MO,
                                       AsmPrinter &AP) {
   const MachineInstr *MI = MO.getParent();
-  if (MI && isPPCWinCOFFABI(AP.TM.getTargetTriple()) &&
-      isDirectCallLikeOpcode(MI->getOpcode()))
+  const auto &TM = static_cast<const PPCTargetMachine &>(AP.TM);
+  if (MI && TM.isWin32ABI() && isDirectCallLikeOpcode(MI->getOpcode()))
     return getPPCWinCOFFEntryPointSymbol(MO, AP);
 
   if (MO.isGlobal()) {

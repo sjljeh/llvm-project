@@ -215,6 +215,28 @@ PPCABI PPCTargetMachine::computeABI(const Triple &TT, StringRef ABIName) {
   }
 }
 
+// AIX, Windows and Darwin are selected by the triple alone; the ELF variants
+// additionally honor an explicit ABI name.
+PPCABIKind PPCTargetMachine::computeABIKind(const Triple &TT,
+                                            StringRef ABIName) {
+  if (TT.isOSAIX())
+    return PPCABIKind::AIX;
+  if (TT.isOSBinFormatCOFF() &&
+      (TT.getArch() == Triple::ppc || TT.getArch() == Triple::ppcle))
+    return PPCABIKind::Win32;
+  if (TT.isOSBinFormatMachO())
+    return PPCABIKind::Darwin;
+
+  switch (computeABI(TT, ABIName)) {
+  case PPC_ABI_ELFv1:
+    return PPCABIKind::ELF64v1;
+  case PPC_ABI_ELFv2:
+    return PPCABIKind::ELF64v2;
+  default:
+    return PPCABIKind::ELF32;
+  }
+}
+
 static Reloc::Model getEffectiveRelocModel(const Triple &TT,
                                            std::optional<Reloc::Model> RM) {
   if (TT.isOSAIX() && RM && *RM != Reloc::PIC_)

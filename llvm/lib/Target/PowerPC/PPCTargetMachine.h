@@ -70,6 +70,18 @@ public:
   /// flag), falling back to the triple default.
   static PPCABI computeABI(const Triple &TT, StringRef ABIName);
 
+  /// Classify the platform ABI for \p TT and \p ABIName. Only the ELF64
+  /// variants depend on \p ABIName.
+  static PPCABIKind computeABIKind(const Triple &TT, StringRef ABIName);
+
+  /// Whether the triple selects the AIX or Windows NT ABI. Unlike the ELF
+  /// variants these do not depend on the per-function ABI name.
+  bool isAIXABI() const {
+    return computeABIKind(getTargetTriple(), "") == PPCABIKind::AIX;
+  }
+  bool isWin32ABI() const {
+    return computeABIKind(getTargetTriple(), "") == PPCABIKind::Win32;
+  }
   bool hasGlibcHWCAPAccess() const { return HasGlibcHWCAPAccess; }
   void setGlibcHWCAPAccess(bool Val = true) const { HasGlibcHWCAPAccess = Val; }
   bool isPPC64() const { return getTargetTriple().isPPC64(); }

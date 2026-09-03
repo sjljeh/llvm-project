@@ -6114,7 +6114,8 @@ void PPCDAGToDAGISel::Select(SDNode *N) {
   }
   case PPCISD::TOC_ENTRY: {
     const bool isPPC64 = Subtarget->isPPC64();
-    const bool isELFABI = Subtarget->isSVR4ABI();
+    const bool UsesSVR4RegisterConvention =
+        Subtarget->usesSVR4RegisterConvention();
     const bool isAIXABI = Subtarget->isAIXABI();
 
     // PowerPC only support small, medium and large code model.
@@ -6152,7 +6153,7 @@ void PPCDAGToDAGISel::Select(SDNode *N) {
     if (!isPPC64 && CModel == CodeModel::Small) {
       // Transforms the ISD::TOC_ENTRY node to passed in Opcode, either
       // PPC::ADDItoc, or PPC::LWZtoc
-      if (isELFABI) {
+      if (UsesSVR4RegisterConvention) {
         assert(TM.isPositionIndependent() &&
                "32-bit ELF can only have TOC entries in position independent"
                " code.");
@@ -6161,7 +6162,7 @@ void PPCDAGToDAGISel::Select(SDNode *N) {
         return;
       }
 
-      assert(isAIXABI && "ELF ABI already handled");
+      assert(isAIXABI && "SVR4 register convention already handled");
 
       if (hasTocDataAttr(N->getOperand(0))) {
         replaceWith(PPC::ADDItoc, N, MVT::i32);
@@ -6242,7 +6243,7 @@ void PPCDAGToDAGISel::Select(SDNode *N) {
   }
   case PPCISD::PPC32_PICGOT:
     // Generate a PIC-safe GOT reference.
-    assert(Subtarget->is32BitELFABI() &&
+    assert(Subtarget->usesPPC32SVR4RegisterConvention() &&
            "PPCISD::PPC32_PICGOT is only supported for 32-bit SVR4");
     CurDAG->SelectNodeTo(N, PPC::PPC32PICGOT,
                          PPCLowering->getPointerTy(CurDAG->getDataLayout()),

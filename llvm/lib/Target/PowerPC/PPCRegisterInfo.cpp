@@ -412,7 +412,7 @@ BitVector PPCRegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   const PPCFunctionInfo *FuncInfo = MF.getInfo<PPCFunctionInfo>();
   bool UsesTOCBasePtr = FuncInfo->usesTOCBasePtr();
   // The SVR4 ABI reserves r2 and r13
-  if (Subtarget.isSVR4ABI() || Subtarget.isAIXABI()) {
+  if (Subtarget.usesSVR4RegisterConvention() || Subtarget.isAIXABI()) {
     // We only reserve r2 if we need to use the TOC pointer. If we have no
     // explicit uses of the TOC pointer (meaning we're a leaf function with
     // no constant-pool loads, etc.) and we have no potential uses inside an
@@ -421,7 +421,7 @@ BitVector PPCRegisterInfo::getReservedRegs(const MachineFunction &MF) const {
     if (!TM.isPPC64() || UsesTOCBasePtr || MF.hasInlineAsm())
       markSuperRegs(Reserved, PPC::R2); // System-reserved register.
 
-    if (Subtarget.isSVR4ABI())
+    if (Subtarget.usesSVR4RegisterConvention())
       markSuperRegs(Reserved, PPC::R13); // Small Data Area pointer register.
   }
 
@@ -434,13 +434,13 @@ BitVector PPCRegisterInfo::getReservedRegs(const MachineFunction &MF) const {
 
   bool IsPositionIndependent = TM.isPositionIndependent();
   if (hasBasePointer(MF)) {
-    if (Subtarget.is32BitELFABI() && IsPositionIndependent)
+    if (Subtarget.usesPPC32SVR4RegisterConvention() && IsPositionIndependent)
       markSuperRegs(Reserved, PPC::R29);
     else
       markSuperRegs(Reserved, PPC::R30);
   }
 
-  if (Subtarget.is32BitELFABI() && IsPositionIndependent)
+  if (Subtarget.usesPPC32SVR4RegisterConvention() && IsPositionIndependent)
     markSuperRegs(Reserved, PPC::R30);
 
   // Reserve Altivec registers when Altivec is unavailable.
@@ -566,7 +566,7 @@ bool PPCRegisterInfo::isCallerPreservedPhysReg(MCRegister PhysReg,
   const PPCSubtarget &Subtarget = MF.getSubtarget<PPCSubtarget>();
   const MachineFrameInfo &MFI = MF.getFrameInfo();
 
-  if (!Subtarget.is64BitELFABI() && !Subtarget.isAIXABI())
+  if (!Subtarget.usesPPC64SVR4RegisterConvention() && !Subtarget.isAIXABI())
     return false;
   if (PhysReg == Subtarget.getTOCPointerRegister())
     // X2/R2 is guaranteed to be preserved within a function if it is reserved.
@@ -1984,7 +1984,7 @@ Register PPCRegisterInfo::getBaseRegister(const MachineFunction &MF) const {
   if (TM.isPPC64())
     return PPC::X30;
 
-  if (Subtarget.isSVR4ABI() && TM.isPositionIndependent())
+  if (Subtarget.usesSVR4RegisterConvention() && TM.isPositionIndependent())
     return PPC::R29;
 
   return PPC::R30;
