@@ -8,6 +8,8 @@
 
 #include "PPCCallingConv.h"
 #include "PPCSubtarget.h"
+#include "llvm/Support/MathExtras.h"
+#include <algorithm>
 using namespace llvm;
 
 inline bool CC_PPC_AnyReg_Error(unsigned &, MVT &, MVT &,
@@ -52,6 +54,54 @@ inline bool CC_PPC64_ELF_Shadow_GPR_Regs(unsigned &ValNo, MVT &ValVT,
       State.AllocateReg(ELF64ArgGPRs);
     State.AllocateReg(ELF64ArgGPRs);
   }
+  return false;
+}
+
+bool llvm::CC_PPC32_Win(unsigned ValNo, MVT ValVT, MVT LocVT,
+                        CCValAssign::LocInfo LocInfo, ISD::ArgFlagsTy, Type *,
+                        CCState &State) {
+  static const MCPhysReg GPRs[] = {PPC::R3, PPC::R4, PPC::R5, PPC::R6,
+                                   PPC::R7, PPC::R8, PPC::R9, PPC::R10};
+  static const MCPhysReg FPRs[] = {
+      PPC::F1, PPC::F2, PPC::F3,  PPC::F4,  PPC::F5,  PPC::F6, PPC::F7,
+      PPC::F8, PPC::F9, PPC::F10, PPC::F11, PPC::F12, PPC::F13};
+  constexpr unsigned ParameterAreaOffset = 24;
+  constexpr unsigned WordSize = 4;
+
+  if (LocVT == MVT::i1) {
+    LocVT = MVT::i32;
+    LocInfo = CCValAssign::ZExt;
+  }
+
+  unsigned Size = std::max<unsigned>(LocVT.getStoreSize(), WordSize);
+  Align Alignment(Size >= 8 ? 8 : 4);
+  unsigned Offset = State.AllocateStack(Size, Alignment);
+  assert(Offset >= ParameterAreaOffset && "invalid NT parameter offset");
+
+  unsigned FirstWord = (Offset - ParameterAreaOffset) / WordSize;
+  unsigned NumWords = alignTo(Size, WordSize) / WordSize;
+  for (unsigned I = 0; I != NumWords && FirstWord + I < std::size(GPRs); ++I) {
+    MCRegister Reg = State.AllocateReg(GPRs[FirstWord + I]);
+    assert(Reg == GPRs[FirstWord + I] &&
+           "NT parameter register allocated out of position");
+    (void)Reg;
+  }
+
+  // Floating arguments use FPRs as their primary location, while the GPRs
+  // above reserve the corresponding parameter words. Variadic calls fill
+  // those GPR shadows in LowerCall_32SVR4.
+  if (LocVT == MVT::f32 || LocVT == MVT::f64) {
+    if (MCRegister Reg = State.AllocateReg(FPRs)) {
+      State.addLoc(CCValAssign::getReg(ValNo, ValVT, Reg, LocVT, LocInfo));
+      return false;
+    }
+  } else if (Size == WordSize && FirstWord < std::size(GPRs)) {
+    State.addLoc(
+        CCValAssign::getReg(ValNo, ValVT, GPRs[FirstWord], LocVT, LocInfo));
+    return false;
+  }
+
+  State.addLoc(CCValAssign::getMem(ValNo, ValVT, Offset, LocVT, LocInfo));
   return false;
 }
 
