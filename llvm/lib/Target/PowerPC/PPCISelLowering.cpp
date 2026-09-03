@@ -649,7 +649,7 @@ PPCTargetLowering::PPCTargetLowering(const PPCTargetMachine &TM,
   // VASTART needs to be custom lowered to use the VarArgsFrameIndex
   setOperationAction(ISD::VASTART           , MVT::Other, Custom);
 
-  if (Subtarget.is64BitELFABI()) {
+  if (Subtarget.usesPPC64SVR4RegisterConvention()) {
     // VAARG always uses double-word chunks, so promote anything smaller.
     setOperationAction(ISD::VAARG, MVT::i1, Promote);
     AddPromotedToType(ISD::VAARG, MVT::i1, MVT::i64);
@@ -660,7 +660,7 @@ PPCTargetLowering::PPCTargetLowering(const PPCTargetMachine &TM,
     setOperationAction(ISD::VAARG, MVT::i32, Promote);
     AddPromotedToType(ISD::VAARG, MVT::i32, MVT::i64);
     setOperationAction(ISD::VAARG, MVT::Other, Expand);
-  } else if (Subtarget.is32BitELFABI()) {
+  } else if (Subtarget.usesPPC32SVR4RegisterConvention()) {
     // VAARG is custom lowered with the 32-bit SVR4 ABI.
     setOperationAction(ISD::VAARG, MVT::Other, Custom);
     setOperationAction(ISD::VAARG, MVT::i64, Custom);
@@ -668,7 +668,7 @@ PPCTargetLowering::PPCTargetLowering(const PPCTargetMachine &TM,
     setOperationAction(ISD::VAARG, MVT::Other, Expand);
 
   // VACOPY is custom lowered with the 32-bit SVR4 ABI.
-  if (Subtarget.is32BitELFABI())
+  if (Subtarget.usesPPC32SVR4RegisterConvention())
     setOperationAction(ISD::VACOPY            , MVT::Other, Custom);
   else
     setOperationAction(ISD::VACOPY            , MVT::Other, Expand);
@@ -701,7 +701,7 @@ PPCTargetLowering::PPCTargetLowering(const PPCTargetMachine &TM,
   setOperationAction(ISD::INTRINSIC_WO_CHAIN, MVT::ppcf128, Custom);
   setOperationAction(ISD::INTRINSIC_WO_CHAIN, MVT::v4f32, Custom);
   setOperationAction(ISD::INTRINSIC_WO_CHAIN, MVT::v2f64, Custom);
-  if (Subtarget.isPPCWinCOFFABI())
+  if (Subtarget.isWin32ABI())
     setOperationAction(ISD::INTRINSIC_WO_CHAIN, MVT::i32, Custom);
 
   // To handle counter-based loop conditions.
@@ -3090,7 +3090,7 @@ SDValue PPCTargetLowering::LowerConstantPool(SDValue Op,
 
   // 64-bit SVR4 ABI and AIX ABI code are always position-independent.
   // The actual address of the GlobalValue is stored in the TOC.
-  if (Subtarget.is64BitELFABI() || Subtarget.isAIXABI()) {
+  if (Subtarget.usesPPC64SVR4RegisterConvention() || Subtarget.isAIXABI()) {
     if (Subtarget.isUsingPCRelativeCalls()) {
       SDLoc DL(CP);
       EVT Ty = getPointerTy(DAG.getDataLayout());
@@ -3107,7 +3107,7 @@ SDValue PPCTargetLowering::LowerConstantPool(SDValue Op,
   bool IsPIC = isPositionIndependent();
   getLabelAccessInfo(IsPIC, Subtarget, MOHiFlag, MOLoFlag);
 
-  if (IsPIC && Subtarget.isSVR4ABI()) {
+  if (IsPIC && Subtarget.usesSVR4RegisterConvention()) {
     SDValue GA =
         DAG.getTargetConstantPool(C, PtrVT, CP->getAlign(), PPCII::MO_PIC_FLAG);
     return getTOCEntry(DAG, SDLoc(CP), GA);
@@ -3185,7 +3185,7 @@ SDValue PPCTargetLowering::LowerJumpTable(SDValue Op, SelectionDAG &DAG) const {
 
   // 64-bit SVR4 ABI and AIX ABI code are always position-independent.
   // The actual address of the GlobalValue is stored in the TOC.
-  if (Subtarget.is64BitELFABI() || Subtarget.isAIXABI()) {
+  if (Subtarget.usesPPC64SVR4RegisterConvention() || Subtarget.isAIXABI()) {
     setUsesTOCBasePtr(DAG);
     SDValue GA = DAG.getTargetJumpTable(JT->getIndex(), PtrVT);
     return getTOCEntry(DAG, SDLoc(JT), GA);
@@ -3195,7 +3195,7 @@ SDValue PPCTargetLowering::LowerJumpTable(SDValue Op, SelectionDAG &DAG) const {
   bool IsPIC = isPositionIndependent();
   getLabelAccessInfo(IsPIC, Subtarget, MOHiFlag, MOLoFlag);
 
-  if (IsPIC && Subtarget.isSVR4ABI()) {
+  if (IsPIC && Subtarget.usesSVR4RegisterConvention()) {
     SDValue GA = DAG.getTargetJumpTable(JT->getIndex(), PtrVT,
                                         PPCII::MO_PIC_FLAG);
     return getTOCEntry(DAG, SDLoc(GA), GA);
@@ -3224,14 +3224,14 @@ SDValue PPCTargetLowering::LowerBlockAddress(SDValue Op,
 
   // 64-bit SVR4 ABI and AIX ABI code are always position-independent.
   // The actual BlockAddress is stored in the TOC.
-  if (Subtarget.is64BitELFABI() || Subtarget.isAIXABI()) {
+  if (Subtarget.usesPPC64SVR4RegisterConvention() || Subtarget.isAIXABI()) {
     setUsesTOCBasePtr(DAG);
     SDValue GA = DAG.getTargetBlockAddress(BA, PtrVT, BASDN->getOffset());
     return getTOCEntry(DAG, SDLoc(BASDN), GA);
   }
 
   // 32-bit position-independent ELF stores the BlockAddress in the .got.
-  if (Subtarget.is32BitELFABI() && isPositionIndependent())
+  if (Subtarget.usesPPC32SVR4RegisterConvention() && isPositionIndependent())
     return getTOCEntry(
         DAG, SDLoc(BASDN),
         DAG.getTargetBlockAddress(BA, PtrVT, BASDN->getOffset()));
@@ -3579,7 +3579,7 @@ SDValue PPCTargetLowering::LowerGlobalAddress(SDValue Op,
 
   // 64-bit SVR4 ABI & AIX ABI code is always position-independent.
   // The actual address of the GlobalValue is stored in the TOC.
-  if (Subtarget.is64BitELFABI() || Subtarget.isAIXABI()) {
+  if (Subtarget.usesPPC64SVR4RegisterConvention() || Subtarget.isAIXABI()) {
     if (Subtarget.isUsingPCRelativeCalls()) {
       EVT Ty = getPointerTy(DAG.getDataLayout());
       if (isAccessedAsGotIndirect(Op)) {
@@ -3604,7 +3604,7 @@ SDValue PPCTargetLowering::LowerGlobalAddress(SDValue Op,
   bool IsPIC = isPositionIndependent();
   getLabelAccessInfo(IsPIC, Subtarget, MOHiFlag, MOLoFlag, GV);
 
-  if (IsPIC && Subtarget.isSVR4ABI()) {
+  if (IsPIC && Subtarget.usesSVR4RegisterConvention()) {
     SDValue GA = DAG.getTargetGlobalAddress(GV, DL, PtrVT,
                                             GSDN->getOffset(),
                                             PPCII::MO_PIC_FLAG);
@@ -3990,7 +3990,7 @@ SDValue PPCTargetLowering::LowerVASTART(SDValue Op, SelectionDAG &DAG) const {
   SDLoc dl(Op);
 
   if (Subtarget.isPPC64() || Subtarget.isAIXABI() ||
-      Subtarget.isPPCWinCOFFABI()) {
+      Subtarget.usesWindowsVarArgs()) {
     // vastart just stores the address of the VarArgsFrameIndex slot into the
     // memory location argument.
     SDValue FR = DAG.getFrameIndex(FuncInfo->getVarArgsFrameIndex(), PtrVT);
@@ -4193,10 +4193,10 @@ SDValue PPCTargetLowering::LowerFormalArguments(
   if (Subtarget.isAIXABI())
     return LowerFormalArguments_AIX(Chain, CallConv, isVarArg, Ins, dl, DAG,
                                     InVals);
-  if (Subtarget.is64BitELFABI())
+  if (Subtarget.usesPPC64SVR4RegisterConvention())
     return LowerFormalArguments_64SVR4(Chain, CallConv, isVarArg, Ins, dl, DAG,
                                        InVals);
-  assert(Subtarget.is32BitELFABI());
+  assert(Subtarget.usesPPC32SVR4RegisterConvention());
   return LowerFormalArguments_32SVR4(Chain, CallConv, isVarArg, Ins, dl, DAG,
                                      InVals);
 }
@@ -4238,7 +4238,7 @@ SDValue PPCTargetLowering::LowerFormalArguments_32SVR4(
   MachineFunction &MF = DAG.getMachineFunction();
   MachineFrameInfo &MFI = MF.getFrameInfo();
   PPCFunctionInfo *FuncInfo = MF.getInfo<PPCFunctionInfo>();
-  const bool IsWin = Subtarget.isPPCWinCOFFABI();
+  const bool IsWin = Subtarget.usesWindowsCallingConvention();
 
   EVT PtrVT = getPointerTy(MF.getDataLayout());
   // Potential tail calls could cause overwriting of argument stack slots.
@@ -4964,7 +4964,7 @@ static bool callsShareTOCBase(const Function *Caller,
 static bool
 needStackSlotPassParameters(const PPCSubtarget &Subtarget,
                             const SmallVectorImpl<ISD::OutputArg> &Outs) {
-  assert(Subtarget.is64BitELFABI());
+  assert(Subtarget.usesPPC64SVR4RegisterConvention());
 
   const unsigned PtrByteSize = 8;
   const unsigned LinkageSize = Subtarget.getFrameLowering()->getLinkageSize();
@@ -5352,10 +5352,10 @@ SDValue PPCTargetLowering::LowerCallResult(
   CCState CCRetInfo(CallConv, isVarArg, DAG.getMachineFunction(), RVLocs,
                     *DAG.getContext());
 
-  CCRetInfo.AnalyzeCallResult(
-      Ins, (Subtarget.isSVR4ABI() && CallConv == CallingConv::Cold)
-               ? RetCC_PPC_Cold
-               : RetCC_PPC);
+  CCRetInfo.AnalyzeCallResult(Ins, (Subtarget.usesSVR4RegisterConvention() &&
+                                    CallConv == CallingConv::Cold)
+                                       ? RetCC_PPC_Cold
+                                       : RetCC_PPC);
 
   // Copy all of the result registers out of their specified physreg.
   for (unsigned i = 0, e = RVLocs.size(); i != e; ++i) {
@@ -5432,10 +5432,10 @@ static bool isIndirectCall(const SDValue &Callee, SelectionDAG &DAG,
   return true;
 }
 
-// AIX and 64-bit ELF ABIs w/o PCRel require a TOC save/restore around calls.
+// Descriptor ABIs and 64-bit ELF without PC-relative calls require a TOC
+// save/restore around calls.
 static inline bool isTOCSaveRestoreRequired(const PPCSubtarget &Subtarget) {
-  return Subtarget.isAIXABI() || Subtarget.isPPCWinCOFFABI() ||
-         (Subtarget.is64BitELFABI() && !Subtarget.isUsingPCRelativeCalls());
+  return Subtarget.usesTOCBase() && !Subtarget.isUsingPCRelativeCalls();
 }
 
 static unsigned getCallOpcode(PPCTargetLowering::CallFlags CFlags,
@@ -5463,9 +5463,11 @@ static unsigned getCallOpcode(PPCTargetLowering::CallFlags CFlags,
       RetOpc = isTOCSaveRestoreRequired(Subtarget) ? PPCISD::BCTRL_LOAD_TOC
                                                    : PPCISD::BCTRL;
   } else if (Subtarget.isUsingPCRelativeCalls()) {
-    assert(Subtarget.is64BitELFABI() && "PC Relative is only on ELF ABI.");
+    assert(Subtarget.usesPPC64SVR4RegisterConvention() &&
+           "PC Relative is only on ELF ABI.");
     RetOpc = PPCISD::CALL_NOTOC;
-  } else if (Subtarget.isAIXABI() || Subtarget.is64BitELFABI()) {
+  } else if (Subtarget.isAIXABI() ||
+             Subtarget.usesPPC64SVR4RegisterConvention()) {
     // The ABIs that maintain a TOC pointer accross calls need to have a nop
     // immediately following the call instruction if the caller and callee may
     // have different TOC bases. At link time if the linker determines the calls
@@ -5527,7 +5529,7 @@ static SDValue transformCallee(const SDValue &Callee, SelectionDAG &DAG,
   // least) to force BSS-PLT, instead of secure-PLT, even if all objects are
   // built with secure-PLT.
   bool UsePlt =
-      Subtarget.is32BitELFABI() && !isLocalCallee() &&
+      Subtarget.usesPPC32SVR4RegisterConvention() && !isLocalCallee() &&
       Subtarget.getTargetMachine().getRelocationModel() == Reloc::PIC_;
 
   const auto getAIXFuncEntryPointSymbolSDNode = [&](const GlobalValue *GV) {
@@ -5651,7 +5653,8 @@ static void prepareDescriptorIndirectCall(SelectionDAG &DAG, SDValue &Callee,
 
   MachinePointerInfo MPI(CB ? CB->getCalledOperand() : nullptr);
 
-  const bool HasEnvironmentPointer = !Subtarget.isPPCWinCOFFABI();
+  const bool HasEnvironmentPointer =
+      Subtarget.functionDescriptorHasEnvironmentPointer();
 
   // Registers used in building the DAG.
   const MCRegister TOCReg = Subtarget.getTOCPointerRegister();
@@ -5765,8 +5768,7 @@ buildCallOperands(SmallVectorImpl<SDValue> &Ops,
     }
 
     // Add the register used for the environment pointer.
-    if (Subtarget.usesFunctionDescriptors() &&
-        !Subtarget.isPPCWinCOFFABI() && !CFlags.HasNest)
+    if (Subtarget.functionDescriptorHasEnvironmentPointer() && !CFlags.HasNest)
       Ops.push_back(DAG.getRegister(Subtarget.getEnvironmentPointerRegister(),
                                     RegVT));
 
@@ -5788,14 +5790,13 @@ buildCallOperands(SmallVectorImpl<SDValue> &Ops,
   // We cannot add R2/X2 as an operand here for PATCHPOINT, because there is
   // no way to mark dependencies as implicit here.
   // We will add the R2/X2 dependency in EmitInstrWithCustomInserter.
-  if ((Subtarget.is64BitELFABI() || Subtarget.isAIXABI() ||
-       Subtarget.isPPCWinCOFFABI()) &&
-       !CFlags.IsPatchPoint && !Subtarget.isUsingPCRelativeCalls())
+  if (Subtarget.usesTOCBase() && !CFlags.IsPatchPoint &&
+      !Subtarget.isUsingPCRelativeCalls())
     Ops.push_back(DAG.getRegister(Subtarget.getTOCPointerRegister(), RegVT));
 
   // Add implicit use of CR bit 6 for 32-bit SVR4 vararg calls.
-  if (CFlags.IsVarArg && Subtarget.is32BitELFABI() &&
-      !Subtarget.isPPCWinCOFFABI())
+  if (CFlags.IsVarArg && Subtarget.usesPPC32SVR4RegisterConvention() &&
+      !Subtarget.usesWindowsVarArgs())
     Ops.push_back(DAG.getRegister(PPC::CR1EQ, MVT::i32));
 
   // Add a register mask operand representing the call-preserved registers.
@@ -5817,8 +5818,7 @@ SDValue PPCTargetLowering::FinishCall(
     unsigned NumBytes, const SmallVectorImpl<ISD::InputArg> &Ins,
     SmallVectorImpl<SDValue> &InVals, const CallBase *CB) const {
 
-  if ((Subtarget.is64BitELFABI() && !Subtarget.isUsingPCRelativeCalls()) ||
-      Subtarget.isAIXABI() || Subtarget.isPPCWinCOFFABI())
+  if (Subtarget.usesTOCBase() && !Subtarget.isUsingPCRelativeCalls())
     setUsesTOCBasePtr(DAG);
 
   unsigned CallOpc =
@@ -5919,7 +5919,7 @@ bool PPCTargetLowering::isEligibleForTCO(
   if (Subtarget.useLongCalls() && !(CB && CB->isMustTailCall()))
     return false;
 
-  if (Subtarget.isSVR4ABI() && Subtarget.isPPC64())
+  if (Subtarget.usesSVR4RegisterConvention() && Subtarget.isPPC64())
     return IsEligibleForTailCallOptimization_64SVR4(
         CalleeGV, CalleeCC, CallerCC, CB, isVarArg, Outs, Ins, CallerFunc,
         isCalleeExternalSymbol);
@@ -5990,7 +5990,7 @@ PPCTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
       CallConv, isTailCall, isVarArg, isPatchPoint,
       isIndirectCall(Callee, DAG, Subtarget, isPatchPoint),
       // hasNest
-      Subtarget.is64BitELFABI() &&
+      Subtarget.usesPPC64SVR4RegisterConvention() &&
           any_of(Outs, [](ISD::OutputArg Arg) { return Arg.Flags.isNest(); }),
       CLI.NoMerge);
 
@@ -5998,7 +5998,7 @@ PPCTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
     return LowerCall_AIX(Chain, Callee, CFlags, Outs, OutVals, Ins, dl, DAG,
                          InVals, CB);
 
-  assert(Subtarget.isSVR4ABI());
+  assert(Subtarget.usesSVR4RegisterConvention());
   if (Subtarget.isPPC64())
     return LowerCall_64SVR4(Chain, Callee, CFlags, Outs, OutVals, Ins, dl, DAG,
                             InVals, CB);
@@ -6019,7 +6019,7 @@ SDValue PPCTargetLowering::LowerCall_32SVR4(
   const CallingConv::ID CallConv = CFlags.CallConv;
   const bool IsVarArg = CFlags.IsVarArg;
   const bool IsTailCall = CFlags.IsTailCall;
-  const bool IsWin = Subtarget.isPPCWinCOFFABI();
+  const bool IsWin = Subtarget.usesWindowsCallingConvention();
 
   assert((CallConv == CallingConv::C ||
           CallConv == CallingConv::Cold ||
@@ -6268,7 +6268,7 @@ SDValue PPCTargetLowering::LowerCall_32SVR4(
   if (!MemOpChains.empty())
     Chain = DAG.getNode(ISD::TokenFactor, dl, MVT::Other, MemOpChains);
 
-  if (CFlags.IsIndirect && Subtarget.isPPCWinCOFFABI()) {
+  if (CFlags.IsIndirect && Subtarget.isWin32ABI()) {
     const unsigned TOCSaveOffset =
         Subtarget.getFrameLowering()->getTOCSaveOffset();
     setUsesTOCBasePtr(DAG);
@@ -7992,10 +7992,10 @@ PPCTargetLowering::CanLowerReturn(CallingConv::ID CallConv,
                                   const Type *RetTy) const {
   SmallVector<CCValAssign, 16> RVLocs;
   CCState CCInfo(CallConv, isVarArg, MF, RVLocs, Context);
-  return CCInfo.CheckReturn(
-      Outs, (Subtarget.isSVR4ABI() && CallConv == CallingConv::Cold)
-                ? RetCC_PPC_Cold
-                : RetCC_PPC);
+  return CCInfo.CheckReturn(Outs, (Subtarget.usesSVR4RegisterConvention() &&
+                                   CallConv == CallingConv::Cold)
+                                      ? RetCC_PPC_Cold
+                                      : RetCC_PPC);
 }
 
 SDValue
@@ -8007,10 +8007,10 @@ PPCTargetLowering::LowerReturn(SDValue Chain, CallingConv::ID CallConv,
   SmallVector<CCValAssign, 16> RVLocs;
   CCState CCInfo(CallConv, isVarArg, DAG.getMachineFunction(), RVLocs,
                  *DAG.getContext());
-  CCInfo.AnalyzeReturn(Outs,
-                       (Subtarget.isSVR4ABI() && CallConv == CallingConv::Cold)
-                           ? RetCC_PPC_Cold
-                           : RetCC_PPC);
+  CCInfo.AnalyzeReturn(Outs, (Subtarget.usesSVR4RegisterConvention() &&
+                              CallConv == CallingConv::Cold)
+                                 ? RetCC_PPC_Cold
+                                 : RetCC_PPC);
 
   SDValue Glue;
   SmallVector<SDValue, 4> RetOps(1, Chain);
@@ -13262,7 +13262,7 @@ void PPCTargetLowering::ReplaceNodeResults(SDNode *N,
     break;
   }
   case ISD::VAARG: {
-    if (!Subtarget.isSVR4ABI() || Subtarget.isPPC64())
+    if (!Subtarget.usesSVR4RegisterConvention() || Subtarget.isPPC64())
       return;
 
     EVT VT = N->getValueType(0);
@@ -13910,7 +13910,7 @@ PPCTargetLowering::emitEHSjLjSetJmp(MachineInstr &MI,
   Register LabelReg = MRI.createVirtualRegister(PtrRC);
   Register BufReg = MI.getOperand(1).getReg();
 
-  if (Subtarget.is64BitELFABI()) {
+  if (Subtarget.usesPPC64SVR4RegisterConvention()) {
     setUsesTOCBasePtr(*MBB->getParent());
     MIB = BuildMI(*thisMBB, MI, DL, TII->get(PPC::STD))
               .addReg(PPC::X2)
@@ -13999,11 +13999,11 @@ PPCTargetLowering::emitEHSjLjLongJmp(MachineInstr &MI,
   // Since FP is only updated here but NOT referenced, it's treated as GPR.
   unsigned FP  = (PVT == MVT::i64) ? PPC::X31 : PPC::R31;
   unsigned SP  = (PVT == MVT::i64) ? PPC::X1 : PPC::R1;
-  unsigned BP =
-      (PVT == MVT::i64)
-          ? PPC::X30
-          : (Subtarget.isSVR4ABI() && isPositionIndependent() ? PPC::R29
-                                                              : PPC::R30);
+  unsigned BP = (PVT == MVT::i64) ? PPC::X30
+                                  : (Subtarget.usesSVR4RegisterConvention() &&
+                                             isPositionIndependent()
+                                         ? PPC::R29
+                                         : PPC::R30);
 
   MachineInstrBuilder MIB;
 
@@ -14065,7 +14065,7 @@ PPCTargetLowering::emitEHSjLjLongJmp(MachineInstr &MI,
   MIB.cloneMemRefs(MI);
 
   // Reload TOC
-  if (PVT == MVT::i64 && Subtarget.isSVR4ABI()) {
+  if (PVT == MVT::i64 && Subtarget.usesSVR4RegisterConvention()) {
     setUsesTOCBasePtr(*MBB->getParent());
     MIB = BuildMI(*MBB, MI, DL, TII->get(PPC::LD), PPC::X2)
               .addImm(TOCOffset)
@@ -14743,7 +14743,8 @@ PPCTargetLowering::EmitInstrWithCustomInserter(MachineInstr &MI,
     // way to mark the dependence as implicit there, and so the stackmap code
     // will confuse it with a regular operand. Instead, add the dependence
     // here.
-    if (Subtarget.is64BitELFABI() && !Subtarget.isUsingPCRelativeCalls())
+    if (Subtarget.usesPPC64SVR4RegisterConvention() &&
+        !Subtarget.isUsingPCRelativeCalls())
       MI.addOperand(MachineOperand::CreateReg(PPC::X2, false, true));
     return emitPatchPoint(MI, BB);
 
@@ -19464,7 +19465,7 @@ Register PPCTargetLowering::getRegisterByName(const char *RegName, LLT VT,
 
 bool PPCTargetLowering::isAccessedAsGotIndirect(SDValue GA) const {
   // 32-bit SVR4 ABI access everything as got-indirect.
-  if (Subtarget.is32BitELFABI())
+  if (Subtarget.usesPPC32SVR4RegisterConvention())
     return true;
 
   // AIX accesses everything indirectly through the TOC, which is similar to
@@ -20584,7 +20585,7 @@ SDValue PPCTargetLowering::combineFMALike(SDNode *N,
 
 bool PPCTargetLowering::mayBeEmittedAsTailCall(const CallInst *CI) const {
   // Only duplicate to increase tail-calls for the 64bit SysV ABIs.
-  if (!Subtarget.is64BitELFABI())
+  if (!Subtarget.usesPPC64SVR4RegisterConvention())
     return false;
 
   // If not a tail call then no need to proceed.
