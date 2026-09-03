@@ -21,6 +21,7 @@
 #include "COFFLinkerContext.h"
 #include "Chunks.h"
 #include "SymbolTable.h"
+#include "Target.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Object/COFF.h"
 #include "llvm/Support/Endian.h"
