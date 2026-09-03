@@ -1,0 +1,143 @@
+# RUN: split-file %s %t
+# RUN: yaml2obj %t/mips.yaml -o %t.mips.obj
+# RUN: not lld-link /machine:mips /entry:entry /subsystem:native /nodefaultlib \
+# RUN:   /fixed /out:%t.mips.exe %t.mips.obj 2>&1 | FileCheck %s --check-prefix=MIPS
+# RUN: yaml2obj %t/ppc.yaml -o %t.ppc.obj
+# RUN: not lld-link /machine:ppc /entry:entry /subsystem:native /nodefaultlib \
+# RUN:   /fixed /out:%t.ppc.exe %t.ppc.obj 2>&1 | FileCheck %s --check-prefix=PPC
+# RUN: yaml2obj %t/alpha.yaml -o %t.alpha.obj
+# RUN: not lld-link /machine:alpha /entry:entry /subsystem:native /nodefaultlib \
+# RUN:   /fixed /out:%t.alpha.exe %t.alpha.obj 2>&1 | FileCheck %s --check-prefix=ALPHA
+# RUN: yaml2obj %t/alpha64.yaml -o %t.alpha64.obj
+# RUN: not lld-link /machine:alpha64 /entry:entry /subsystem:native /nodefaultlib \
+# RUN:   /fixed /out:%t.alpha64.exe %t.alpha64.obj 2>&1 | FileCheck %s --check-prefix=ALPHA
+
+# MIPS: lld-link: error: MIPS HI16 relocation without matching PAIR relocation in {{.*}}mips.obj
+# PPC: lld-link: error: PowerPC HI16 relocation without matching PAIR relocation in {{.*}}ppc.obj
+# ALPHA: lld-link: error: Alpha REFHI relocation without matching PAIR relocation in {{.*}}alpha{{(64)?}}.obj
+# ALPHA: lld-link: error: Alpha REFQ relocation without matching PAIR relocation in {{.*}}alpha{{(64)?}}.obj
+
+#--- mips.yaml
+--- !COFF
+header:
+  Machine:         IMAGE_FILE_MACHINE_R4000
+  Characteristics: []
+sections:
+  - Name:            .text
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     0000000000000000
+    Relocations:
+      - VirtualAddress:  0
+        SymbolName:      target
+        Type:            IMAGE_REL_MIPS_REFHI
+symbols:
+  - Name:            entry
+    Value:           4
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_FUNCTION
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+  - Name:            target
+    Value:           4
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+...
+
+#--- ppc.yaml
+--- !COFF
+header:
+  Machine:         IMAGE_FILE_MACHINE_POWERPC
+  Characteristics: []
+sections:
+  - Name:            .text
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     0000000000000000
+    Relocations:
+      - VirtualAddress:  0
+        SymbolName:      target
+        Type:            272 # IMAGE_REL_PPC_REFHI | IMAGE_REL_PPC_NEG
+      - VirtualAddress:  0
+        SymbolTableIndex: 65535
+        Type:            274 # IMAGE_REL_PPC_PAIR | IMAGE_REL_PPC_NEG
+symbols:
+  - Name:            entry
+    Value:           4
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_FUNCTION
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+  - Name:            target
+    Value:           4
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+...
+
+#--- alpha.yaml
+--- !COFF
+header:
+  Machine:         IMAGE_FILE_MACHINE_ALPHA
+  Characteristics: []
+sections:
+  - Name:            .text
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     000000000000000000000000
+    Relocations:
+      - VirtualAddress:  0
+        SymbolName:      target
+        Type:            IMAGE_REL_ALPHA_REFHI
+      - VirtualAddress:  4
+        SymbolName:      target
+        Type:            IMAGE_REL_ALPHA_REFQ3
+symbols:
+  - Name:            entry
+    Value:           8
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_FUNCTION
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+  - Name:            target
+    Value:           8
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+...
+
+#--- alpha64.yaml
+--- !COFF
+header:
+  Machine:         IMAGE_FILE_MACHINE_ALPHA64
+  Characteristics: []
+sections:
+  - Name:            .text
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     000000000000000000000000
+    Relocations:
+      - VirtualAddress:  0
+        SymbolName:      target
+        Type:            IMAGE_REL_ALPHA_REFHI
+      - VirtualAddress:  4
+        SymbolName:      target
+        Type:            IMAGE_REL_ALPHA_REFQ3
+symbols:
+  - Name:            entry
+    Value:           8
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_FUNCTION
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+  - Name:            target
+    Value:           8
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+...

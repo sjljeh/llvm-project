@@ -23,7 +23,6 @@
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
-#include <iterator>
 #include <optional>
 
 using namespace llvm;
@@ -62,6 +61,12 @@ SectionChunk::SectionChunk(ObjFile *f, const coff_section *h, Kind k)
     live = !file->symtab.ctx.config.doGC || !isCOMDAT();
   else
     live = true;
+}
+
+Symbol *SectionChunk::symbol_iterator::operator*() const {
+  if (file->symtab.ctx.target->isMetadataRelocation(*I))
+    return nullptr;
+  return file->getSymbol(I->SymbolTableIndex);
 }
 
 MachineTypes SectionChunk::getMachine() const {
@@ -106,57 +111,6 @@ int64_t SectionChunk::getPPCBranchAddend(const coff_relocation &rel) const {
   // Microsoft encodes A - O in the instruction, where O is the relocation's
   // offset in its input section contribution. Recover the source addend A.
   return encoded + rel.VirtualAddress;
-}
-
-int64_t getPPCPairAddend(const SectionChunk *sec, const coff_relocation &rel) {
-  ArrayRef<coff_relocation> relocs = sec->getRelocs();
-  auto it = llvm::find_if(relocs,
-                          [&](const coff_relocation &r) { return &r == &rel; });
-  if (it == relocs.end() || std::next(it) == relocs.end() ||
-      std::next(it)->Type != IMAGE_REL_PPC_PAIR) {
-    error("PowerPC HI16 relocation without matching PAIR relocation in " +
-          toString(sec->file));
-    return 0;
-  }
-  return SignExtend64<16>(std::next(it)->SymbolTableIndex & 0xffff);
-}
-
-int64_t getMipsPairAddend(const SectionChunk *sec, const coff_relocation &rel) {
-  ArrayRef<coff_relocation> relocs = sec->getRelocs();
-  auto it = llvm::find_if(relocs, [&](const coff_relocation &candidate) {
-    return &candidate == &rel;
-  });
-  if (it == relocs.end() || std::next(it) == relocs.end() ||
-      std::next(it)->Type != IMAGE_REL_MIPS_PAIR) {
-    error("MIPS HI16 relocation without matching PAIR relocation in " +
-          toString(sec->file));
-    return 0;
-  }
-  return SignExtend64<16>(std::next(it)->SymbolTableIndex & 0xffff);
-}
-
-int64_t getAlphaPairAddend(const SectionChunk *sec,
-                           const coff_relocation &rel) {
-  for (const coff_relocation &r : sec->getRelocs())
-    if (r.VirtualAddress == rel.VirtualAddress &&
-        r.Type == IMAGE_REL_ALPHA_PAIR)
-      return SignExtend64<16>(r.SymbolTableIndex & 0xffff);
-
-  error("Alpha REFHI relocation without matching PAIR relocation in " +
-        toString(sec->file));
-  return 0;
-}
-
-int64_t getAlphaPairAddend32(const SectionChunk *sec,
-                             const coff_relocation &rel) {
-  for (const coff_relocation &r : sec->getRelocs())
-    if (r.VirtualAddress == rel.VirtualAddress &&
-        r.Type == IMAGE_REL_ALPHA_PAIR)
-      return SignExtend64<32>(r.SymbolTableIndex);
-
-  error("Alpha REFQ relocation without matching PAIR relocation in " +
-        toString(sec->file));
-  return 0;
 }
 
 static void maybeReportRelocationToDiscarded(const SectionChunk *fromChunk,
@@ -205,12 +159,7 @@ void SectionChunk::writeTo(uint8_t *buf) const {
   // Apply relocations.
   size_t inputSize = getSize();
   for (const coff_relocation &rel : getRelocs()) {
-    Triple::ArchType arch = getArch();
-    if (arch == Triple::alpha && rel.Type == IMAGE_REL_ALPHA_PAIR)
-      continue;
-    if (arch == Triple::ppcle &&
-        ((rel.Type & IMAGE_REL_PPC_TYPEMASK) == IMAGE_REL_PPC_PAIR ||
-         (rel.Type & IMAGE_REL_PPC_TYPEMASK) == IMAGE_REL_PPC_IMGLUE))
+    if (file->symtab.ctx.target->isMetadataRelocation(rel))
       continue;
 
     // Check for an invalid relocation offset. This check isn't perfect, because
@@ -228,9 +177,8 @@ void SectionChunk::writeTo(uint8_t *buf) const {
 
 void SectionChunk::applyRelocation(uint8_t *off,
                                    const coff_relocation &rel) const {
-  if (getArch() == Triple::mipsel && rel.Type == IMAGE_REL_MIPS_PAIR)
-    return;
-  if (getArch() == Triple::alpha && rel.Type == IMAGE_REL_ALPHA_PAIR)
+  COFFLinkerContext &ctx = file->symtab.ctx;
+  if (ctx.target->isMetadataRelocation(rel))
     return;
 
   auto *sym = dyn_cast_or_null<Defined>(file->getSymbol(rel.SymbolTableIndex));
@@ -239,7 +187,6 @@ void SectionChunk::applyRelocation(uint8_t *off,
   // section is needed to compute SECREL and SECTION relocations used in debug
   // info.
   Chunk *c = sym ? sym->getChunk() : nullptr;
-  COFFLinkerContext &ctx = file->symtab.ctx;
   OutputSection *os = c ? ctx.getOutputSection(c) : nullptr;
 
   // Skip the relocation if it refers to a discarded section, and diagnose it
@@ -324,15 +271,8 @@ void SectionChunk::addAssociative(SectionChunk *child) {
 void SectionChunk::getBaserels(std::vector<Baserel> *res) {
   COFFLinkerContext &ctx = file->symtab.ctx;
   for (const coff_relocation &rel : getRelocs()) {
-    if (getArch() == Triple::mipsel && rel.Type == IMAGE_REL_MIPS_PAIR)
+    if (ctx.target->isMetadataRelocation(rel))
       continue;
-    if (getArch() == Triple::alpha && rel.Type == IMAGE_REL_ALPHA_PAIR)
-      continue;
-    if (getArch() == Triple::ppcle) {
-      uint16_t type = rel.Type & IMAGE_REL_PPC_TYPEMASK;
-      if (type == IMAGE_REL_PPC_PAIR || type == IMAGE_REL_PPC_IMGLUE)
-        continue;
-    }
 
     auto *target =
         dyn_cast_or_null<Defined>(file->getSymbol(rel.SymbolTableIndex));

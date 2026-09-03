@@ -18,6 +18,7 @@
 #include "llvm/BinaryFormat/COFF.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/MathExtras.h"
+#include <iterator>
 #include <optional>
 
 using namespace llvm;
@@ -106,10 +107,10 @@ static uint16_t getAlphaRefQ2(uint64_t v) {
 
 static uint16_t getAlphaRefQ1(uint64_t v) { return v & 0xffff; }
 
-static void applyRelAlpha(COFFLinkerContext &ctx, const SectionChunk &sec,
-                          uint8_t *off, const coff_relocation &rel,
-                          OutputSection *os, uint64_t s, uint64_t p,
-                          uint64_t imageBase) {
+static void applyRelAlpha(COFFLinkerContext &ctx, const TargetInfo &target,
+                          const SectionChunk &sec, uint8_t *off,
+                          const coff_relocation &rel, OutputSection *os,
+                          uint64_t s, uint64_t p, uint64_t imageBase) {
   switch (rel.Type) {
   case IMAGE_REL_ALPHA_ABSOLUTE:
     break;
@@ -150,7 +151,7 @@ static void applyRelAlpha(COFFLinkerContext &ctx, const SectionChunk &sec,
     break;
   case IMAGE_REL_ALPHA_REFHI: {
     uint64_t v = s + imageBase + (uint64_t(read16le(off)) << 16) +
-                 getAlphaPairAddend(&sec, rel);
+                 target.getPairAddend(sec, rel);
     write16le(off, ((v + 0x8000) >> 16) & 0xffff);
     break;
   }
@@ -161,13 +162,13 @@ static void applyRelAlpha(COFFLinkerContext &ctx, const SectionChunk &sec,
     break;
   case IMAGE_REL_ALPHA_REFQ3: {
     uint64_t v = s + imageBase + (uint64_t(read16le(off)) << 32) +
-                 getAlphaPairAddend32(&sec, rel);
+                 target.getPairAddend(sec, rel);
     write16le(off, getAlphaRefQ3(v));
     break;
   }
   case IMAGE_REL_ALPHA_REFQ2: {
     uint64_t v = s + imageBase + (uint64_t(read16le(off)) << 16) +
-                 getAlphaPairAddend(&sec, rel);
+                 target.getPairAddend(sec, rel);
     write16le(off, getAlphaRefQ2(v));
     break;
   }
@@ -322,10 +323,10 @@ static std::optional<uint32_t> getPPCImportGlueInst(Symbol *sym) {
   return std::nullopt;
 }
 
-static void applyRelPPC(COFFLinkerContext &ctx, const SectionChunk &sec,
-                        uint8_t *off, const coff_relocation &rel,
-                        OutputSection *os, uint64_t s, uint64_t p,
-                        uint64_t imageBase) {
+static void applyRelPPC(COFFLinkerContext &ctx, const TargetInfo &target,
+                        const SectionChunk &sec, uint8_t *off,
+                        const coff_relocation &rel, OutputSection *os,
+                        uint64_t s, uint64_t p, uint64_t imageBase) {
   bool isLE = sec.getArch() == Triple::ppcle;
   uint16_t type = rel.Type & IMAGE_REL_PPC_TYPEMASK;
   uint64_t va = s + imageBase;
@@ -392,7 +393,7 @@ static void applyRelPPC(COFFLinkerContext &ctx, const SectionChunk &sec,
     break;
   case IMAGE_REL_PPC_REFHI: {
     uint64_t v = va + (uint64_t(readPPC16(off, isLE)) << 16) +
-                 getPPCPairAddend(&sec, rel);
+                 target.getPairAddend(sec, rel);
     applyPPCImm16(off, ((v + 0x8000) >> 16) & 0xffff, isLE);
     break;
   }
@@ -413,7 +414,7 @@ static void applyRelPPC(COFFLinkerContext &ctx, const SectionChunk &sec,
   case IMAGE_REL_PPC_SECRELHI:
     if (checkSecRel(&sec, os)) {
       uint64_t v = s - os->getRVA() + (uint64_t(readPPC16(off, isLE)) << 16) +
-                   getPPCPairAddend(&sec, rel);
+                   target.getPairAddend(sec, rel);
       applyPPCImm16(off, ((v + 0x8000) >> 16) & 0xffff, isLE);
     }
     break;
@@ -601,10 +602,10 @@ static void applyMipsJmpAddr(uint8_t *off, uint64_t v) {
   write32le(off, (inst & 0xfc000000) | ((v >> 2) & 0x03ffffff));
 }
 
-static void applyRelMIPS(COFFLinkerContext &ctx, const SectionChunk &sec,
-                         uint8_t *off, const coff_relocation &rel,
-                         OutputSection *os, uint64_t s, uint64_t,
-                         uint64_t imageBase) {
+static void applyRelMIPS(COFFLinkerContext &ctx, const TargetInfo &target,
+                         const SectionChunk &sec, uint8_t *off,
+                         const coff_relocation &rel, OutputSection *os,
+                         uint64_t s, uint64_t, uint64_t imageBase) {
   uint64_t va = s + imageBase;
   switch (rel.Type) {
   case IMAGE_REL_MIPS_ABSOLUTE:
@@ -621,7 +622,7 @@ static void applyRelMIPS(COFFLinkerContext &ctx, const SectionChunk &sec,
     break;
   case IMAGE_REL_MIPS_REFHI: {
     uint64_t v =
-        va + (uint64_t(read16le(off)) << 16) + getMipsPairAddend(&sec, rel);
+        va + (uint64_t(read16le(off)) << 16) + target.getPairAddend(sec, rel);
     applyMipsImm16(off, ((v + 0x8000) >> 16) & 0xffff);
     break;
   }
@@ -641,7 +642,7 @@ static void applyRelMIPS(COFFLinkerContext &ctx, const SectionChunk &sec,
   case IMAGE_REL_MIPS_SECRELHI:
     if (checkSecRel(&sec, os)) {
       uint64_t v = s - os->getRVA() + (uint64_t(read16le(off)) << 16) +
-                   getMipsPairAddend(&sec, rel);
+                   target.getPairAddend(sec, rel);
       applyMipsImm16(off, ((v + 0x8000) >> 16) & 0xffff);
     }
     break;
@@ -674,9 +675,9 @@ static std::optional<BaserelInfo> getBaserelX86(const coff_relocation &rel) {
 }
 
 static std::optional<BaserelInfo>
-getBaserelAlpha(COFFLinkerContext &ctx, const SectionChunk &sec,
-                const coff_relocation &rel, uint64_t targetRVA,
-                std::optional<uint16_t> relocationValue) {
+getBaserelAlpha(COFFLinkerContext &ctx, const TargetInfo &target,
+                const SectionChunk &sec, const coff_relocation &rel,
+                uint64_t targetRVA, std::optional<uint16_t> relocationValue) {
   switch (rel.Type) {
   case IMAGE_REL_ALPHA_REFLONG:
     return makeBaserel(rel, IMAGE_REL_BASED_HIGHLOW);
@@ -687,7 +688,7 @@ getBaserelAlpha(COFFLinkerContext &ctx, const SectionChunk &sec,
       return std::nullopt;
     uint64_t v = targetRVA + ctx.config.imageBase +
                  (uint64_t(*relocationValue) << 16) +
-                 getAlphaPairAddend(&sec, rel);
+                 target.getPairAddend(sec, rel);
     return makeBaserel(rel, IMAGE_REL_BASED_HIGHADJ, v & 0xffff);
   }
   case IMAGE_REL_ALPHA_REFLO:
@@ -715,9 +716,9 @@ static std::optional<BaserelInfo> getBaserelARM64(const coff_relocation &rel) {
 }
 
 static std::optional<BaserelInfo>
-getBaserelMIPS(COFFLinkerContext &ctx, const SectionChunk &sec,
-               const coff_relocation &rel, uint64_t targetRVA,
-               std::optional<uint16_t> relocationValue) {
+getBaserelMIPS(COFFLinkerContext &ctx, const TargetInfo &target,
+               const SectionChunk &sec, const coff_relocation &rel,
+               uint64_t targetRVA, std::optional<uint16_t> relocationValue) {
   switch (rel.Type) {
   case IMAGE_REL_MIPS_REFHALF:
     return makeBaserel(rel, IMAGE_REL_BASED_HIGH);
@@ -728,7 +729,7 @@ getBaserelMIPS(COFFLinkerContext &ctx, const SectionChunk &sec,
       return std::nullopt;
     uint64_t v = targetRVA + ctx.config.imageBase +
                  (uint64_t(*relocationValue) << 16) +
-                 getMipsPairAddend(&sec, rel);
+                 target.getPairAddend(sec, rel);
     return makeBaserel(rel, IMAGE_REL_BASED_HIGHADJ, v & 0xffff);
   }
   case IMAGE_REL_MIPS_REFLO:
@@ -741,9 +742,9 @@ getBaserelMIPS(COFFLinkerContext &ctx, const SectionChunk &sec,
 }
 
 static std::optional<BaserelInfo>
-getBaserelPPC(COFFLinkerContext &ctx, const SectionChunk &sec,
-              const coff_relocation &rel, uint64_t targetRVA,
-              std::optional<uint16_t> relocationValue) {
+getBaserelPPC(COFFLinkerContext &ctx, const TargetInfo &target,
+              const SectionChunk &sec, const coff_relocation &rel,
+              uint64_t targetRVA, std::optional<uint16_t> relocationValue) {
   switch (rel.Type & IMAGE_REL_PPC_TYPEMASK) {
   case IMAGE_REL_PPC_ADDR64:
     return makeBaserel(rel, IMAGE_REL_BASED_DIR64);
@@ -754,7 +755,7 @@ getBaserelPPC(COFFLinkerContext &ctx, const SectionChunk &sec,
       return std::nullopt;
     uint64_t v = targetRVA + ctx.config.imageBase +
                  (uint64_t(*relocationValue) << 16) +
-                 getPPCPairAddend(&sec, rel);
+                 target.getPairAddend(sec, rel);
     return makeBaserel(rel, IMAGE_REL_BASED_HIGHADJ, v & 0xffff);
   }
   case IMAGE_REL_PPC_REFLO:
@@ -802,17 +803,38 @@ class AlphaTargetInfo final : public TargetInfo {
 public:
   using TargetInfo::TargetInfo;
 
+  bool isMetadataRelocation(const coff_relocation &rel) const override {
+    return rel.Type == IMAGE_REL_ALPHA_PAIR;
+  }
+
+  int64_t getPairAddend(const SectionChunk &sec,
+                        const coff_relocation &rel) const override {
+    bool isRefQ = rel.Type == IMAGE_REL_ALPHA_REFQ3;
+    assert(rel.Type == IMAGE_REL_ALPHA_REFHI ||
+           rel.Type == IMAGE_REL_ALPHA_REFQ2 || isRefQ);
+    for (const coff_relocation &pair : sec.getRelocs())
+      if (pair.VirtualAddress == rel.VirtualAddress &&
+          pair.Type == IMAGE_REL_ALPHA_PAIR)
+        return isRefQ ? SignExtend64<32>(pair.SymbolTableIndex)
+                      : SignExtend64<16>(pair.SymbolTableIndex & 0xffff);
+
+    error(Twine("Alpha ") + (isRefQ ? "REFQ" : "REFHI") +
+          " relocation without matching PAIR relocation in " +
+          toString(sec.file));
+    return 0;
+  }
+
   void applyRelocation(const SectionChunk &sec, uint8_t *off,
                        const coff_relocation &rel, OutputSection *os,
                        uint64_t s, uint64_t p) const override {
-    applyRelAlpha(ctx, sec, off, rel, os, s, p, ctx.config.imageBase);
+    applyRelAlpha(ctx, *this, sec, off, rel, os, s, p, ctx.config.imageBase);
   }
 
   std::optional<BaserelInfo>
   getBaserel(const SectionChunk &sec, const coff_relocation &rel,
              uint64_t targetRVA,
              std::optional<uint16_t> relocationValue) const override {
-    return getBaserelAlpha(ctx, sec, rel, targetRVA, relocationValue);
+    return getBaserelAlpha(ctx, *this, sec, rel, targetRVA, relocationValue);
   }
 };
 
@@ -860,17 +882,38 @@ class MIPSTargetInfo final : public TargetInfo {
 public:
   using TargetInfo::TargetInfo;
 
+  bool isMetadataRelocation(const coff_relocation &rel) const override {
+    return rel.Type == IMAGE_REL_MIPS_PAIR;
+  }
+
+  int64_t getPairAddend(const SectionChunk &sec,
+                        const coff_relocation &rel) const override {
+    assert(rel.Type == IMAGE_REL_MIPS_REFHI ||
+           rel.Type == IMAGE_REL_MIPS_SECRELHI);
+    ArrayRef<coff_relocation> relocs = sec.getRelocs();
+    auto it = llvm::find_if(relocs, [&](const coff_relocation &candidate) {
+      return &candidate == &rel;
+    });
+    if (it == relocs.end() || std::next(it) == relocs.end() ||
+        std::next(it)->Type != IMAGE_REL_MIPS_PAIR) {
+      error("MIPS HI16 relocation without matching PAIR relocation in " +
+            toString(sec.file));
+      return 0;
+    }
+    return SignExtend64<16>(std::next(it)->SymbolTableIndex & 0xffff);
+  }
+
   void applyRelocation(const SectionChunk &sec, uint8_t *off,
                        const coff_relocation &rel, OutputSection *os,
                        uint64_t s, uint64_t p) const override {
-    applyRelMIPS(ctx, sec, off, rel, os, s, p, ctx.config.imageBase);
+    applyRelMIPS(ctx, *this, sec, off, rel, os, s, p, ctx.config.imageBase);
   }
 
   std::optional<BaserelInfo>
   getBaserel(const SectionChunk &sec, const coff_relocation &rel,
              uint64_t targetRVA,
              std::optional<uint16_t> relocationValue) const override {
-    return getBaserelMIPS(ctx, sec, rel, targetRVA, relocationValue);
+    return getBaserelMIPS(ctx, *this, sec, rel, targetRVA, relocationValue);
   }
 };
 
@@ -878,17 +921,38 @@ class PPCTargetInfo final : public TargetInfo {
 public:
   using TargetInfo::TargetInfo;
 
+  bool isMetadataRelocation(const coff_relocation &rel) const override {
+    uint16_t type = rel.Type & IMAGE_REL_PPC_TYPEMASK;
+    return type == IMAGE_REL_PPC_PAIR || type == IMAGE_REL_PPC_IMGLUE;
+  }
+
+  int64_t getPairAddend(const SectionChunk &sec,
+                        const coff_relocation &rel) const override {
+    assert((rel.Type & IMAGE_REL_PPC_TYPEMASK) == IMAGE_REL_PPC_REFHI ||
+           (rel.Type & IMAGE_REL_PPC_TYPEMASK) == IMAGE_REL_PPC_SECRELHI);
+    ArrayRef<coff_relocation> relocs = sec.getRelocs();
+    auto it = llvm::find_if(
+        relocs, [&](const coff_relocation &r) { return &r == &rel; });
+    if (it == relocs.end() || std::next(it) == relocs.end() ||
+        std::next(it)->Type != IMAGE_REL_PPC_PAIR) {
+      error("PowerPC HI16 relocation without matching PAIR relocation in " +
+            toString(sec.file));
+      return 0;
+    }
+    return SignExtend64<16>(std::next(it)->SymbolTableIndex & 0xffff);
+  }
+
   void applyRelocation(const SectionChunk &sec, uint8_t *off,
                        const coff_relocation &rel, OutputSection *os,
                        uint64_t s, uint64_t p) const override {
-    applyRelPPC(ctx, sec, off, rel, os, s, p, ctx.config.imageBase);
+    applyRelPPC(ctx, *this, sec, off, rel, os, s, p, ctx.config.imageBase);
   }
 
   std::optional<BaserelInfo>
   getBaserel(const SectionChunk &sec, const coff_relocation &rel,
              uint64_t targetRVA,
              std::optional<uint16_t> relocationValue) const override {
-    return getBaserelPPC(ctx, sec, rel, targetRVA, relocationValue);
+    return getBaserelPPC(ctx, *this, sec, rel, targetRVA, relocationValue);
   }
 };
 
@@ -899,6 +963,11 @@ void TargetInfo::applyRelocation(const SectionChunk &sec, uint8_t *,
                                  uint64_t, uint64_t) const {
   error("unsupported relocation type 0x" + Twine::utohexstr(rel.Type) + " in " +
         toString(sec.file));
+}
+
+int64_t TargetInfo::getPairAddend(const SectionChunk &,
+                                  const coff_relocation &) const {
+  llvm_unreachable("target does not support paired relocations");
 }
 
 std::unique_ptr<TargetInfo> createTargetInfo(COFFLinkerContext &ctx,

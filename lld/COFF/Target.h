@@ -35,6 +35,16 @@ public:
                                const llvm::object::coff_relocation &rel,
                                OutputSection *os, uint64_t s, uint64_t p) const;
 
+  // Metadata records do not refer to an ordinary symbol table entry.
+  virtual bool
+  isMetadataRelocation(const llvm::object::coff_relocation &rel) const {
+    return false;
+  }
+
+  // Find the pair associated with rel and decode its addend.
+  virtual int64_t getPairAddend(const SectionChunk &section,
+                                const llvm::object::coff_relocation &rel) const;
+
   virtual std::optional<BaserelInfo>
   getBaserel(const SectionChunk &section,
              const llvm::object::coff_relocation &rel, uint64_t targetRVA,
