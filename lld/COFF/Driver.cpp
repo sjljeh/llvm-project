@@ -16,6 +16,7 @@
 #include "MinGW.h"
 #include "SymbolTable.h"
 #include "Symbols.h"
+#include "Target.h"
 #include "Writer.h"
 #include "lld/Common/Args.h"
 #include "lld/Common/CommonLinkerContext.h"
@@ -806,6 +807,7 @@ void LinkerDriver::setMachine(MachineTypes machine) {
   assert(machine != IMAGE_FILE_MACHINE_UNKNOWN);
 
   ctx.config.machine = machine;
+  ctx.target = createTargetInfo(ctx, machine);
 
   if ((machine == IMAGE_FILE_MACHINE_ALPHA ||
        machine == IMAGE_FILE_MACHINE_ALPHA64) &&

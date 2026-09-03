@@ -11,6 +11,7 @@
 
 #include "COFFLinkerContext.h"
 #include "Symbols.h"
+#include "Target.h"
 #include "llvm/BinaryFormat/COFF.h"
 
 namespace lld::coff {
@@ -38,4 +39,6 @@ COFFLinkerContext::COFFLinkerContext()
       publicsLayoutTimer("Publics Stream Layout", totalPdbLinkTimer),
       tpiStreamLayoutTimer("TPI Stream Layout", totalPdbLinkTimer),
       diskCommitTimer("Commit to Disk", totalPdbLinkTimer) {}
+
+COFFLinkerContext::~COFFLinkerContext() = default;
 } // namespace lld::coff

@@ -19,15 +19,18 @@
 #include "Writer.h"
 #include "lld/Common/CommonLinkerContext.h"
 #include "lld/Common/Timer.h"
+#include <memory>
 
 namespace lld::coff {
+
+class TargetInfo;
 
 class COFFLinkerContext : public CommonLinkerContext {
 public:
   COFFLinkerContext();
   COFFLinkerContext(const COFFLinkerContext &) = delete;
   COFFLinkerContext &operator=(const COFFLinkerContext &) = delete;
-  ~COFFLinkerContext() = default;
+  ~COFFLinkerContext();
 
   LinkerDriver driver;
   SymbolTable symtab;
@@ -117,6 +120,7 @@ public:
   std::optional<PDBStats> pdbStats;
 
   Configuration config;
+  std::unique_ptr<TargetInfo> target;
 
   // Final Alpha .sdata range and its quadword-aligned midpoint. Microsoft
   // Alpha LITERAL/GPREL32 relocations and PE's GLOBAL_PTR directory use these

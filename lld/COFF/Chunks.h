@@ -292,22 +292,6 @@ public:
   void getBaserels(std::vector<Baserel> *res);
   bool isCOMDAT() const;
   void applyRelocation(uint8_t *off, const coff_relocation &rel) const;
-  void applyRelX64(uint8_t *off, uint16_t type, OutputSection *os, uint64_t s,
-                   uint64_t p, uint64_t imageBase) const;
-  void applyRelX86(uint8_t *off, uint16_t type, OutputSection *os, uint64_t s,
-                   uint64_t p, uint64_t imageBase) const;
-  void applyRelAlpha(uint8_t *off, const coff_relocation &rel,
-                     OutputSection *os, uint64_t s, uint64_t p,
-                     uint64_t imageBase) const;
-  void applyRelARM(uint8_t *off, uint16_t type, OutputSection *os, uint64_t s,
-                   uint64_t p, uint64_t imageBase) const;
-  void applyRelARM64(uint8_t *off, uint16_t type, OutputSection *os, uint64_t s,
-                     uint64_t p, uint64_t imageBase) const;
-  void applyRelMIPS(uint8_t *off, const coff_relocation &rel, OutputSection *os,
-                    uint64_t s, uint64_t p, uint64_t imageBase) const;
-  void applyRelPPC(uint8_t *off, const coff_relocation &rel, OutputSection *os,
-                   uint64_t s, uint64_t p, uint64_t imageBase) const;
-
   void getRuntimePseudoRelocs(std::vector<RuntimePseudoReloc> &res);
 
   // Called if the garbage collector decides to not include this chunk
@@ -435,6 +419,12 @@ private:
   uint32_t relocsSize = 0;
   uint32_t sectionNameSize = 0;
 };
+
+int64_t getAlphaPairAddend(const SectionChunk *sec, const coff_relocation &rel);
+int64_t getAlphaPairAddend32(const SectionChunk *sec,
+                             const coff_relocation &rel);
+int64_t getMipsPairAddend(const SectionChunk *sec, const coff_relocation &rel);
+int64_t getPPCPairAddend(const SectionChunk *sec, const coff_relocation &rel);
 
 // A section chunk corresponding a section of an EC input file.
 class SectionChunkEC final : public SectionChunk {
@@ -1036,13 +1026,6 @@ inline void Chunk::setEntryThunk(Defined *entryThunk) {
   if (auto c = dyn_cast<SectionChunkEC>(this))
     c->entryThunk = entryThunk;
 }
-
-void applyMOV32T(uint8_t *off, uint32_t v);
-void applyBranch24T(uint8_t *off, int32_t v);
-
-void applyArm64Addr(uint8_t *off, uint64_t s, uint64_t p, int shift);
-void applyArm64Imm(uint8_t *off, uint64_t imm, uint32_t rangeLimit);
-void applyArm64Branch26(uint8_t *off, int64_t v);
 
 // Convenience class for initializing a coff_section with specific flags.
 class FakeSection {

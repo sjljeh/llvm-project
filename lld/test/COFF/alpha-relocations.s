@@ -3,6 +3,9 @@
 # RUN: llvm-readobj --relocations %t.obj | FileCheck %s --check-prefix=OBJ
 # RUN: lld-link /machine:alpha /entry:start /subsystem:native /nodefaultlib %t.obj /out:%t.exe
 # RUN: llvm-readobj --hex-dump=.text --hex-dump=.data %t.exe | FileCheck %s --check-prefix=EXE
+# RUN: llvm-mc -triple=alpha-pc-windows-msvc -filetype=obj %s -o %t.alpha64.obj
+# RUN: lld-link /machine:alpha64 /entry:start /subsystem:native /nodefaultlib %t.alpha64.obj /out:%t.alpha64.exe
+# RUN: llvm-readobj --hex-dump=.text --hex-dump=.data %t.alpha64.exe | FileCheck %s --check-prefix=EXE64
 
 .text
 .globl start
@@ -31,3 +34,8 @@ ptr:
 # EXE-NEXT: 0x00402000 40001f24 00400020 fd07e0c3
 # EXE: Hex dump of section '.data':
 # EXE-NEXT: 0x00404000 00000000 00404000
+
+# EXE64: Hex dump of section '.text':
+# EXE64-NEXT: 0x140002000 00401f24 00400020 fd07e0c3
+# EXE64: Hex dump of section '.data':
+# EXE64-NEXT: 0x140004000 00000000 00400040

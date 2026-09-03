@@ -20,6 +20,7 @@ add_lld_library(lldCOFF
   PDB.cpp
   SymbolTable.cpp
   Symbols.cpp
+  Target.cpp
   Writer.cpp
 
   LINK_COMPONENTS
