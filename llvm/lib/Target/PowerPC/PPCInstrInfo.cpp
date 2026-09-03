@@ -5399,7 +5399,7 @@ void PPCInstrInfo::promoteInstr32To64ForElimEXTSW(const Register &Reg,
     // In both ELFv1 and v2 ABI, method parameters and the return value
     // are sign- or zero-extended.
     const MachineFunction *MF = MI->getMF();
-    if (!MF->getSubtarget<PPCSubtarget>().isSVR4ABI()) {
+    if (!MF->getSubtarget<PPCSubtarget>().usesSVR4RegisterConvention()) {
       // If this is a copy from another register, we recursively promote the
       // source.
       promoteInstr32To64ForElimEXTSW(SrcReg, MRI, BinOpDepth);
@@ -5571,7 +5571,7 @@ PPCInstrInfo::isSignOrZeroExtended(const unsigned Reg,
     // are sign- or zero-extended.
     const MachineFunction *MF = MI->getMF();
 
-    if (!MF->getSubtarget<PPCSubtarget>().isSVR4ABI()) {
+    if (!MF->getSubtarget<PPCSubtarget>().usesSVR4RegisterConvention()) {
       // If this is a copy from another register, we recursively check source.
       auto SrcExt = isSignOrZeroExtended(SrcReg, BinOpDepth, MRI);
       return std::pair<bool, bool>(SrcExt.first || IsSExt,
