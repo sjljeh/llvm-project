@@ -234,6 +234,13 @@ void PPCAsmBackend::applyFixup(const MCFragment &F, const MCFixup &Fixup,
   if (!IsResolved) {
     Asm->getWriter().recordRelocation(F, Fixup, Target, Value);
 
+    // The COFF writer records the low 16 bits of a REFHI addend in the
+    // following PAIR relocation. The instruction holds its high-adjusted
+    // portion so that the linker can reconstruct the complete addend.
+    if (TT.isOSBinFormatCOFF() && Kind == PPC::fixup_ppc_half16 &&
+        Target.getSpecifier() == PPC::S_HA)
+      Value = (Value + 0x8000) >> 16;
+
     // Microsoft PowerPC COFF branch relocations are relative to the start of
     // the input section contribution, rather than to the relocation address.
     // Bias the encoded addend by the relocation's section offset so that LINK
