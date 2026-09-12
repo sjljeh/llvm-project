@@ -630,7 +630,10 @@ bool AsmPrinter::doInitialization(Module &M) {
     bool EmitCodeView = M.getCodeViewFlag();
     // On Windows targets, emit minimal CodeView compiler info even when debug
     // info is disabled.
-    if ((Target.isOSWindows() || (Target.isUEFI() && EmitCodeView)) &&
+    // CodeView has no CPUType value for RISC-V yet.  Do not create a handler
+    // that would abort while mapping a RISC-V Windows module to CodeView.
+    if (!Target.isRISCV() &&
+        (Target.isOSWindows() || (Target.isUEFI() && EmitCodeView)) &&
         M.getNamedMetadata("llvm.dbg.cu"))
       Handlers.push_back(std::make_unique<CodeViewDebug>(this));
     if (!EmitCodeView || M.getDwarfVersion()) {

@@ -996,10 +996,6 @@ static Triple::ObjectFormatType getDefaultFormat(const Triple &T) {
   case Triple::r600:
   case Triple::renderscript32:
   case Triple::renderscript64:
-  case Triple::riscv32:
-  case Triple::riscv64:
-  case Triple::riscv32be:
-  case Triple::riscv64be:
   case Triple::shave:
   case Triple::sparc:
   case Triple::sparcel:
@@ -1014,6 +1010,12 @@ static Triple::ObjectFormatType getDefaultFormat(const Triple &T) {
   case Triple::xcore:
   case Triple::xtensa:
     return Triple::ELF;
+
+  case Triple::riscv32:
+  case Triple::riscv64:
+  case Triple::riscv32be:
+  case Triple::riscv64be:
+    return T.isOSWindows() ? Triple::COFF : Triple::ELF;
 
   case Triple::ppcle:
     if (T.isOSWindows())

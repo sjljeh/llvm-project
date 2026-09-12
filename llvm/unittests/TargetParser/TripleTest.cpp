@@ -3182,6 +3182,16 @@ TEST(TripleTest, FileFormat) {
   EXPECT_EQ(Triple::MachO, Triple("powerpc-apple-macosx").getObjectFormat());
 
   EXPECT_EQ(Triple::COFF, Triple("i686--win32").getObjectFormat());
+  EXPECT_EQ(Triple::COFF,
+            Triple("riscv32-w64-windows-gnu").getObjectFormat());
+  EXPECT_EQ(Triple::COFF,
+            Triple("riscv64-w64-windows-gnu").getObjectFormat());
+  EXPECT_EQ(Triple::COFF,
+            Triple(Triple::normalize("riscv32-w64-mingw32"))
+                .getObjectFormat());
+  EXPECT_EQ(Triple::COFF,
+            Triple(Triple::normalize("riscv64-w64-mingw32"))
+                .getObjectFormat());
 
   EXPECT_EQ(Triple::ELF, Triple("i686-pc-windows-msvc-elf").getObjectFormat());
   EXPECT_EQ(Triple::ELF, Triple("i686-pc-cygwin-elf").getObjectFormat());

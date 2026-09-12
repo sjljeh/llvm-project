@@ -135,7 +135,8 @@ template <typename T> bool isAnyArm64(T Machine) {
 
 template <typename T> bool is64Bit(T Machine) {
   return Machine == IMAGE_FILE_MACHINE_AMD64 ||
-         Machine == IMAGE_FILE_MACHINE_ALPHA64 || isAnyArm64(Machine);
+         Machine == IMAGE_FILE_MACHINE_ALPHA64 ||
+         Machine == IMAGE_FILE_MACHINE_RISCV64 || isAnyArm64(Machine);
 }
 
 enum Characteristics : unsigned {

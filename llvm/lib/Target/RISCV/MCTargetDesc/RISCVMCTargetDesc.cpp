@@ -26,6 +26,7 @@
 #include "llvm/MC/MCObjectWriter.h"
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCStreamer.h"
+#include "llvm/MC/MCWinCOFFStreamer.h"
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/Compiler.h"
@@ -66,6 +67,8 @@ static MCAsmInfo *createRISCVMCAsmInfo(const MCRegisterInfo &MRI,
     MAI = new RISCVMCAsmInfo(TT, Options);
   else if (TT.isOSBinFormatMachO())
     MAI = new RISCVMCAsmInfoDarwin(Options);
+  else if (TT.isOSBinFormatCOFF())
+    MAI = new RISCVMCAsmInfoCOFF(TT, Options);
   else
     reportFatalUsageError("unsupported object format");
 
@@ -198,6 +201,14 @@ createMachOStreamer(MCContext &Ctx, std::unique_ptr<MCAsmBackend> &&TAB,
                              std::move(Emitter),
                              /*DWARFMustBeAtTheEnd*/ false,
                              /*LabelSections*/ true);
+}
+
+static MCStreamer *createRISCVWinCOFFStreamer(
+    MCContext &Ctx, std::unique_ptr<MCAsmBackend> &&TAB,
+    std::unique_ptr<MCObjectWriter> &&OW,
+    std::unique_ptr<MCCodeEmitter> &&Emitter) {
+  return new MCWinCOFFStreamer(Ctx, std::move(TAB), std::move(Emitter),
+                               std::move(OW));
 }
 
 static MCTargetStreamer *
@@ -482,6 +493,7 @@ LLVMInitializeRISCVTargetMC() {
     TargetRegistry::RegisterMCInstPrinter(*T, createRISCVMCInstPrinter);
     TargetRegistry::RegisterMCSubtargetInfo(*T, createRISCVMCSubtargetInfo);
     TargetRegistry::RegisterELFStreamer(*T, createRISCVELFStreamer);
+    TargetRegistry::RegisterCOFFStreamer(*T, createRISCVWinCOFFStreamer);
     TargetRegistry::RegisterMachOStreamer(*T, createMachOStreamer);
     TargetRegistry::RegisterObjectTargetStreamer(
         *T, createRISCVObjectTargetStreamer);

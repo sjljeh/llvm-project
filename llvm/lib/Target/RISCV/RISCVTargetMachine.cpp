@@ -165,6 +165,8 @@ static Reloc::Model getEffectiveRelocModel(const Triple &TT,
 static std::unique_ptr<TargetLoweringObjectFile> createTLOF(const Triple &TT) {
   if (TT.isOSBinFormatMachO())
     return std::make_unique<RISCVMachOTargetObjectFile>();
+  if (TT.isOSBinFormatCOFF())
+    return std::make_unique<TargetLoweringObjectFileCOFF>();
   return std::make_unique<RISCVELFTargetObjectFile>();
 }
 
