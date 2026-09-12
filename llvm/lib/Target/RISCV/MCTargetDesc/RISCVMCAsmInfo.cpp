@@ -13,8 +13,10 @@
 #include "RISCVMCAsmInfo.h"
 #include "llvm/BinaryFormat/Dwarf.h"
 #include "llvm/BinaryFormat/ELF.h"
+#include "llvm/MC/MCAssembler.h"
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCStreamer.h"
+#include "llvm/MC/MCValue.h"
 #include "llvm/TargetParser/Triple.h"
 using namespace llvm;
 
@@ -35,6 +37,38 @@ RISCVMCAsmInfo::RISCVMCAsmInfo(const Triple &TT, const MCTargetOptions &Options)
   // enabled, so we follow binutils in using the R_RISCV_32_PCREL relocation
   // for the FDE initial location.
   DwarfFDERelSymbolSpec = ELF::R_RISCV_32_PCREL;
+}
+
+void RISCVMCAsmInfoCOFF::anchor() {}
+
+RISCVMCAsmInfoCOFF::RISCVMCAsmInfoCOFF(const Triple &TT,
+                                       const MCTargetOptions &Options)
+    : MCAsmInfoGNUCOFF(Options) {
+  IsLittleEndian = TT.isLittleEndian();
+  CodePointerSize = CalleeSaveStackSlotSize = TT.isArch64Bit() ? 8 : 4;
+  InternalSymbolPrefix = ".L";
+  CommentString = "#";
+  AlignmentIsInBytes = false;
+  SupportsDebugInformation = true;
+  ExceptionsType = ExceptionHandling::WinEH;
+  WinEHEncodingType = WinEH::EncodingType::Itanium;
+  DwarfRegNumForCFI = false;
+}
+
+void RISCVMCAsmInfoCOFF::printSpecifierExpr(
+    raw_ostream &OS, const MCSpecifierExpr &Expr) const {
+  auto S = Expr.getSpecifier();
+  bool HasSpecifier = S != RISCV::S_None && S != RISCV::S_CALL_PLT;
+  if (HasSpecifier)
+    OS << '%' << RISCV::getSpecifierName(S) << '(';
+  printExpr(OS, *Expr.getSubExpr());
+  if (HasSpecifier)
+    OS << ')';
+}
+
+bool RISCVMCAsmInfoCOFF::evaluateAsRelocatableImpl(
+    const MCSpecifierExpr &, MCValue &, const MCAssembler *) const {
+  return false;
 }
 
 void RISCVMCAsmInfo::printSpecifierExpr(raw_ostream &OS,

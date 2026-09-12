@@ -14,11 +14,15 @@
 #define LLVM_LIB_TARGET_RISCV_MCTARGETDESC_RISCVMCASMINFO_H
 
 #include "llvm/MC/MCAsmInfoDarwin.h"
+#include "llvm/MC/MCAsmInfoCOFF.h"
 #include "llvm/MC/MCAsmInfoELF.h"
 #include "llvm/MC/MCFixup.h"
 
 namespace llvm {
 class Triple;
+class MCAssembler;
+class MCValue;
+class MCSpecifierExpr;
 
 class RISCVMCAsmInfo : public MCAsmInfoELF {
   void anchor() override;
@@ -29,6 +33,19 @@ public:
 
   void printSpecifierExpr(raw_ostream &OS,
                           const MCSpecifierExpr &Expr) const override;
+};
+
+class RISCVMCAsmInfoCOFF : public MCAsmInfoGNUCOFF {
+  void anchor() override;
+
+public:
+  explicit RISCVMCAsmInfoCOFF(const Triple &TargetTriple,
+                              const MCTargetOptions &Options);
+
+  void printSpecifierExpr(raw_ostream &OS,
+                          const MCSpecifierExpr &Expr) const override;
+  bool evaluateAsRelocatableImpl(const MCSpecifierExpr &Expr, MCValue &Res,
+                                 const MCAssembler *Asm) const override;
 };
 
 namespace RISCV {

@@ -25,13 +25,13 @@ enum MachineTypes : unsigned;
 }
 
 // Returns a user-readable string for Alpha, Alpha64, ARMNT, ARM64, AMD64, I386,
-// R4000, and PowerPC.
+// R4000, PowerPC, and RISC-V.
 // Other MachineTypes values must not be passed in.
 LLVM_ABI StringRef machineToStr(COFF::MachineTypes MT);
 
 // Maps /machine: arguments to a MachineTypes value.
-// Only returns Alpha, Alpha64, ARMNT, ARM64, AMD64, I386, R4000, PowerPC, or
-// IMAGE_FILE_MACHINE_UNKNOWN.
+// Only returns Alpha, Alpha64, ARMNT, ARM64, AMD64, I386, R4000, PowerPC,
+// RISC-V, or IMAGE_FILE_MACHINE_UNKNOWN.
 LLVM_ABI COFF::MachineTypes getMachineType(StringRef S);
 
 template <typename T> Triple::ArchType getMachineArchType(T machine) {
@@ -53,6 +53,10 @@ template <typename T> Triple::ArchType getMachineArchType(T machine) {
     return llvm::Triple::ArchType::mipsel;
   case COFF::IMAGE_FILE_MACHINE_POWERPC:
     return llvm::Triple::ArchType::ppcle;
+  case COFF::IMAGE_FILE_MACHINE_RISCV32:
+    return llvm::Triple::ArchType::riscv32;
+  case COFF::IMAGE_FILE_MACHINE_RISCV64:
+    return llvm::Triple::ArchType::riscv64;
   default:
     return llvm::Triple::ArchType::UnknownArch;
   }

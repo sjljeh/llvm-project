@@ -50,6 +50,8 @@ const char big_archive[] = "<bigaf>\x0A";
 const char zos_archive[] = "\x5A\x4C\x81\x99\x83\x88\x6E\x15";
 const char bitcode[] = "\xde\xc0\x17\x0b";
 const char coff_object[] = "\x00\x00......";
+const char coff_riscv32[] = "\x32\x50......";
+const char coff_riscv64[] = "\x64\x50......";
 const char coff_bigobj[] =
     "\x00\x00\xff\xff\x00\x02......"
     "\xc7\xa1\xba\xd1\xee\xba\xa9\x4b\xaf\x20\xfa\xf6\x6a\xa4\xdc\xb8";
@@ -106,6 +108,10 @@ TEST_F(MagicTest, Magic) {
       {"zos_archive", zos_archive, sizeof(zos_archive), file_magic::archive},
       DEFINE(bitcode),
       DEFINE(coff_object),
+      {"coff_riscv32", coff_riscv32, sizeof(coff_riscv32),
+       file_magic::coff_object},
+      {"coff_riscv64", coff_riscv64, sizeof(coff_riscv64),
+       file_magic::coff_object},
       {"coff_bigobj", coff_bigobj, sizeof(coff_bigobj),
        file_magic::coff_object},
       DEFINE(coff_import_library),
