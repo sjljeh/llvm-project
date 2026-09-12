@@ -1,0 +1,115 @@
+name: LLVM-MinGW RISC-V worker
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches:
+      - llvm-mingw-riscv
+  workflow_dispatch:
+
+concurrency:
+  group: llvm-mingw-riscv-worker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-check:
+    name: Build, test, and report
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      LLVM_MINGW_WORK_DIR: ${{ runner.temp }}/llvm-mingw-riscv-worker
+      LLVM_MINGW_RECIPE_REF: llvm-mingw-riscv
+      ACT_REF: 80d563374ffb2eba59aae5c7a575ad5e92e78a1d
+    steps:
+      - name: Checkout llvm-project
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          path: llvm-project
+          ref: llvm-mingw-riscv
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Checkout llvm-mingw recipe
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: eotics-com/llvm-mingw
+          path: llvm-mingw
+          ref: llvm-mingw-riscv
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Checkout ACT4
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: riscv/riscv-arch-test
+          path: riscv-arch-test
+          ref: ${{ env.ACT_REF }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install build and ACT dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential cmake curl file git libffi-dev libyaml-dev \
+            libz3-dev ninja-build pkg-config python3-dev ruby-dev
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
+        with:
+          version: 0.12.13
+          enable-cache: true
+
+      - name: Install Ruby and Bundler
+        uses: ruby/setup-ruby@4a9ddd6f338a97768b8006bf671dfbad383215f4 # v1.207.0
+        with:
+          ruby-version: 3.4.10
+          bundler: 4.0.20
+          bundler-cache: false
+
+      - name: Install pinned Sail reference model
+        run: |
+          mkdir -p "$RUNNER_TEMP/sail-riscv"
+          curl --fail --location --silent --show-error \
+            https://github.com/riscv/sail-riscv/releases/download/0.13.1/sail-riscv-Linux-x86_64.tar.gz \
+            | tar --extract --gzip --strip-components=1 --directory "$RUNNER_TEMP/sail-riscv"
+          echo "$RUNNER_TEMP/sail-riscv/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/sail-riscv/bin/sail_riscv_sim" --version
+
+      - name: Put both source checkouts on the required branch
+        run: |
+          git config --global --add safe.directory '*'
+          git -C llvm-project switch --force-create llvm-mingw-riscv
+          git -C llvm-mingw switch --force-create llvm-mingw-riscv
+          git -C llvm-project status --short --branch
+          git -C llvm-mingw status --short --branch
+
+      - name: Run the complete worker
+        run: llvm-project/.ci/scripts/llvm-mingw-riscv-worker.sh
+
+      - name: Add worker report to job summary
+        if: always()
+        run: |
+          report="$LLVM_MINGW_WORK_DIR/report/summary.md"
+          if [ -f "$report" ]; then
+            cat "$report" >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf '\n## LLVM-MinGW RISC-V worker\n\nWorker stopped before producing a summary.\n' >> "$GITHUB_STEP_SUMMARY"
+            if [ -f "$LLVM_MINGW_WORK_DIR/report/failure.txt" ]; then
+              cat "$LLVM_MINGW_WORK_DIR/report/failure.txt" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+
+      - name: Upload worker reports and archive
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: llvm-mingw-riscv-worker-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/llvm-mingw-riscv-worker/report
+            ${{ runner.temp }}/llvm-mingw-riscv-worker/*.tar.xz
+            ${{ runner.temp }}/llvm-mingw-riscv-worker/SHA256SUMS
+          if-no-files-found: warn
+          retention-days: 14
