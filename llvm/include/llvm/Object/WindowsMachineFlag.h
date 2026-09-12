@@ -51,6 +51,10 @@ template <typename T> Triple::ArchType getMachineArchType(T machine) {
     return llvm::Triple::ArchType::mipsel;
   case COFF::IMAGE_FILE_MACHINE_POWERPC:
     return llvm::Triple::ArchType::ppcle;
+  case COFF::IMAGE_FILE_MACHINE_RISCV32:
+    return llvm::Triple::ArchType::riscv32;
+  case COFF::IMAGE_FILE_MACHINE_RISCV64:
+    return llvm::Triple::ArchType::riscv64;
   default:
     return llvm::Triple::ArchType::UnknownArch;
   }

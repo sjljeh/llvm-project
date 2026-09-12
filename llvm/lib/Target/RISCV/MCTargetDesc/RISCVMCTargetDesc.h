@@ -27,6 +27,7 @@ class MCRegisterInfo;
 class MCRelocationInfo;
 class MCSubtargetInfo;
 class Target;
+class Triple;
 
 MCCodeEmitter *createRISCVMCCodeEmitter(const MCInstrInfo &MCII,
                                         MCContext &Ctx);
@@ -39,6 +40,8 @@ std::unique_ptr<MCObjectTargetWriter> createRISCVELFObjectWriter(uint8_t OSABI,
                                                                  bool Is64Bit);
 std::unique_ptr<MCObjectTargetWriter>
 createRISCVMachObjectWriter(uint32_t CPUType, uint32_t CPUSubtype);
+std::unique_ptr<MCObjectTargetWriter>
+createRISCVWinCOFFObjectWriter(const Triple &TheTriple);
 
 namespace RISCV {
 void updateCZceFeatureImplications(MCSubtargetInfo &STI);
