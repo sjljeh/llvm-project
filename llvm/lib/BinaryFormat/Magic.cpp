@@ -243,7 +243,14 @@ file_magic llvm::identify_magic(StringRef Magic) {
     break;
 
   case 0x64: // x86-64 or ARM64 Windows.
-    if (Magic[1] == char(0x86) || Magic[1] == char(0xaa))
+    // 0x5064 is the Windows COFF machine value for RISC-V 64.
+    if (Magic[1] == char(0x86) || Magic[1] == char(0xaa) ||
+        Magic[1] == char(0x50))
+      return file_magic::coff_object;
+    break;
+
+  case 0x32: // RISC-V 32-bit Windows.
+    if (Magic[1] == char(0x50))
       return file_magic::coff_object;
     break;
 

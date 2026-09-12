@@ -33,6 +33,8 @@ COFF::MachineTypes llvm::getMachineType(StringRef S) {
       .Case("arm64x", COFF::IMAGE_FILE_MACHINE_ARM64X)
       .Case("mips", COFF::IMAGE_FILE_MACHINE_R4000)
       .Case("ppc", COFF::IMAGE_FILE_MACHINE_POWERPC)
+      .Case("riscv32", COFF::IMAGE_FILE_MACHINE_RISCV32)
+      .Case("riscv64", COFF::IMAGE_FILE_MACHINE_RISCV64)
       .Default(COFF::IMAGE_FILE_MACHINE_UNKNOWN);
 }
 
@@ -58,6 +60,10 @@ StringRef llvm::machineToStr(COFF::MachineTypes MT) {
     return "mips";
   case COFF::IMAGE_FILE_MACHINE_POWERPC:
     return "ppc";
+  case COFF::IMAGE_FILE_MACHINE_RISCV32:
+    return "riscv32";
+  case COFF::IMAGE_FILE_MACHINE_RISCV64:
+    return "riscv64";
   default:
     llvm_unreachable("unknown machine type");
   }
