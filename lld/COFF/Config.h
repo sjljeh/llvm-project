@@ -43,6 +43,7 @@ static const auto ARM64EC = llvm::COFF::IMAGE_FILE_MACHINE_ARM64EC;
 static const auto ARM64X = llvm::COFF::IMAGE_FILE_MACHINE_ARM64X;
 static const auto ARMNT = llvm::COFF::IMAGE_FILE_MACHINE_ARMNT;
 static const auto I386 = llvm::COFF::IMAGE_FILE_MACHINE_I386;
+static const auto RISCV32 = llvm::COFF::IMAGE_FILE_MACHINE_RISCV32;
 static const auto RISCV64 = llvm::COFF::IMAGE_FILE_MACHINE_RISCV64;
 
 enum class ExportSource {

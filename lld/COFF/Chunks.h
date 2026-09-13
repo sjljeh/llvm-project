@@ -585,9 +585,9 @@ static const uint8_t importThunkARM64[] = {
     0x00, 0x02, 0x1f, 0xd6, // br   x16
 };
 
-static const uint8_t importThunkRISCV64[] = {
+static const uint8_t importThunkRISCV[] = {
     0x97, 0x02, 0x00, 0x00, // auipc t0, 0
-    0x83, 0xb2, 0x02, 0x00, // ld    t0, 0(t0)
+    0x83, 0xb2, 0x02, 0x00, // ld    t0, 0(t0)   (lw on riscv32)
     0x67, 0x80, 0x02, 0x00, // jalr  zero, 0(t0)
 };
 
@@ -661,15 +661,19 @@ private:
   MachineTypes machine;
 };
 
-class ImportThunkChunkRISCV64 : public ImportThunkChunk {
+class ImportThunkChunkRISCV : public ImportThunkChunk {
 public:
-  explicit ImportThunkChunkRISCV64(COFFLinkerContext &ctx, Defined *s)
-      : ImportThunkChunk(ctx, s) {
+  explicit ImportThunkChunkRISCV(COFFLinkerContext &ctx, Defined *s,
+                                 MachineTypes machine)
+      : ImportThunkChunk(ctx, s), machine(machine) {
     setAlignment(4);
   }
-  size_t getSize() const override { return sizeof(importThunkRISCV64); }
+  size_t getSize() const override { return sizeof(importThunkRISCV); }
   void writeTo(uint8_t *buf) const override;
-  MachineTypes getMachine() const override { return RISCV64; }
+  MachineTypes getMachine() const override { return machine; }
+
+private:
+  MachineTypes machine;
 };
 
 // ARM64EC __impchk_* thunk implementation.

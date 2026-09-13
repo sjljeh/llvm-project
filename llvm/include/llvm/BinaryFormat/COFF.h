@@ -425,6 +425,14 @@ enum RelocationTypesARM64 : unsigned {
 // RISC-V COFF instruction relocations are not defined by the published
 // PE/COFF specification. These values form the provisional contract between
 // LLVM's RISC-V COFF writer and LLD's COFF linker.
+//
+// COFF relocations carry no addend, so a HI20/LO12 pair splits it across the
+// two instruction immediates: the high half encodes the upper 20 bits and the
+// low half the lower 12 bits of the same addend. A PCREL_LO12 relocation
+// references the label of its AUIPC, which the object writer keeps as a real
+// symbol, so the linker pairs the halves by address. Absolute HI20/LO12
+// relocations both reference the target symbol and are paired by order: a
+// low half belongs to the nearest preceding high half for the same symbol.
 enum RelocationTypesRISCV : unsigned {
   IMAGE_REL_RISCV_ABSOLUTE = 0x0000,
   IMAGE_REL_RISCV_ADDR32 = 0x0001,

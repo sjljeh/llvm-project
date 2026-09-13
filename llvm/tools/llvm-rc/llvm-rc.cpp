@@ -737,6 +737,9 @@ void doCvtres(std::string Src, std::string Dest, std::string TargetTriple) {
   case Triple::mipsel:
     MachineType = COFF::IMAGE_FILE_MACHINE_R4000;
     break;
+  case Triple::riscv32:
+    MachineType = COFF::IMAGE_FILE_MACHINE_RISCV32;
+    break;
   case Triple::riscv64:
     MachineType = COFF::IMAGE_FILE_MACHINE_RISCV64;
     break;

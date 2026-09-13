@@ -779,12 +779,12 @@ std::optional<bool> RISCVAsmBackend::evaluateFixup(const MCFragment &,
     if (!AUIPCExpr->evaluateAsRelocatable(AUIPCTarget, Asm))
       return true;
 
-    // COFF has no addend field and cannot recover the original target from
-    // the temporary AUIPC label. Make both halves of the provisional pair
-    // reference the original symbol and let the linker find the preceding HI
-    // relocation.
+    // COFF has no addend field. The low half keeps referencing the AUIPC
+    // label so the linker can pair it exactly with the high relocation, and
+    // the instruction immediate carries the low 12 bits of the AUIPC target
+    // addend. addReloc preserves that value across recordRelocation.
     if (STI.getTargetTriple().isOSBinFormatCOFF()) {
-      Target = AUIPCTarget;
+      Value = AUIPCTarget.getConstant();
       return false;
     }
     break;
@@ -879,8 +879,17 @@ bool RISCVAsmBackend::addReloc(const MCFragment &F, const MCFixup &Fixup,
                                const MCValue &Target, uint64_t &FixedValue,
                                bool IsResolved) {
   if (STI.getTargetTriple().isOSBinFormatCOFF()) {
-    if (!IsResolved)
+    if (!IsResolved) {
+      // A PC-relative low half references the AUIPC label, but its encoded
+      // immediate is the addend computed by evaluateFixup, not the label's
+      // constant that recordRelocation would otherwise derive.
+      unsigned Kind = Fixup.getKind();
+      bool IsPCRelLo = Kind == RISCV::fixup_riscv_pcrel_lo12_i || Kind == RISCV::fixup_riscv_pcrel_lo12_s;
+      uint64_t LoAddend = FixedValue;
       Asm->getWriter().recordRelocation(F, Fixup, Target, FixedValue);
+      if (IsPCRelLo)
+        FixedValue = LoAddend;
+    }
     return false;
   }
 
