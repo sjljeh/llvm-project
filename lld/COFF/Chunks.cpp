@@ -845,71 +845,155 @@ static bool isRISCVLowType(uint16_t type, uint16_t lowIType,
   return type == lowIType || type == lowSType;
 }
 
-static const coff_relocation *
-findRISCVHighForLow(const SectionChunk *sec, const coff_relocation &low,
-                    uint16_t highType) {
-  ArrayRef<coff_relocation> relocs = sec->getRelocs();
-  auto current = llvm::find_if(relocs, [&](const coff_relocation &rel) { return &rel == &low; });
-  while (current != relocs.begin()) {
-    --current;
-    if (current->Type == highType && current->SymbolTableIndex == low.SymbolTableIndex)
-      return &*current;
-  }
+// A RISC-V HI20/LO12 pair carries its addend split across the two
+// instructions: the high half holds the upper 20 bits and the low half the
+// lower 12 bits of the same value. Either half therefore needs its partner
+// before the full addend, and thus the relocated value, is known.
+struct RISCVSplitReloc {
+  const coff_relocation *high = nullptr;
+  const coff_relocation *low = nullptr;
+};
+
+// Return the symbol of rel if it is a label defined inside sec, which is how
+// a PC-relative low half names its AUIPC.
+static const DefinedRegular *getRISCVLocalLabel(const SectionChunk *sec,
+                                                const coff_relocation &rel) {
+  auto *label = dyn_cast_or_null<DefinedRegular>(sec->file->getSymbol(rel.SymbolTableIndex));
+  if (label && label->getChunk() == sec)
+    return label;
   return nullptr;
 }
 
-static const coff_relocation *
-findRISCVLowForHigh(const SectionChunk *sec, const coff_relocation &high,
-                    uint16_t highType, uint16_t lowIType,
-                    uint16_t lowSType) {
+// A PC-relative low half references the label of its AUIPC, so the pair is
+// identified by address: the high half is the PCREL_HI20 record at the label's
+// offset, and the low half is a PCREL_LO12 record whose label resolves to the
+// high half's offset. Search outward from rel, as the partner is normally
+// adjacent.
+static std::optional<RISCVSplitReloc>
+findRISCVPCRelPair(const SectionChunk *sec, const coff_relocation &rel) {
   ArrayRef<coff_relocation> relocs = sec->getRelocs();
-  auto current = llvm::find_if(relocs, [&](const coff_relocation &rel) { return &rel == &high; });
-  if (current == relocs.end())
-    return nullptr;
-  for (++current; current != relocs.end(); ++current) {
-    if (!isRISCVLowType(current->Type, lowIType, lowSType) || current->SymbolTableIndex != high.SymbolTableIndex)
-      continue;
-    if (findRISCVHighForLow(sec, *current, highType) == &high)
-      return &*current;
-  }
-  return nullptr;
-}
+  size_t index = &rel - relocs.data();
+  RISCVSplitReloc pair;
 
-static std::optional<int64_t>
-getRISCVSplitAddend(const SectionChunk *sec, const coff_relocation &rel,
-                    uint16_t highType, uint16_t lowIType, uint16_t lowSType,
-                    const coff_relocation *&high) {
-  const coff_relocation *low;
-  if (rel.Type == highType) {
-    high = &rel;
-    low = findRISCVLowForHigh(sec, rel, highType, lowIType, lowSType);
-  } else {
-    low = &rel;
-    high = findRISCVHighForLow(sec, rel, highType);
+  if (rel.Type == IMAGE_REL_RISCV_PCREL_HI20) {
+    pair.high = &rel;
+    auto isLow = [&](const coff_relocation &r) {
+      if (!isRISCVLowType(r.Type, IMAGE_REL_RISCV_PCREL_LO12_I, IMAGE_REL_RISCV_PCREL_LO12_S))
+        return false;
+      const DefinedRegular *label = getRISCVLocalLabel(sec, r);
+      return label && label->getValue() == rel.VirtualAddress;
+    };
+    for (size_t i = index + 1; i < relocs.size() && !pair.low; ++i)
+      if (isLow(relocs[i]))
+        pair.low = &relocs[i];
+    for (size_t i = index; i > 0 && !pair.low; --i)
+      if (isLow(relocs[i - 1]))
+        pair.low = &relocs[i - 1];
+    if (!pair.low) {
+      error("RISC-V PCREL_HI20 relocation has no PCREL_LO12 relocation referencing its AUIPC in " + toString(sec->file));
+      return std::nullopt;
+    }
+    return pair;
   }
-  if (!high || !low) {
-    error("RISC-V split relocation has no compatible high/low pair in " + toString(sec->file));
+
+  pair.low = &rel;
+  const DefinedRegular *label = getRISCVLocalLabel(sec, rel);
+  if (!label) {
+    error("RISC-V PCREL_LO12 relocation does not reference a label in its own section in " + toString(sec->file));
     return std::nullopt;
   }
+  uint32_t highOffset = label->getValue();
+  auto isHigh = [&](const coff_relocation &r) {
+    return r.Type == IMAGE_REL_RISCV_PCREL_HI20 && r.VirtualAddress == highOffset;
+  };
+  for (size_t i = index; i > 0 && !pair.high; --i)
+    if (isHigh(relocs[i - 1]))
+      pair.high = &relocs[i - 1];
+  for (size_t i = index + 1; i < relocs.size() && !pair.high; ++i)
+    if (isHigh(relocs[i]))
+      pair.high = &relocs[i];
+  if (!pair.high) {
+    error("RISC-V PCREL_LO12 relocation references a label without a PCREL_HI20 relocation in " + toString(sec->file));
+    return std::nullopt;
+  }
+  return pair;
+}
 
+// Absolute HI20/LO12 pairs have no label tying them together: both halves
+// reference the target symbol itself. A low half pairs with the nearest
+// preceding high half for the same symbol, matching the emission order of a
+// LUI/ADDI sequence, and a high half owns the low halves that follow it up
+// to the next high half for that symbol.
+static std::optional<RISCVSplitReloc>
+findRISCVAbsPair(const SectionChunk *sec, const coff_relocation &rel) {
+  ArrayRef<coff_relocation> relocs = sec->getRelocs();
+  size_t index = &rel - relocs.data();
+  RISCVSplitReloc pair;
+
+  if (rel.Type == IMAGE_REL_RISCV_HI20) {
+    pair.high = &rel;
+    for (size_t i = index + 1; i < relocs.size(); ++i) {
+      const coff_relocation &r = relocs[i];
+      if (r.SymbolTableIndex != rel.SymbolTableIndex)
+        continue;
+      if (r.Type == IMAGE_REL_RISCV_HI20)
+        break;
+      if (isRISCVLowType(r.Type, IMAGE_REL_RISCV_LO12_I, IMAGE_REL_RISCV_LO12_S)) {
+        pair.low = &r;
+        break;
+      }
+    }
+  } else {
+    pair.low = &rel;
+    for (size_t i = index; i > 0; --i) {
+      const coff_relocation &r = relocs[i - 1];
+      if (r.Type == IMAGE_REL_RISCV_HI20 && r.SymbolTableIndex == rel.SymbolTableIndex) {
+        pair.high = &r;
+        break;
+      }
+    }
+  }
+  if (!pair.high || !pair.low) {
+    error("RISC-V HI20/LO12 relocation has no matching partner for the same symbol in " + toString(sec->file));
+    return std::nullopt;
+  }
+  return pair;
+}
+
+// Reconstruct the addend that MC split across the high and low instructions.
+static std::optional<int64_t>
+readRISCVSplitAddend(const SectionChunk *sec, const RISCVSplitReloc &pair,
+                     uint16_t lowIType) {
   ArrayRef<uint8_t> data = sec->getContents();
-  if (high->VirtualAddress > data.size() ||
-      data.size() - high->VirtualAddress < 4 ||
-      low->VirtualAddress > data.size() || data.size() - low->VirtualAddress < 4) {
+  auto inBounds = [&](const coff_relocation *r) {
+    return r->VirtualAddress <= data.size() && data.size() - r->VirtualAddress >= 4;
+  };
+  if (!inBounds(pair.high) || !inBounds(pair.low)) {
     error("RISC-V split relocation points beyond its input section in " + toString(sec->file));
     return std::nullopt;
   }
-  uint32_t highInst = read32le(data.data() + high->VirtualAddress);
-  uint32_t expectedOpcode = highType == IMAGE_REL_RISCV_PCREL_HI20 ? 0x17 : 0x37;
+
+  uint32_t highInst = read32le(data.data() + pair.high->VirtualAddress);
+  uint32_t expectedOpcode = pair.high->Type == IMAGE_REL_RISCV_PCREL_HI20 ? 0x17 : 0x37;
   if ((highInst & 0x7f) != expectedOpcode) {
     error("RISC-V split relocation does not reference the expected high instruction in " + toString(sec->file));
     return std::nullopt;
   }
 
-  int64_t lowAddend = low->Type == lowIType
-                           ? readRISCVIType(data.data() + low->VirtualAddress)
-                           : readRISCVSType(data.data() + low->VirtualAddress);
-  return readRISCVUType(data.data() + high->VirtualAddress) + lowAddend;
+  const uint8_t *lowInst = data.data() + pair.low->VirtualAddress;
+  int64_t lowAddend = pair.low->Type == lowIType ? readRISCVIType(lowInst) : readRISCVSType(lowInst);
+  return readRISCVUType(data.data() + pair.high->VirtualAddress) + lowAddend;
+}
+
+static void applyRISCVSplitHalf(uint8_t *off, uint16_t type, uint16_t highType,
+                                uint16_t lowIType, int64_t value,
+                                const Twine &context) {
+  if (type == highType)
+    applyRISCVUType(off, value, context);
+  else if (type == lowIType)
+    applyRISCVIType(off, value);
+  else
+    applyRISCVSType(off, value);
 }
 
 void SectionChunk::applyRelRISCV(uint8_t *off, const coff_relocation &rel,
@@ -961,7 +1045,9 @@ void SectionChunk::applyRelRISCV(uint8_t *off, const coff_relocation &rel,
     break;
   case IMAGE_REL_RISCV_CALL:
     if (requireBytes(8)) {
-      if ((read32le(off) & 0x7f) != 0x17 || (read32le(off + 4) & 0x707f) != 0x67) {
+      uint32_t auipc = read32le(off);
+      uint32_t jalr = read32le(off + 4);
+      if ((auipc & 0x7f) != 0x17 || (jalr & 0x707f) != 0x67 || ((auipc >> 7) & 0x1f) != ((jalr >> 15) & 0x1f)) {
         error("RISC-V CALL relocation does not reference an AUIPC/JALR pair");
         break;
       }
@@ -975,17 +1061,24 @@ void SectionChunk::applyRelRISCV(uint8_t *off, const coff_relocation &rel,
   case IMAGE_REL_RISCV_PCREL_LO12_S: {
     if (!requireBytes(4))
       break;
-    const coff_relocation *high = nullptr;
-    std::optional<int64_t> addend = getRISCVSplitAddend(this, rel, IMAGE_REL_RISCV_PCREL_HI20, IMAGE_REL_RISCV_PCREL_LO12_I, IMAGE_REL_RISCV_PCREL_LO12_S, high);
+    std::optional<RISCVSplitReloc> pair = findRISCVPCRelPair(this, rel);
+    if (!pair)
+      break;
+    std::optional<int64_t> addend = readRISCVSplitAddend(this, *pair, IMAGE_REL_RISCV_PCREL_LO12_I);
     if (!addend)
       break;
-    int64_t value = int64_t(s) + *addend - int64_t(rva + high->VirtualAddress);
-    if (rel.Type == IMAGE_REL_RISCV_PCREL_HI20)
-      applyRISCVUType(off, value, toString(file));
-    else if (rel.Type == IMAGE_REL_RISCV_PCREL_LO12_I)
-      applyRISCVIType(off, value);
-    else
-      applyRISCVSType(off, value);
+    // The high half references the target; the low half references the AUIPC
+    // label, so its target is the high half's symbol. A high half whose
+    // symbol could not be resolved has already been diagnosed.
+    uint64_t target = s;
+    if (rel.Type != IMAGE_REL_RISCV_PCREL_HI20) {
+      auto *sym = dyn_cast_or_null<Defined>(file->getSymbol(pair->high->SymbolTableIndex));
+      if (!sym)
+        break;
+      target = sym->getRVA();
+    }
+    int64_t value = int64_t(target) + *addend - int64_t(rva + pair->high->VirtualAddress);
+    applyRISCVSplitHalf(off, rel.Type, IMAGE_REL_RISCV_PCREL_HI20, IMAGE_REL_RISCV_PCREL_LO12_I, value, toString(file));
     break;
   }
   case IMAGE_REL_RISCV_HI20:
@@ -993,17 +1086,14 @@ void SectionChunk::applyRelRISCV(uint8_t *off, const coff_relocation &rel,
   case IMAGE_REL_RISCV_LO12_S: {
     if (!requireBytes(4))
       break;
-    const coff_relocation *high = nullptr;
-    std::optional<int64_t> addend = getRISCVSplitAddend(this, rel, IMAGE_REL_RISCV_HI20, IMAGE_REL_RISCV_LO12_I, IMAGE_REL_RISCV_LO12_S, high);
+    std::optional<RISCVSplitReloc> pair = findRISCVAbsPair(this, rel);
+    if (!pair)
+      break;
+    std::optional<int64_t> addend = readRISCVSplitAddend(this, *pair, IMAGE_REL_RISCV_LO12_I);
     if (!addend)
       break;
     int64_t value = int64_t(imageBase) + int64_t(s) + *addend;
-    if (rel.Type == IMAGE_REL_RISCV_HI20)
-      applyRISCVUType(off, value, toString(file));
-    else if (rel.Type == IMAGE_REL_RISCV_LO12_I)
-      applyRISCVIType(off, value);
-    else
-      applyRISCVSType(off, value);
+    applyRISCVSplitHalf(off, rel.Type, IMAGE_REL_RISCV_HI20, IMAGE_REL_RISCV_LO12_I, value, toString(file));
     break;
   }
   case IMAGE_REL_RISCV_SECTION:
@@ -1015,12 +1105,22 @@ void SectionChunk::applyRelRISCV(uint8_t *off, const coff_relocation &rel,
       applySecRel(this, off, os, s);
     break;
   case IMAGE_REL_RISCV_RVC_JUMP:
-    if (requireBytes(2))
+    if (requireBytes(2)) {
+      if ((read16le(off) & 0xe003) != 0xa001) {
+        error("RISC-V RVC_JUMP relocation does not reference a C.J instruction");
+        break;
+      }
       applyRISCVRVCJump(off, int64_t(s) + readRISCVRVCJump(off) - int64_t(p));
+    }
     break;
   case IMAGE_REL_RISCV_RVC_BRANCH:
-    if (requireBytes(2))
+    if (requireBytes(2)) {
+      if ((read16le(off) & 0xc003) != 0xc001) {
+        error("RISC-V RVC_BRANCH relocation does not reference a C.BEQZ or C.BNEZ instruction");
+        break;
+      }
       applyRISCVRVCBranch(off, int64_t(s) + readRISCVRVCBranch(off) - int64_t(p));
+    }
     break;
   default:
     error("unsupported relocation type 0x" + Twine::utohexstr(rel.Type) + " in " + toString(file));
@@ -1800,8 +1900,11 @@ void ImportThunkChunkARM64::writeTo(uint8_t *buf) const {
   applyArm64Ldr(buf + 4, off);
 }
 
-void ImportThunkChunkRISCV64::writeTo(uint8_t *buf) const {
-  memcpy(buf, importThunkRISCV64, sizeof(importThunkRISCV64));
+void ImportThunkChunkRISCV::writeTo(uint8_t *buf) const {
+  memcpy(buf, importThunkRISCV, sizeof(importThunkRISCV));
+  // The 32-bit thunk loads the IAT slot with LW instead of LD.
+  if (machine == RISCV32)
+    write32le(buf + 4, 0x0002a283);
   int64_t offset = int64_t(impSymbol->getRVA()) - int64_t(rva);
   if (applyRISCVUType(buf, offset, "import thunk for " + impSymbol->getName()))
     applyRISCVIType(buf + 4, offset);

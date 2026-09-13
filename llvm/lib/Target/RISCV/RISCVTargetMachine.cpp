@@ -169,15 +169,22 @@ static std::unique_ptr<TargetLoweringObjectFile> createTLOF(const Triple &TT) {
   return std::make_unique<RISCVELFTargetObjectFile>();
 }
 
+// PE images are placed above the first 2 GiB of the address space by default,
+// so the absolute LUI/ADDI sequences of the small code model cannot reach
+// them. Default COFF targets to PC-relative addressing instead.
+static CodeModel::Model getDefaultCodeModel(const Triple &TT) {
+  return TT.isOSBinFormatCOFF() ? CodeModel::Medium : CodeModel::Small;
+}
+
 RISCVTargetMachine::RISCVTargetMachine(const Target &T, const Triple &TT,
                                        StringRef CPU, StringRef FS,
                                        const TargetOptions &Options,
                                        std::optional<Reloc::Model> RM,
                                        std::optional<CodeModel::Model> CM,
                                        CodeGenOptLevel OL, bool JIT)
-    : CodeGenTargetMachineImpl(T, TT, CPU, FS, Options,
-                               getEffectiveRelocModel(TT, RM),
-                               getEffectiveCodeModel(CM, CodeModel::Small), OL),
+    : CodeGenTargetMachineImpl(
+          T, TT, CPU, FS, Options, getEffectiveRelocModel(TT, RM),
+          getEffectiveCodeModel(CM, getDefaultCodeModel(TT)), OL),
       TLOF(createTLOF(TT)) {
   initAsmInfo();
 
