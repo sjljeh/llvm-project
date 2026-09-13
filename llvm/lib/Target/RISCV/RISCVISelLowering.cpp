@@ -9991,6 +9991,11 @@ static SDValue getTargetNode(GlobalAddressSDNode *N, const SDLoc &DL, EVT Ty,
   return DAG.getTargetGlobalAddress(N->getGlobal(), DL, Ty, 0, Flags);
 }
 
+static SDValue getTargetNode(ExternalSymbolSDNode *N, const SDLoc &DL, EVT Ty,
+                             SelectionDAG &DAG, unsigned Flags) {
+  return DAG.getTargetExternalSymbol(N->getSymbol(), Ty, Flags);
+}
+
 static SDValue getTargetNode(BlockAddressSDNode *N, const SDLoc &DL, EVT Ty,
                              SelectionDAG &DAG, unsigned Flags) {
   return DAG.getTargetBlockAddress(N->getBlockAddress(), Ty, N->getOffset(),
@@ -10121,6 +10126,35 @@ SDValue RISCVTargetLowering::lowerGlobalAddress(SDValue Op,
   GlobalAddressSDNode *N = cast<GlobalAddressSDNode>(Op);
   assert(N->getOffset() == 0 && "unexpected offset in global node");
   const GlobalValue *GV = N->getGlobal();
+
+  // COFF represents a potentially null external weak address through an
+  // in-image .refptr cell. Unlike an ELF GOT entry, that cell receives an
+  // ordinary image relocation and remains reachable at any PE image base.
+  if (Subtarget.getTargetTriple().isOSBinFormatCOFF() && GV->hasExternalWeakLinkage()) {
+    EVT Ty = getPointerTy(DAG.getDataLayout());
+    SDLoc DL(N);
+    SDValue Stub = DAG.getTargetGlobalAddress(GV, DL, Ty, 0, RISCVII::MO_COFFSTUB);
+    SDValue StubAddress = DAG.getNode(RISCVISD::LLA, DL, Ty, Stub);
+    return DAG.getLoad(Ty, DL, DAG.getEntryNode(), StubAddress, MachinePointerInfo::getGOT(DAG.getMachineFunction()));
+  }
+
+  // A COFF dllimport global names an IAT slot rather than storage in this
+  // image. Form the __imp_ symbol address and load the imported address from
+  // that slot. Direct calls are handled separately by LowerCall and continue
+  // to use the import-library thunk.
+  if (Subtarget.getTargetTriple().isOSBinFormatCOFF() && GV->hasDLLImportStorageClass()) {
+    const TargetMachine &TM = getTargetMachine();
+    SmallString<128> ImportName("__imp_");
+    TM.getNameWithPrefix(ImportName, GV, TM.getObjFileLowering()->getMangler());
+
+    MachineFunction &MF = DAG.getMachineFunction();
+    const char *Symbol = MF.createExternalSymbolName(ImportName);
+    EVT Ty = getPointerTy(DAG.getDataLayout());
+    SDValue Import = DAG.getExternalSymbol(Symbol, Ty);
+    SDValue ImportAddr = getAddr(cast<ExternalSymbolSDNode>(Import), DAG, /*IsLocal=*/true);
+    return DAG.getLoad(Ty, SDLoc(N), DAG.getEntryNode(), ImportAddr, MachinePointerInfo::getGOT(MF));
+  }
+
   bool IsLocal = getTargetMachine().shouldAssumeDSOLocal(GV);
   return getAddr(N, DAG, IsLocal, GV->hasExternalWeakLinkage());
 }
@@ -27019,7 +27053,10 @@ SDValue RISCVTargetLowering::LowerCall(CallLoweringInfo &CLI,
     }
   } else if (GlobalAddressSDNode *S = dyn_cast<GlobalAddressSDNode>(Callee)) {
     const GlobalValue *GV = S->getGlobal();
-    Callee = DAG.getTargetGlobalAddress(GV, DL, PtrVT, 0, RISCVII::MO_CALL);
+    if (Subtarget.getTargetTriple().isOSBinFormatCOFF() && GV->hasExternalWeakLinkage())
+      Callee = lowerGlobalAddress(Callee, DAG);
+    else
+      Callee = DAG.getTargetGlobalAddress(GV, DL, PtrVT, 0, RISCVII::MO_CALL);
   } else if (ExternalSymbolSDNode *S = dyn_cast<ExternalSymbolSDNode>(Callee)) {
     Callee = DAG.getTargetExternalSymbol(S->getSymbol(), PtrVT, RISCVII::MO_CALL);
   }

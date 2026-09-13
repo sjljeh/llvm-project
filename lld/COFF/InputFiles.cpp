@@ -1276,6 +1276,8 @@ ImportThunkChunk *ImportFile::makeImportThunk() {
     return make<ImportThunkChunkARM64>(symtab.ctx, impSym, ARM64);
   case ARMNT:
     return make<ImportThunkChunkARM>(symtab.ctx, impSym);
+  case RISCV64:
+    return make<ImportThunkChunkRISCV64>(symtab.ctx, impSym);
   }
   llvm_unreachable("unknown machine type");
 }
@@ -1512,6 +1514,10 @@ MachineTypes BitcodeFile::getMachineType(const llvm::lto::InputFile *obj) {
     return IMAGE_FILE_MACHINE_POWERPC;
   case Triple::aarch64:
     return t.isWindowsArm64EC() ? ARM64EC : ARM64;
+  case Triple::riscv32:
+    return IMAGE_FILE_MACHINE_RISCV32;
+  case Triple::riscv64:
+    return IMAGE_FILE_MACHINE_RISCV64;
   default:
     return IMAGE_FILE_MACHINE_UNKNOWN;
   }

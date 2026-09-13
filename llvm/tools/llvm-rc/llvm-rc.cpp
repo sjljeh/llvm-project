@@ -655,14 +655,15 @@ void doRc(std::string Src, std::string Dest, RcOptions &Opts,
   llvm::sys::fs::make_absolute(InputFile);
   Params.InputFilePath = InputFile;
 
-  switch (Params.CodePage) {
-  case CpAcp:
-  case CpWin1252:
-  case CpUtf8:
-    break;
-  default:
-    fatalError("Unsupported code page, only 0, 1252 and 65001 are supported!");
-  }
+  if (Params.CodePage < 0 || Params.CodePage > 0xffff)
+    fatalError("Invalid code page: " + Twine(Params.CodePage));
+
+  // ResourceFileWriter can process an otherwise unsupported code page when
+  // every token that depends on it is ASCII. This is required for wrappers
+  // around precompiled message-table payloads: the localized bytes are in the
+  // referenced binary files, while the resource script contains only numeric
+  // declarations and ASCII filenames. Keep rejecting non-ASCII input unless
+  // the selected code page has a real conversion implementation.
 
   std::unique_ptr<ResourceFileWriter> Visitor;
 
@@ -735,6 +736,9 @@ void doCvtres(std::string Src, std::string Dest, std::string TargetTriple) {
     break;
   case Triple::mipsel:
     MachineType = COFF::IMAGE_FILE_MACHINE_R4000;
+    break;
+  case Triple::riscv64:
+    MachineType = COFF::IMAGE_FILE_MACHINE_RISCV64;
     break;
   default:
     fatalError("Unsupported architecture in target '" + Twine(TargetTriple) +

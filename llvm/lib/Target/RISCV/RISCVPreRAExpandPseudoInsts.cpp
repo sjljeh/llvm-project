@@ -107,7 +107,7 @@ bool RISCVPreRAExpandPseudoImpl::expandAuipcInstPair(
       MF->getRegInfo().createVirtualRegister(&RISCV::GPRRegClass);
 
   MachineOperand &Symbol = MI.getOperand(1);
-  Symbol.setTargetFlags(FlagsHi);
+  Symbol.setTargetFlags(FlagsHi | (Symbol.getTargetFlags() & ~RISCVII::MO_DIRECT_FLAG_MASK));
   MCSymbol *AUIPCSymbol = MF->getContext().createNamedTempSymbol("pcrel_hi");
 
   MachineInstr *MIAUIPC =

@@ -32,6 +32,7 @@
 #include "llvm/CodeGen/MachineFunctionAnalysisManager.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
+#include "llvm/CodeGen/MachineModuleInfoImpls.h"
 #include "llvm/IR/Module.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCContext.h"
@@ -1071,7 +1072,7 @@ static MCOperand lowerSymbolOperand(const MachineOperand &MO, MCSymbol *Sym,
   MCContext &Ctx = AP.OutContext;
   RISCV::Specifier Kind;
 
-  switch (MO.getTargetFlags()) {
+  switch (MO.getTargetFlags() & RISCVII::MO_DIRECT_FLAG_MASK) {
   default:
     llvm_unreachable("Unknown target flag on GV operand");
   case RISCVII::MO_None:
@@ -1158,9 +1159,22 @@ bool RISCVAsmPrinter::lowerOperand(const MachineOperand &MO,
   case MachineOperand::MO_MachineBasicBlock:
     MCOp = lowerSymbolOperand(MO, MO.getMBB()->getSymbol(), *this);
     break;
-  case MachineOperand::MO_GlobalAddress:
-    MCOp = lowerSymbolOperand(MO, getSymbolPreferLocal(*MO.getGlobal()), *this);
+  case MachineOperand::MO_GlobalAddress: {
+    MCSymbol *Symbol = getSymbolPreferLocal(*MO.getGlobal());
+
+    if (MO.getTargetFlags() & RISCVII::MO_COFFSTUB) {
+      assert(TM.getTargetTriple().isOSBinFormatCOFF() && "COFF pointer cell requested for a non-COFF target");
+      MCSymbol *Stub = OutContext.getOrCreateSymbol(Twine(".refptr.") + Symbol->getName());
+      MachineModuleInfoCOFF &MMICOFF = MMI->getObjFileInfo<MachineModuleInfoCOFF>();
+      MachineModuleInfoImpl::StubValueTy &StubValue = MMICOFF.getGVStubEntry(Stub);
+      if (!StubValue.getPointer())
+        StubValue = MachineModuleInfoImpl::StubValueTy(getSymbol(MO.getGlobal()), true);
+      Symbol = Stub;
+    }
+
+    MCOp = lowerSymbolOperand(MO, Symbol, *this);
     break;
+  }
   case MachineOperand::MO_BlockAddress:
     MCOp = lowerSymbolOperand(MO, GetBlockAddressSymbol(MO.getBlockAddress()),
                               *this);

@@ -486,7 +486,8 @@ std::unique_ptr<TargetInfo> AllocateTarget(const llvm::Triple &Triple,
 
   case llvm::Triple::riscv64:
     switch (os) {
-    // case llvm::Triple::Win32:
+    case llvm::Triple::Win32:
+      return std::make_unique<WindowsRISCV64TargetInfo>(Triple, Opts);
     case llvm::Triple::FreeBSD:
       return std::make_unique<FreeBSDTargetInfo<RISCV64TargetInfo>>(Triple,
                                                                     Opts);

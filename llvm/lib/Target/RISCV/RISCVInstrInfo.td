@@ -1964,6 +1964,7 @@ let hasSideEffects = 0, mayLoad = 0, mayStore = 0, Size = 8,
 def PseudoLLAImm : Pseudo<(outs GPR:$dst), (ins ixlenimm_li_restricted:$imm), [],
                           "lla", "$dst, $imm">;
 def : Pat<(riscv_lla tglobaladdr:$in), (PseudoLLA tglobaladdr:$in)>;
+def : Pat<(riscv_lla texternalsym:$in), (PseudoLLA texternalsym:$in)>;
 def : Pat<(riscv_lla tblockaddress:$in), (PseudoLLA tblockaddress:$in)>;
 def : Pat<(riscv_lla tjumptable:$in), (PseudoLLA tjumptable:$in)>;
 def : Pat<(riscv_lla tconstpool:$in), (PseudoLLA tconstpool:$in)>;
