@@ -75,6 +75,12 @@ INITIALIZE_PASS(RISCVMergeBaseOffsetLegacy, DEBUG_TYPE,
 //    2) The address operands have the appropriate type, reflecting the
 //       lowering of a global address or constant pool using medlow or medany.
 //    3) The offset value in the Global Address or Constant Pool is 0.
+// A COFF import slot or .refptr stub is a pointer cell that is only ever
+// loaded at offset 0, so no address arithmetic may be folded into its symbol.
+static bool isPointerCell(const MachineOperand &HiOp1) {
+  return HiOp1.isSymbol() || (HiOp1.getTargetFlags() & RISCVII::MO_COFFSTUB);
+}
+
 static bool detectFoldable(MachineInstr &Hi, MachineInstr *&Lo,
                            MachineRegisterInfo *MRI) {
   auto HiOpc = Hi.getOpcode();
@@ -86,11 +92,12 @@ static bool detectFoldable(MachineInstr &Hi, MachineInstr *&Lo,
   unsigned ExpectedFlags = HiOpc == RISCV::AUIPC     ? RISCVII::MO_PCREL_HI
                            : HiOpc == RISCV::QC_E_LI ? RISCVII::MO_None
                                                      : RISCVII::MO_HI;
-  if (HiOp1.getTargetFlags() != ExpectedFlags)
+  if ((HiOp1.getTargetFlags() & RISCVII::MO_DIRECT_FLAG_MASK) != ExpectedFlags)
     return false;
 
-  if (!(HiOp1.isGlobal() || HiOp1.isCPI() || HiOp1.isBlockAddress()) ||
-      HiOp1.getOffset() != 0)
+  // External symbols only reach here as PC-relative COFF import slots.
+  bool IsSymbol = HiOp1.isSymbol() && HiOpc == RISCV::AUIPC;
+  if (!(HiOp1.isGlobal() || HiOp1.isCPI() || HiOp1.isBlockAddress() || IsSymbol) || HiOp1.getOffset() != 0)
     return false;
 
   if (HiOpc == RISCV::PseudoMovAddr || HiOpc == RISCV::QC_E_LI) {
@@ -131,6 +138,8 @@ static bool detectFoldable(MachineInstr &Hi, MachineInstr *&Lo,
   } else if (HiOp1.isCPI()) {
     LLVM_DEBUG(dbgs() << "  Found lowered constant pool: " << HiOp1.getIndex()
                       << "\n");
+  } else if (HiOp1.isSymbol()) {
+    LLVM_DEBUG(dbgs() << "  Found lowered external symbol: " << HiOp1.getSymbolName() << "\n");
   }
 
   return true;
@@ -154,6 +163,8 @@ static bool foldOffset(MachineInstr &Hi, MachineInstr &Lo, MachineInstr &Tail,
         (uint64_t)Offset > GV->getDataLayout().getTypeAllocSize(Ty))
       return false;
   }
+  if (HiOpc == RISCV::AUIPC && isPointerCell(Hi.getOperand(1)) && Offset != 0)
+    return false;
 
   // Salvage the debug users of Lo's result by subtracting the offset again.
   SmallVector<uint64_t, 3> UndoOffset;
@@ -575,6 +586,8 @@ static bool foldIntoMemoryOps(MachineInstr &Hi, MachineInstr &Lo,
     NewOffset = SignExtend64<32>(NewOffset);
   // We can only fold simm32 offsets.
   if (!isInt<32>(NewOffset))
+    return false;
+  if (isPointerCell(Hi.getOperand(1)) && NewOffset != 0)
     return false;
 
   // Folding changes the value represented by DestReg, so its debug users can
