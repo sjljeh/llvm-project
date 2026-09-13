@@ -992,6 +992,7 @@ void WindowsResourceCOFFWriter::writeFirstSectionRelocations() {
     case Triple::aarch64:
       Reloc->Type = COFF::IMAGE_REL_ARM64_ADDR32NB;
       break;
+    case Triple::riscv32:
     case Triple::riscv64:
       Reloc->Type = COFF::IMAGE_REL_RISCV_ADDR32NB;
       break;

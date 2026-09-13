@@ -959,6 +959,16 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
     }
   }
 
+  bool IsRISCVPCRelLo = false;
+  if (Header.Machine == COFF::IMAGE_FILE_MACHINE_RISCV32 || Header.Machine == COFF::IMAGE_FILE_MACHINE_RISCV64) {
+    switch (Reloc.Data.Type) {
+    case COFF::IMAGE_REL_RISCV_PCREL_LO12_I:
+    case COFF::IMAGE_REL_RISCV_PCREL_LO12_S:
+      IsRISCVPCRelLo = true;
+      break;
+    }
+  }
+
   bool NeedsSecRelSymbol = false;
   bool UseSectionSymbol = A.isTemporary() && !SymbolMap.lookup(&A);
   uint64_t SecRelSymbolOffset = 0;
@@ -968,6 +978,12 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
       SecRelFixedValue += Asm->getSymbolOffset(A);
     NeedsSecRelSymbol = !isUInt<12>(SecRelFixedValue);
     SecRelSymbolOffset = Asm->getSymbolOffset(A) + FixedValue;
+  } else if (IsRISCVPCRelLo && UseSectionSymbol && A.isInSection()) {
+    // The linker pairs a RISC-V PC-relative low half with its AUIPC through
+    // the label's address, so the temporary AUIPC label must survive as a
+    // real symbol instead of collapsing into a section-relative offset.
+    NeedsSecRelSymbol = true;
+    SecRelSymbolOffset = Asm->getSymbolOffset(A);
   }
 
   if (NeedsSecRelSymbol) {

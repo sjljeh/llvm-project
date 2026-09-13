@@ -2536,6 +2536,7 @@ ResourceSectionRef::getContents(const coff_resource_data_entry &Entry) {
     case Triple::aarch64:
       RVAReloc = COFF::IMAGE_REL_ARM64_ADDR32NB;
       break;
+    case Triple::riscv32:
     case Triple::riscv64:
       RVAReloc = COFF::IMAGE_REL_RISCV_ADDR32NB;
       break;
