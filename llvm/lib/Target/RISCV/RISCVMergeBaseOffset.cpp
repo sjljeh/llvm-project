@@ -84,6 +84,12 @@ INITIALIZE_PASS(RISCVMergeBaseOffsetOpt, DEBUG_TYPE,
 //    2) The address operands have the appropriate type, reflecting the
 //       lowering of a global address or constant pool using medlow or medany.
 //    3) The offset value in the Global Address or Constant Pool is 0.
+// A COFF import slot or .refptr stub is a pointer cell that is only ever
+// loaded at offset 0, so no address arithmetic may be folded into its symbol.
+static bool isPointerCell(const MachineOperand &HiOp1) {
+  return HiOp1.isSymbol() || (HiOp1.getTargetFlags() & RISCVII::MO_COFFSTUB);
+}
+
 bool RISCVMergeBaseOffsetOpt::detectFoldable(MachineInstr &Hi,
                                              MachineInstr *&Lo) {
   auto HiOpc = Hi.getOpcode();
@@ -95,11 +101,12 @@ bool RISCVMergeBaseOffsetOpt::detectFoldable(MachineInstr &Hi,
   unsigned ExpectedFlags = HiOpc == RISCV::AUIPC     ? RISCVII::MO_PCREL_HI
                            : HiOpc == RISCV::QC_E_LI ? RISCVII::MO_None
                                                      : RISCVII::MO_HI;
-  if (HiOp1.getTargetFlags() != ExpectedFlags)
+  if ((HiOp1.getTargetFlags() & RISCVII::MO_DIRECT_FLAG_MASK) != ExpectedFlags)
     return false;
 
-  if (!(HiOp1.isGlobal() || HiOp1.isCPI() || HiOp1.isBlockAddress()) ||
-      HiOp1.getOffset() != 0)
+  // External symbols only reach here as PC-relative COFF import slots.
+  bool IsSymbol = HiOp1.isSymbol() && HiOpc == RISCV::AUIPC;
+  if (!(HiOp1.isGlobal() || HiOp1.isCPI() || HiOp1.isBlockAddress() || IsSymbol) || HiOp1.getOffset() != 0)
     return false;
 
   if (HiOpc == RISCV::PseudoMovAddr || HiOpc == RISCV::QC_E_LI) {
@@ -140,6 +147,8 @@ bool RISCVMergeBaseOffsetOpt::detectFoldable(MachineInstr &Hi,
   } else if (HiOp1.isCPI()) {
     LLVM_DEBUG(dbgs() << "  Found lowered constant pool: " << HiOp1.getIndex()
                       << "\n");
+  } else if (HiOp1.isSymbol()) {
+    LLVM_DEBUG(dbgs() << "  Found lowered external symbol: " << HiOp1.getSymbolName() << "\n");
   }
 
   return true;
@@ -163,6 +172,8 @@ bool RISCVMergeBaseOffsetOpt::foldOffset(MachineInstr &Hi, MachineInstr &Lo,
         (uint64_t)Offset > GV->getDataLayout().getTypeAllocSize(Ty))
       return false;
   }
+  if (HiOpc == RISCV::AUIPC && isPointerCell(Hi.getOperand(1)) && Offset != 0)
+    return false;
 
   // Put the offset back in Hi and the Lo
   Hi.getOperand(1).setOffset(Offset);
@@ -565,6 +576,8 @@ bool RISCVMergeBaseOffsetOpt::foldIntoMemoryOps(MachineInstr &Hi,
     NewOffset = SignExtend64<32>(NewOffset);
   // We can only fold simm32 offsets.
   if (!isInt<32>(NewOffset))
+    return false;
+  if (isPointerCell(Hi.getOperand(1)) && NewOffset != 0)
     return false;
 
   Hi.getOperand(1).setOffset(NewOffset);
