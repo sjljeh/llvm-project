@@ -410,6 +410,17 @@ static int getRuntimePseudoRelocSize(uint16_t type, Triple::ArchType arch) {
     default:
       return 0;
     }
+  case Triple::riscv32:
+  case Triple::riscv64:
+    switch (type) {
+    case IMAGE_REL_RISCV_ADDR64:
+      return 64;
+    case IMAGE_REL_RISCV_ADDR32:
+    case IMAGE_REL_RISCV_REL32:
+      return 32;
+    default:
+      return 0;
+    }
   default:
     llvm_unreachable("unknown machine type");
   }
@@ -601,6 +612,13 @@ void ImportThunkChunkARM64::writeTo(uint8_t *buf) const {
   memcpy(buf, importThunkARM64, sizeof(importThunkARM64));
   applyArm64Addr(buf, impSymbol->getRVA(), rva, 12);
   applyArm64Ldr(buf + 4, off);
+}
+
+void ImportThunkChunkRISCV64::writeTo(uint8_t *buf) const {
+  memcpy(buf, importThunkRISCV64, sizeof(importThunkRISCV64));
+  int64_t offset = int64_t(impSymbol->getRVA()) - int64_t(rva);
+  if (applyRISCVUType(buf, offset, "import thunk for " + impSymbol->getName()))
+    applyRISCVIType(buf + 4, offset);
 }
 
 // A Thumb2, PIC, non-interworking range extension thunk.

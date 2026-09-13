@@ -13,6 +13,7 @@
 #ifndef LLVM_CLANG_LIB_BASIC_TARGETS_RISCV_H
 #define LLVM_CLANG_LIB_BASIC_TARGETS_RISCV_H
 
+#include "OSTargets.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Basic/TargetOptions.h"
 #include "llvm/IR/DerivedTypes.h"
@@ -222,6 +223,19 @@ public:
     // "a" implies "zalrsc" which is sufficient to inline atomics
     if (ISAInfo->hasExtension("zalrsc"))
       MaxAtomicInlineWidth = 64;
+  }
+};
+
+class LLVM_LIBRARY_VISIBILITY WindowsRISCV64TargetInfo
+    : public WindowsTargetInfo<RISCV64TargetInfo> {
+public:
+  WindowsRISCV64TargetInfo(const llvm::Triple &Triple, const TargetOptions &Opts);
+
+  void getTargetDefines(const LangOptions &Opts,
+                        MacroBuilder &Builder) const override;
+
+  BuiltinVaListKind getBuiltinVaListKind() const override {
+    return TargetInfo::CharPtrBuiltinVaList;
   }
 };
 } // namespace targets
