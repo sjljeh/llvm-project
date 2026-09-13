@@ -693,6 +693,340 @@ void SectionChunk::applyRelARM64(uint8_t *off, uint16_t type, OutputSection *os,
   }
 }
 
+static int64_t readRISCVUType(const uint8_t *off) {
+  return int32_t(read32le(off) & 0xfffff000);
+}
+
+static int64_t readRISCVIType(const uint8_t *off) {
+  return SignExtend64<12>(read32le(off) >> 20);
+}
+
+static int64_t readRISCVSType(const uint8_t *off) {
+  uint32_t inst = read32le(off);
+  uint32_t imm = ((inst >> 25) << 5) | ((inst >> 7) & 0x1f);
+  return SignExtend64<12>(imm);
+}
+
+static int64_t readRISCVBranch(const uint8_t *off) {
+  uint32_t inst = read32le(off);
+  uint32_t imm = ((inst >> 31) << 12) | (((inst >> 7) & 1) << 11) |
+                 (((inst >> 25) & 0x3f) << 5) |
+                 (((inst >> 8) & 0xf) << 1);
+  return SignExtend64<13>(imm);
+}
+
+static int64_t readRISCVJAL(const uint8_t *off) {
+  uint32_t inst = read32le(off);
+  uint32_t imm = ((inst >> 31) << 20) | (((inst >> 12) & 0xff) << 12) |
+                 (((inst >> 20) & 1) << 11) |
+                 (((inst >> 21) & 0x3ff) << 1);
+  return SignExtend64<21>(imm);
+}
+
+static int64_t readRISCVRVCJump(const uint8_t *off) {
+  uint16_t inst = read16le(off);
+  uint16_t imm = ((inst >> 12) & 1) << 11 | ((inst >> 11) & 1) << 4 |
+                 ((inst >> 9) & 3) << 8 | ((inst >> 8) & 1) << 10 |
+                 ((inst >> 7) & 1) << 6 | ((inst >> 6) & 1) << 7 |
+                 ((inst >> 3) & 7) << 1 | ((inst >> 2) & 1) << 5;
+  return SignExtend64<12>(imm);
+}
+
+static int64_t readRISCVRVCBranch(const uint8_t *off) {
+  uint16_t inst = read16le(off);
+  uint16_t imm = ((inst >> 12) & 1) << 8 | ((inst >> 10) & 3) << 3 |
+                 ((inst >> 5) & 3) << 6 | ((inst >> 3) & 3) << 1 |
+                 ((inst >> 2) & 1) << 5;
+  return SignExtend64<9>(imm);
+}
+
+static bool applyRISCVUType(uint8_t *off, int64_t value,
+                            const Twine &context) {
+  int64_t high = (value + 0x800) >> 12;
+  if (!isInt<20>(high)) {
+    error("RISC-V HI20 relocation out of range in " + context + ": " + Twine(value));
+    return false;
+  }
+  uint32_t inst = read32le(off);
+  write32le(off, (inst & 0xfff) | (uint32_t(value + 0x800) & 0xfffff000));
+  return true;
+}
+
+static void applyRISCVIType(uint8_t *off, int64_t value) {
+  uint32_t inst = read32le(off);
+  write32le(off, (inst & 0x000fffff) | ((uint32_t(value) & 0xfff) << 20));
+}
+
+static void applyRISCVSType(uint8_t *off, int64_t value) {
+  uint32_t inst = read32le(off);
+  uint32_t imm = uint32_t(value) & 0xfff;
+  write32le(off, (inst & 0x01fff07f) | ((imm & 0xfe0) << 20) | ((imm & 0x1f) << 7));
+}
+
+static void applyRISCVBranch(uint8_t *off, int64_t value) {
+  if (!isInt<13>(value)) {
+    error("RISC-V branch relocation out of range");
+    return;
+  }
+  if (value & 1) {
+    error("RISC-V branch relocation is not two-byte aligned");
+    return;
+  }
+  uint32_t inst = read32le(off) & 0x01fff07f;
+  uint32_t imm = uint32_t(value);
+  inst |= ((imm >> 12) & 1) << 31;
+  inst |= ((imm >> 5) & 0x3f) << 25;
+  inst |= ((imm >> 1) & 0xf) << 8;
+  inst |= ((imm >> 11) & 1) << 7;
+  write32le(off, inst);
+}
+
+static void applyRISCVJAL(uint8_t *off, int64_t value) {
+  if (!isInt<21>(value)) {
+    error("RISC-V JAL relocation out of range");
+    return;
+  }
+  if (value & 1) {
+    error("RISC-V JAL relocation is not two-byte aligned");
+    return;
+  }
+  uint32_t inst = read32le(off) & 0xfff;
+  uint32_t imm = uint32_t(value);
+  inst |= ((imm >> 20) & 1) << 31;
+  inst |= ((imm >> 1) & 0x3ff) << 21;
+  inst |= ((imm >> 11) & 1) << 20;
+  inst |= ((imm >> 12) & 0xff) << 12;
+  write32le(off, inst);
+}
+
+static void applyRISCVRVCJump(uint8_t *off, int64_t value) {
+  if (!isInt<12>(value)) {
+    error("RISC-V compressed jump relocation out of range");
+    return;
+  }
+  if (value & 1) {
+    error("RISC-V compressed jump relocation is not two-byte aligned");
+    return;
+  }
+  uint16_t inst = read16le(off) & 0xe003;
+  uint16_t imm = uint16_t(value);
+  inst |= ((imm >> 11) & 1) << 12;
+  inst |= ((imm >> 4) & 1) << 11;
+  inst |= ((imm >> 8) & 3) << 9;
+  inst |= ((imm >> 10) & 1) << 8;
+  inst |= ((imm >> 6) & 1) << 7;
+  inst |= ((imm >> 7) & 1) << 6;
+  inst |= ((imm >> 1) & 7) << 3;
+  inst |= ((imm >> 5) & 1) << 2;
+  write16le(off, inst);
+}
+
+static void applyRISCVRVCBranch(uint8_t *off, int64_t value) {
+  if (!isInt<9>(value)) {
+    error("RISC-V compressed branch relocation out of range");
+    return;
+  }
+  if (value & 1) {
+    error("RISC-V compressed branch relocation is not two-byte aligned");
+    return;
+  }
+  uint16_t inst = read16le(off) & 0xe383;
+  uint16_t imm = uint16_t(value);
+  inst |= ((imm >> 8) & 1) << 12;
+  inst |= ((imm >> 3) & 3) << 10;
+  inst |= ((imm >> 6) & 3) << 5;
+  inst |= ((imm >> 1) & 3) << 3;
+  inst |= ((imm >> 5) & 1) << 2;
+  write16le(off, inst);
+}
+
+static bool isRISCVLowType(uint16_t type, uint16_t lowIType,
+                           uint16_t lowSType) {
+  return type == lowIType || type == lowSType;
+}
+
+static const coff_relocation *
+findRISCVHighForLow(const SectionChunk *sec, const coff_relocation &low,
+                    uint16_t highType) {
+  ArrayRef<coff_relocation> relocs = sec->getRelocs();
+  auto current = llvm::find_if(relocs, [&](const coff_relocation &rel) { return &rel == &low; });
+  while (current != relocs.begin()) {
+    --current;
+    if (current->Type == highType && current->SymbolTableIndex == low.SymbolTableIndex)
+      return &*current;
+  }
+  return nullptr;
+}
+
+static const coff_relocation *
+findRISCVLowForHigh(const SectionChunk *sec, const coff_relocation &high,
+                    uint16_t highType, uint16_t lowIType,
+                    uint16_t lowSType) {
+  ArrayRef<coff_relocation> relocs = sec->getRelocs();
+  auto current = llvm::find_if(relocs, [&](const coff_relocation &rel) { return &rel == &high; });
+  if (current == relocs.end())
+    return nullptr;
+  for (++current; current != relocs.end(); ++current) {
+    if (!isRISCVLowType(current->Type, lowIType, lowSType) || current->SymbolTableIndex != high.SymbolTableIndex)
+      continue;
+    if (findRISCVHighForLow(sec, *current, highType) == &high)
+      return &*current;
+  }
+  return nullptr;
+}
+
+static std::optional<int64_t>
+getRISCVSplitAddend(const SectionChunk *sec, const coff_relocation &rel,
+                    uint16_t highType, uint16_t lowIType, uint16_t lowSType,
+                    const coff_relocation *&high) {
+  const coff_relocation *low;
+  if (rel.Type == highType) {
+    high = &rel;
+    low = findRISCVLowForHigh(sec, rel, highType, lowIType, lowSType);
+  } else {
+    low = &rel;
+    high = findRISCVHighForLow(sec, rel, highType);
+  }
+  if (!high || !low) {
+    error("RISC-V split relocation has no compatible high/low pair in " + toString(sec->file));
+    return std::nullopt;
+  }
+
+  ArrayRef<uint8_t> data = sec->getContents();
+  if (high->VirtualAddress > data.size() ||
+      data.size() - high->VirtualAddress < 4 ||
+      low->VirtualAddress > data.size() || data.size() - low->VirtualAddress < 4) {
+    error("RISC-V split relocation points beyond its input section in " + toString(sec->file));
+    return std::nullopt;
+  }
+  uint32_t highInst = read32le(data.data() + high->VirtualAddress);
+  uint32_t expectedOpcode = highType == IMAGE_REL_RISCV_PCREL_HI20 ? 0x17 : 0x37;
+  if ((highInst & 0x7f) != expectedOpcode) {
+    error("RISC-V split relocation does not reference the expected high instruction in " + toString(sec->file));
+    return std::nullopt;
+  }
+
+  int64_t lowAddend = low->Type == lowIType
+                           ? readRISCVIType(data.data() + low->VirtualAddress)
+                           : readRISCVSType(data.data() + low->VirtualAddress);
+  return readRISCVUType(data.data() + high->VirtualAddress) + lowAddend;
+}
+
+void SectionChunk::applyRelRISCV(uint8_t *off, const coff_relocation &rel,
+                                 OutputSection *os, uint64_t s, uint64_t p,
+                                 uint64_t imageBase) const {
+  auto requireBytes = [&](size_t count) {
+    if (rel.VirtualAddress <= getSize() && count <= getSize() - rel.VirtualAddress)
+      return true;
+    error("RISC-V relocation points beyond its input section in " + toString(file));
+    return false;
+  };
+
+  switch (rel.Type) {
+  case IMAGE_REL_RISCV_ABSOLUTE:
+    break;
+  case IMAGE_REL_RISCV_ADDR32:
+    if (requireBytes(4))
+      add32(off, s + imageBase);
+    break;
+  case IMAGE_REL_RISCV_ADDR32NB:
+    if (requireBytes(4))
+      add32(off, s);
+    break;
+  case IMAGE_REL_RISCV_ADDR64:
+    if (requireBytes(8))
+      add64(off, s + imageBase);
+    break;
+  case IMAGE_REL_RISCV_REL32:
+    if (requireBytes(4))
+      add32(off, s - p - 4);
+    break;
+  case IMAGE_REL_RISCV_BRANCH:
+    if (requireBytes(4)) {
+      if ((read32le(off) & 0x7f) != 0x63) {
+        error("RISC-V branch relocation does not reference a branch instruction");
+        break;
+      }
+      applyRISCVBranch(off, int64_t(s) + readRISCVBranch(off) - int64_t(p));
+    }
+    break;
+  case IMAGE_REL_RISCV_JAL:
+    if (requireBytes(4)) {
+      if ((read32le(off) & 0x7f) != 0x6f) {
+        error("RISC-V JAL relocation does not reference a JAL instruction");
+        break;
+      }
+      applyRISCVJAL(off, int64_t(s) + readRISCVJAL(off) - int64_t(p));
+    }
+    break;
+  case IMAGE_REL_RISCV_CALL:
+    if (requireBytes(8)) {
+      if ((read32le(off) & 0x7f) != 0x17 || (read32le(off + 4) & 0x707f) != 0x67) {
+        error("RISC-V CALL relocation does not reference an AUIPC/JALR pair");
+        break;
+      }
+      int64_t value = int64_t(s) + readRISCVUType(off) + readRISCVIType(off + 4) - int64_t(p);
+      if (applyRISCVUType(off, value, toString(file)))
+        applyRISCVIType(off + 4, value);
+    }
+    break;
+  case IMAGE_REL_RISCV_PCREL_HI20:
+  case IMAGE_REL_RISCV_PCREL_LO12_I:
+  case IMAGE_REL_RISCV_PCREL_LO12_S: {
+    if (!requireBytes(4))
+      break;
+    const coff_relocation *high = nullptr;
+    std::optional<int64_t> addend = getRISCVSplitAddend(this, rel, IMAGE_REL_RISCV_PCREL_HI20, IMAGE_REL_RISCV_PCREL_LO12_I, IMAGE_REL_RISCV_PCREL_LO12_S, high);
+    if (!addend)
+      break;
+    int64_t value = int64_t(s) + *addend - int64_t(rva + high->VirtualAddress);
+    if (rel.Type == IMAGE_REL_RISCV_PCREL_HI20)
+      applyRISCVUType(off, value, toString(file));
+    else if (rel.Type == IMAGE_REL_RISCV_PCREL_LO12_I)
+      applyRISCVIType(off, value);
+    else
+      applyRISCVSType(off, value);
+    break;
+  }
+  case IMAGE_REL_RISCV_HI20:
+  case IMAGE_REL_RISCV_LO12_I:
+  case IMAGE_REL_RISCV_LO12_S: {
+    if (!requireBytes(4))
+      break;
+    const coff_relocation *high = nullptr;
+    std::optional<int64_t> addend = getRISCVSplitAddend(this, rel, IMAGE_REL_RISCV_HI20, IMAGE_REL_RISCV_LO12_I, IMAGE_REL_RISCV_LO12_S, high);
+    if (!addend)
+      break;
+    int64_t value = int64_t(imageBase) + int64_t(s) + *addend;
+    if (rel.Type == IMAGE_REL_RISCV_HI20)
+      applyRISCVUType(off, value, toString(file));
+    else if (rel.Type == IMAGE_REL_RISCV_LO12_I)
+      applyRISCVIType(off, value);
+    else
+      applyRISCVSType(off, value);
+    break;
+  }
+  case IMAGE_REL_RISCV_SECTION:
+    if (requireBytes(2))
+      applySecIdx(off, os, file->symtab.ctx.outputSections.size());
+    break;
+  case IMAGE_REL_RISCV_SECREL:
+    if (requireBytes(4))
+      applySecRel(this, off, os, s);
+    break;
+  case IMAGE_REL_RISCV_RVC_JUMP:
+    if (requireBytes(2))
+      applyRISCVRVCJump(off, int64_t(s) + readRISCVRVCJump(off) - int64_t(p));
+    break;
+  case IMAGE_REL_RISCV_RVC_BRANCH:
+    if (requireBytes(2))
+      applyRISCVRVCBranch(off, int64_t(s) + readRISCVRVCBranch(off) - int64_t(p));
+    break;
+  default:
+    error("unsupported relocation type 0x" + Twine::utohexstr(rel.Type) + " in " + toString(file));
+  }
+}
+
 static void applyMipsImm16(uint8_t *off, uint16_t v) { write16le(off, v); }
 
 static void applyMipsJmpAddr(uint8_t *off, uint64_t v) {
@@ -904,6 +1238,10 @@ void SectionChunk::applyRelocation(uint8_t *off,
   case Triple::aarch64:
     applyRelARM64(off, rel.Type, os, s, p, imageBase);
     break;
+  case Triple::riscv32:
+  case Triple::riscv64:
+    applyRelRISCV(off, rel, os, s, p, imageBase);
+    break;
   case Triple::mipsel:
     applyRelMIPS(off, rel, os, s, p, imageBase);
     break;
@@ -1008,6 +1346,22 @@ static uint8_t getBaserelType(const coff_relocation &rel,
     if (rel.Type == IMAGE_REL_ARM64_ADDR64)
       return IMAGE_REL_BASED_DIR64;
     return IMAGE_REL_BASED_ABSOLUTE;
+  case Triple::riscv32:
+  case Triple::riscv64:
+    switch (rel.Type) {
+    case IMAGE_REL_RISCV_ADDR32:
+      return IMAGE_REL_BASED_HIGHLOW;
+    case IMAGE_REL_RISCV_ADDR64:
+      return IMAGE_REL_BASED_DIR64;
+    case IMAGE_REL_RISCV_HI20:
+      return IMAGE_REL_BASED_RISCV_HIGH20;
+    case IMAGE_REL_RISCV_LO12_I:
+      return IMAGE_REL_BASED_RISCV_LOW12I;
+    case IMAGE_REL_RISCV_LO12_S:
+      return IMAGE_REL_BASED_RISCV_LOW12S;
+    default:
+      return IMAGE_REL_BASED_ABSOLUTE;
+    }
   case Triple::mipsel:
     switch (rel.Type) {
     case IMAGE_REL_MIPS_REFHALF:
@@ -1242,6 +1596,17 @@ static int getRuntimePseudoRelocSize(uint16_t type, Triple::ArchType arch) {
     default:
       return 0;
     }
+  case Triple::riscv32:
+  case Triple::riscv64:
+    switch (type) {
+    case IMAGE_REL_RISCV_ADDR64:
+      return 64;
+    case IMAGE_REL_RISCV_ADDR32:
+    case IMAGE_REL_RISCV_REL32:
+      return 32;
+    default:
+      return 0;
+    }
   default:
     llvm_unreachable("unknown machine type");
   }
@@ -1433,6 +1798,13 @@ void ImportThunkChunkARM64::writeTo(uint8_t *buf) const {
   memcpy(buf, importThunkARM64, sizeof(importThunkARM64));
   applyArm64Addr(buf, impSymbol->getRVA(), rva, 12);
   applyArm64Ldr(buf + 4, off);
+}
+
+void ImportThunkChunkRISCV64::writeTo(uint8_t *buf) const {
+  memcpy(buf, importThunkRISCV64, sizeof(importThunkRISCV64));
+  int64_t offset = int64_t(impSymbol->getRVA()) - int64_t(rva);
+  if (applyRISCVUType(buf, offset, "import thunk for " + impSymbol->getName()))
+    applyRISCVIType(buf + 4, offset);
 }
 
 // A Thumb2, PIC, non-interworking range extension thunk.

@@ -144,6 +144,25 @@ static unsigned getVersionValue(unsigned MajorVersion, unsigned MinorVersion) {
   return MajorVersion * 1000000 + MinorVersion * 1000;
 }
 
+WindowsRISCV64TargetInfo::WindowsRISCV64TargetInfo(
+    const llvm::Triple &Triple, const TargetOptions &Opts)
+    : WindowsTargetInfo<RISCV64TargetInfo>(Triple, Opts) {
+  // Keep the Windows LLP64 type model independent of the object format.
+  // ELF intermediates used for PE conversion need the same C ABI as COFF.
+  LongWidth = LongAlign = 32;
+  LongDoubleWidth = LongDoubleAlign = 64;
+  LongDoubleFormat = &llvm::APFloat::IEEEdouble();
+  IntMaxType = Int64Type = SignedLongLong;
+  SizeType = UnsignedLongLong;
+  PtrDiffType = IntPtrType = SignedLongLong;
+}
+
+void WindowsRISCV64TargetInfo::getTargetDefines(const LangOptions &Opts,
+                                               MacroBuilder &Builder) const {
+  WindowsTargetInfo<RISCV64TargetInfo>::getTargetDefines(Opts, Builder);
+  Builder.defineMacro("_M_RISCV64", "1");
+}
+
 void RISCVTargetInfo::getTargetDefines(const LangOptions &Opts,
                                        MacroBuilder &Builder) const {
   Builder.defineMacro("__riscv");

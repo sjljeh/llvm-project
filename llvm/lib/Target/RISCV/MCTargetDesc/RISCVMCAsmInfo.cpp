@@ -67,8 +67,12 @@ void RISCVMCAsmInfoCOFF::printSpecifierExpr(
 }
 
 bool RISCVMCAsmInfoCOFF::evaluateAsRelocatableImpl(
-    const MCSpecifierExpr &, MCValue &, const MCAssembler *) const {
-  return false;
+    const MCSpecifierExpr &Expr, MCValue &Res,
+    const MCAssembler *Asm) const {
+  if (!Expr.getSubExpr()->evaluateAsRelocatable(Res, Asm))
+    return false;
+  Res.setSpecifier(Expr.getSpecifier());
+  return !Res.getSubSym();
 }
 
 void RISCVMCAsmInfo::printSpecifierExpr(raw_ostream &OS,

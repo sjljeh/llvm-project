@@ -519,6 +519,8 @@ static uint64_t adjustFixupValue(const MCFixup &Fixup, uint64_t Value,
   case FK_Data_4:
   case FK_Data_8:
   case FK_Data_leb128:
+  case FK_SecRel_2:
+  case FK_SecRel_4:
     return Value;
   case RISCV::fixup_riscv_lo12_i:
   case RISCV::fixup_riscv_pcrel_lo12_i:
@@ -753,6 +755,14 @@ std::optional<bool> RISCVAsmBackend::evaluateFixup(const MCFragment &,
   case RISCV::fixup_qc_access_32:
     // Never resolved in the assembler
     return false;
+  case RISCV::fixup_riscv_pcrel_hi20:
+    // COFF represents a PC-relative address as a private HI/LO relocation
+    // pair. Keep the high half even when its target is in the same section;
+    // the low half is always emitted below and both records are required for
+    // the linker to reconstruct the implicit addend.
+    if (STI.getTargetTriple().isOSBinFormatCOFF())
+      return false;
+    return {};
   case RISCV::fixup_riscv_pcrel_lo12_i:
   case RISCV::fixup_riscv_pcrel_lo12_s: {
     AUIPCFixup =
@@ -768,6 +778,15 @@ std::optional<bool> RISCVAsmBackend::evaluateFixup(const MCFragment &,
     const MCExpr *AUIPCExpr = AUIPCFixup->getValue();
     if (!AUIPCExpr->evaluateAsRelocatable(AUIPCTarget, Asm))
       return true;
+
+    // COFF has no addend field and cannot recover the original target from
+    // the temporary AUIPC label. Make both halves of the provisional pair
+    // reference the original symbol and let the linker find the preceding HI
+    // relocation.
+    if (STI.getTargetTriple().isOSBinFormatCOFF()) {
+      Target = AUIPCTarget;
+      return false;
+    }
     break;
   }
   }
@@ -859,6 +878,12 @@ static bool relaxableFixupNeedsRelocation(const MCFixupKind Kind) {
 bool RISCVAsmBackend::addReloc(const MCFragment &F, const MCFixup &Fixup,
                                const MCValue &Target, uint64_t &FixedValue,
                                bool IsResolved) {
+  if (STI.getTargetTriple().isOSBinFormatCOFF()) {
+    if (!IsResolved)
+      Asm->getWriter().recordRelocation(F, Fixup, Target, FixedValue);
+    return false;
+  }
+
   uint64_t FixedValueA, FixedValueB;
   if (Target.getSubSym()) {
     assert(Target.getSpecifier() == 0 &&

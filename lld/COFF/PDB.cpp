@@ -1357,6 +1357,9 @@ static codeview::CPUType toCodeViewMachine(COFF::MachineTypes machine) {
     return codeview::CPUType::PPC601;
   case COFF::IMAGE_FILE_MACHINE_R4000:
     return codeview::CPUType::MIPS;
+  case COFF::IMAGE_FILE_MACHINE_RISCV32:
+  case COFF::IMAGE_FILE_MACHINE_RISCV64:
+    return codeview::CPUType::Unknown;
   default:
     llvm_unreachable("Unsupported CPU Type");
   }
@@ -1738,6 +1741,9 @@ static uint32_t getSecrelReloc(Triple::ArchType arch) {
     return COFF::IMAGE_REL_ARM_SECREL;
   case Triple::aarch64:
     return COFF::IMAGE_REL_ARM64_SECREL;
+  case Triple::riscv32:
+  case Triple::riscv64:
+    return COFF::IMAGE_REL_RISCV_SECREL;
   default:
     llvm_unreachable("unknown machine type");
   }
