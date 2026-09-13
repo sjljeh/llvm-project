@@ -3736,6 +3736,15 @@ RISCVInstrInfo::getSerializableDirectMachineOperandTargetFlags() const {
   return ArrayRef(TargetFlags);
 }
 
+ArrayRef<std::pair<unsigned, const char *>>
+RISCVInstrInfo::getSerializableBitmaskMachineOperandTargetFlags() const {
+  using namespace RISCVII;
+  static const std::pair<unsigned, const char *> TargetFlags[] = {
+      {MO_COFFSTUB, "riscv-coffstub"},
+  };
+  return ArrayRef(TargetFlags);
+}
+
 bool RISCVInstrInfo::isMBBSafeToOutlineFrom(MachineBasicBlock &MBB,
                                             unsigned &Flags) const {
   // More accurate safety checking is done in getOutliningCandidateInfo.

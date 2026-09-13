@@ -65,11 +65,6 @@ void RISCVMCAsmInfoCOFF::printSpecifierExpr(
     OS << ')';
 }
 
-bool RISCVMCAsmInfoCOFF::evaluateAsRelocatableImpl(
-    const MCSpecifierExpr &, MCValue &, const MCAssembler *) const {
-  return false;
-}
-
 void RISCVMCAsmInfo::printSpecifierExpr(raw_ostream &OS,
                                         const MCSpecifierExpr &Expr) const {
   auto S = Expr.getSpecifier();

@@ -1520,7 +1520,10 @@ void Writer::createMiscChunks() {
 
   createECChunks();
 
-  if (config->autoImport)
+  // Runtime pseudo-relocation mode also owns the start and end marker
+  // symbols. Materialize an empty table when auto-import is disabled so the
+  // CRT receives valid in-image addresses instead of absolute zero symbols.
+  if (config->autoImport || config->pseudoRelocs)
     createRuntimePseudoRelocs();
 
   if (config->mingw) {

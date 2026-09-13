@@ -9,6 +9,7 @@
 #ifndef LLD_COFF_TARGET_H
 #define LLD_COFF_TARGET_H
 
+#include "llvm/ADT/Twine.h"
 #include "llvm/Object/COFF.h"
 #include <cstdint>
 #include <memory>
@@ -66,6 +67,8 @@ void applyArm64Addr(uint8_t *off, uint64_t s, uint64_t p, int shift);
 void applyArm64Imm(uint8_t *off, uint64_t imm, uint32_t rangeLimit);
 void applyArm64Ldr(uint8_t *off, uint64_t imm);
 void applyArm64Branch26(uint8_t *off, int64_t v);
+bool applyRISCVUType(uint8_t *off, int64_t value, const llvm::Twine &context);
+void applyRISCVIType(uint8_t *off, int64_t value);
 
 } // namespace lld::coff
 

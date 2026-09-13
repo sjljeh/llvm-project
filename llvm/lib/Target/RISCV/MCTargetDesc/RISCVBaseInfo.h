@@ -488,7 +488,11 @@ enum {
   // Used to differentiate between target-specific "direct" flags and "bitmask"
   // flags. A machine operand can only have one "direct" flag, but can have
   // multiple "bitmask" flags.
-  MO_DIRECT_FLAG_MASK = 31
+  MO_DIRECT_FLAG_MASK = 31,
+
+  // Reference the COFF pointer cell named ".refptr.<symbol>" instead of the
+  // symbol itself. This keeps a possibly null weak address inside the image.
+  MO_COFFSTUB = 1 << 5
 };
 } // namespace RISCVII
 
