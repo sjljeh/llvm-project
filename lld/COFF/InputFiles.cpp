@@ -1276,8 +1276,9 @@ ImportThunkChunk *ImportFile::makeImportThunk() {
     return make<ImportThunkChunkARM64>(symtab.ctx, impSym, ARM64);
   case ARMNT:
     return make<ImportThunkChunkARM>(symtab.ctx, impSym);
+  case RISCV32:
   case RISCV64:
-    return make<ImportThunkChunkRISCV64>(symtab.ctx, impSym);
+    return make<ImportThunkChunkRISCV>(symtab.ctx, impSym, getMachineType());
   }
   llvm_unreachable("unknown machine type");
 }

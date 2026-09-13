@@ -46,7 +46,7 @@ static cl::TokenizerCallback getDefaultQuotingStyle() {
 static bool isPETargetName(StringRef s) {
   return s == "i386pe" || s == "i386pep" || s == "thumb2pe" || s == "arm64pe" ||
          s == "arm64ecpe" || s == "arm64xpe" || s == "mipspe" ||
-         s == "riscv64pe";
+         s == "riscv32pe" || s == "riscv64pe";
 }
 
 static std::optional<bool> isPETarget(llvm::ArrayRef<const char *> args) {
