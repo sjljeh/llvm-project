@@ -78,8 +78,23 @@ unsigned RISCVWinCOFFObjectWriter::getRelocType(
       return COFF::IMAGE_REL_RISCV_REL32;
     if (Target.getSpecifier() == MCSymbolRefExpr::VK_COFF_IMGREL32)
       return COFF::IMAGE_REL_RISCV_ADDR32NB;
-    return COFF::IMAGE_REL_RISCV_ADDR32;
+    if (Target.getSpecifier() == RISCV::S_None)
+      return COFF::IMAGE_REL_RISCV_ADDR32;
+    Ctx.reportError(Fixup.getLoc(),
+                    "relocation specifier unsupported on COFF targets");
+    return COFF::IMAGE_REL_RISCV_ABSOLUTE;
   case FK_Data_8:
+    if (IsPCRel) {
+      Ctx.reportError(Fixup.getLoc(),
+                      "64-bit PC-relative data relocations unsupported on "
+                      "COFF targets");
+      return COFF::IMAGE_REL_RISCV_ABSOLUTE;
+    }
+    if (Target.getSpecifier() != RISCV::S_None) {
+      Ctx.reportError(Fixup.getLoc(),
+                      "relocation specifier unsupported on COFF targets");
+      return COFF::IMAGE_REL_RISCV_ABSOLUTE;
+    }
     return COFF::IMAGE_REL_RISCV_ADDR64;
   case FK_SecRel_2:
     return COFF::IMAGE_REL_RISCV_SECTION;
