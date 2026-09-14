@@ -659,6 +659,11 @@ void applyRISCVIType(uint8_t *off, int64_t value) {
   write32le(off, (inst & 0x000fffff) | ((uint32_t(value) & 0xfff) << 20));
 }
 
+void applyRISCVPCRelPair(uint8_t *off, int64_t value, const Twine &context) {
+  if (applyRISCVUType(off, value, context))
+    applyRISCVIType(off + 4, value);
+}
+
 static void applyRISCVSType(uint8_t *off, int64_t value) {
   uint32_t inst = read32le(off);
   uint32_t imm = uint32_t(value) & 0xfff;
