@@ -47,6 +47,10 @@ namespace RISCV {
 void updateCZceFeatureImplications(MCSubtargetInfo &STI);
 }
 
+namespace RISCV_MC {
+void initLLVMToCVRegMapping(MCRegisterInfo *MRI);
+}
+
 } // namespace llvm
 
 // Defines symbolic names for RISC-V registers.
