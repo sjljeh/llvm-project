@@ -16,6 +16,7 @@
 #include "RISCVMCAsmInfo.h"
 #include "RISCVMCObjectFileInfo.h"
 #include "RISCVTargetStreamer.h"
+#include "RISCVWinCOFFStreamer.h"
 #include "TargetInfo/RISCVTargetInfo.h"
 #include "llvm/MC/MCAsmBackend.h"
 #include "llvm/MC/MCAsmInfo.h"
@@ -190,6 +191,8 @@ createRISCVObjectTargetStreamer(MCStreamer &S, const MCSubtargetInfo &STI) {
   const Triple &TT = STI.getTargetTriple();
   if (TT.isOSBinFormatELF())
     return new RISCVTargetELFStreamer(S, STI);
+  if (TT.isRISCV64() && TT.isOSBinFormatCOFF())
+    return new RISCVTargetWinCOFFStreamer(S);
   return new RISCVTargetStreamer(S);
 }
 
@@ -201,14 +204,6 @@ createMachOStreamer(MCContext &Ctx, std::unique_ptr<MCAsmBackend> &&TAB,
                              std::move(Emitter),
                              /*DWARFMustBeAtTheEnd*/ false,
                              /*LabelSections*/ true);
-}
-
-static MCStreamer *createRISCVWinCOFFStreamer(
-    MCContext &Ctx, std::unique_ptr<MCAsmBackend> &&TAB,
-    std::unique_ptr<MCObjectWriter> &&OW,
-    std::unique_ptr<MCCodeEmitter> &&Emitter) {
-  return new MCWinCOFFStreamer(Ctx, std::move(TAB), std::move(Emitter),
-                               std::move(OW));
 }
 
 static MCTargetStreamer *
