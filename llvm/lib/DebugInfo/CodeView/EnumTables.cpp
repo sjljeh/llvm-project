@@ -115,7 +115,7 @@ EnumStrings<uint16_t> getRegisterNames(CPUType Cpu) {
              Cpu == CPUType::PPC604 || Cpu == CPUType::PPC620 ||
              Cpu == CPUType::PPCFP || Cpu == CPUType::PPCBE) {
     return RegisterNames_PPC;
-  } else if (Cpu == CPUType::RISCV64) {
+  } else if (Cpu == CPUType::RISCV32 || Cpu == CPUType::RISCV64) {
     return RegisterNames_RISCV;
   }
   return RegisterNames_X86;
@@ -326,6 +326,7 @@ EnumStrings<unsigned> getCPUTypeNames() {
       CV_ENUM_CLASS_ENT(CPUType, ARM64EC),
       CV_ENUM_CLASS_ENT(CPUType, ARM64X),
       CV_ENUM_CLASS_ENT(CPUType, RISCV64),
+      CV_ENUM_CLASS_ENT(CPUType, RISCV32),
       CV_ENUM_CLASS_ENT(CPUType, Unknown),
       CV_ENUM_CLASS_ENT(CPUType, D3D11_Shader),
   };

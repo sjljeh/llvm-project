@@ -4,7 +4,7 @@ include "llvm/Option/OptParser.td"
 
 def DEFINE : Joined<["/", "-"], "DEFINE:">, HelpText<"Not implemented">, MetaVarName<"symbol">;
 def FOLDDUPS : Flag<["/", "-"], "FOLDDUPS:">, HelpText<"Not implemented">;
-def MACHINE : Joined<["/", "-"], "MACHINE:">, HelpText<"Machine architecture">, MetaVarName<"{ARM|ARM64|EBC|IA64|X64|X86}">;
+def MACHINE : Joined<["/", "-"], "MACHINE:">, HelpText<"Machine architecture">, MetaVarName<"{ARM|ARM64|EBC|IA64|RISCV32|RISCV64|X64|X86}">;
 def NOLOGO : Flag<["/", "-"], "NOLOGO">, HelpText<"Not implemented">;
 def OUT : Joined<["/", "-"], "OUT:">, HelpText<"Output file">, MetaVarName<"filename">;
 def READONLY : Flag<["/", "-"], "READONLY">, HelpText<"Not implemented">;

@@ -1358,7 +1358,7 @@ static codeview::CPUType toCodeViewMachine(COFF::MachineTypes machine) {
   case COFF::IMAGE_FILE_MACHINE_R4000:
     return codeview::CPUType::MIPS;
   case COFF::IMAGE_FILE_MACHINE_RISCV32:
-    return codeview::CPUType::Unknown;
+    return codeview::CPUType::RISCV32;
   case COFF::IMAGE_FILE_MACHINE_RISCV64:
     return codeview::CPUType::RISCV64;
   default:
