@@ -83,6 +83,16 @@ EnumStrings<uint16_t> getRegisterNames(CPUType Cpu) {
   static constexpr auto RegisterNames_ALPHA =
       BUILD_ENUM_STRINGS(RegisterNameDefs_ALPHA);
 
+  constexpr EnumStringDef<uint16_t> RegisterNameDefs_RISCV[] = {
+#define CV_REGISTERS_RISCV
+#define CV_REGISTER(name, val) CV_ENUM_CLASS_ENT(RegisterId, name),
+#include "llvm/DebugInfo/CodeView/CodeViewRegisters.def"
+#undef CV_REGISTER
+#undef CV_REGISTERS_RISCV
+  };
+  static constexpr auto RegisterNames_RISCV =
+      BUILD_ENUM_STRINGS(RegisterNameDefs_RISCV);
+
   constexpr EnumStringDef<uint16_t> RegisterNameDefs_PPC[] = {
 #define CV_REGISTERS_PPC
 #define CV_REGISTER(name, val) CV_ENUM_CLASS_ENT(RegisterId, name),
@@ -105,6 +115,8 @@ EnumStrings<uint16_t> getRegisterNames(CPUType Cpu) {
              Cpu == CPUType::PPC604 || Cpu == CPUType::PPC620 ||
              Cpu == CPUType::PPCFP || Cpu == CPUType::PPCBE) {
     return RegisterNames_PPC;
+  } else if (Cpu == CPUType::RISCV64) {
+    return RegisterNames_RISCV;
   }
   return RegisterNames_X86;
 }
@@ -313,6 +325,7 @@ EnumStrings<unsigned> getCPUTypeNames() {
       CV_ENUM_CLASS_ENT(CPUType, HybridX86ARM64),
       CV_ENUM_CLASS_ENT(CPUType, ARM64EC),
       CV_ENUM_CLASS_ENT(CPUType, ARM64X),
+      CV_ENUM_CLASS_ENT(CPUType, RISCV64),
       CV_ENUM_CLASS_ENT(CPUType, Unknown),
       CV_ENUM_CLASS_ENT(CPUType, D3D11_Shader),
   };

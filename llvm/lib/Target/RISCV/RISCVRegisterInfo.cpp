@@ -12,6 +12,7 @@
 
 #include "RISCVRegisterInfo.h"
 #include "RISCV.h"
+#include "MCTargetDesc/RISCVMCTargetDesc.h"
 #include "RISCVSubtarget.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/BinaryFormat/Dwarf.h"
@@ -51,6 +52,8 @@ RISCVRegisterInfo::RISCVRegisterInfo(unsigned HwMode,
     : RISCVGenRegisterInfo(RISCV::X1, /*DwarfFlavour*/ 0, /*EHFlavor*/ 0,
                            /*PC*/ 0, HwMode),
       UserReservedRegs(getNumRegs()) {
+  RISCV_MC::initLLVMToCVRegMapping(this);
+
   // Expand the reserve-xN features to include aliases.
   for (unsigned I = 1; I != 32; ++I) {
     if (!UserReservedXRegs[I])
