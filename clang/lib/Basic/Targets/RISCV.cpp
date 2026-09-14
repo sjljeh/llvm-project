@@ -144,6 +144,12 @@ static unsigned getVersionValue(unsigned MajorVersion, unsigned MinorVersion) {
   return MajorVersion * 1000000 + MinorVersion * 1000;
 }
 
+void WindowsRISCV32TargetInfo::getTargetDefines(const LangOptions &Opts,
+                                                MacroBuilder &Builder) const {
+  WindowsTargetInfo<RISCV32TargetInfo>::getTargetDefines(Opts, Builder);
+  Builder.defineMacro("_M_RISCV32", "100");
+}
+
 WindowsRISCV64TargetInfo::WindowsRISCV64TargetInfo(
     const llvm::Triple &Triple, const TargetOptions &Opts)
     : WindowsTargetInfo<RISCV64TargetInfo>(Triple, Opts) {
@@ -160,7 +166,7 @@ WindowsRISCV64TargetInfo::WindowsRISCV64TargetInfo(
 void WindowsRISCV64TargetInfo::getTargetDefines(const LangOptions &Opts,
                                                MacroBuilder &Builder) const {
   WindowsTargetInfo<RISCV64TargetInfo>::getTargetDefines(Opts, Builder);
-  Builder.defineMacro("_M_RISCV64", "1");
+  Builder.defineMacro("_M_RISCV64", "100");
 }
 
 void RISCVTargetInfo::getTargetDefines(const LangOptions &Opts,

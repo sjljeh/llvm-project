@@ -226,6 +226,24 @@ public:
   }
 };
 
+class LLVM_LIBRARY_VISIBILITY WindowsRISCV32TargetInfo
+    : public WindowsTargetInfo<RISCV32TargetInfo> {
+public:
+  WindowsRISCV32TargetInfo(const llvm::Triple &Triple,
+                           const TargetOptions &Opts)
+      : WindowsTargetInfo<RISCV32TargetInfo>(Triple, Opts) {
+    LongDoubleWidth = LongDoubleAlign = 64;
+    LongDoubleFormat = &llvm::APFloat::IEEEdouble();
+  }
+
+  void getTargetDefines(const LangOptions &Opts,
+                        MacroBuilder &Builder) const override;
+
+  BuiltinVaListKind getBuiltinVaListKind() const override {
+    return TargetInfo::CharPtrBuiltinVaList;
+  }
+};
+
 class LLVM_LIBRARY_VISIBILITY WindowsRISCV64TargetInfo
     : public WindowsTargetInfo<RISCV64TargetInfo> {
 public:
