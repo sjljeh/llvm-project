@@ -261,6 +261,7 @@ private:
   void writePEChecksum();
   void sortSections();
   template <typename T> void sortExceptionTable(ChunkRange &exceptionTable);
+  void sortRISCV64ExceptionTable(ChunkRange &exceptionTable);
   void sortExceptionTables();
   void sortCRTSectionChunks(std::vector<Chunk *> &chunks);
   void addSyntheticIdata();
@@ -2973,6 +2974,70 @@ void Writer::sortExceptionTable(ChunkRange &exceptionTable) {
                [](const T &a, const T &b) { return a.begin < b.begin; });
 }
 
+void Writer::sortRISCV64ExceptionTable(ChunkRange &exceptionTable) {
+  struct EntryRISCV64 {
+    ulittle32_t begin, end, unwind;
+  };
+
+  sortExceptionTable<EntryRISCV64>(exceptionTable);
+  if (!exceptionTable.first)
+    return;
+
+  auto bufAddr = [&](Chunk *c) {
+    OutputSection *os = ctx.getOutputSection(c);
+    return buffer->getBufferStart() + os->getFileOff() + c->getRVA() -
+           os->getRVA();
+  };
+  auto findSection = [&](uint32_t rva) -> OutputSection * {
+    for (OutputSection *sec : ctx.outputSections)
+      if (rva >= sec->getRVA() &&
+          uint64_t(rva) < sec->getRVA() + sec->getVirtualSize())
+        return sec;
+    return nullptr;
+  };
+
+  uint8_t *begin = bufAddr(exceptionTable.first);
+  uint8_t *end = bufAddr(exceptionTable.last) + exceptionTable.last->getSize();
+  ArrayRef<EntryRISCV64> entries(reinterpret_cast<EntryRISCV64 *>(begin), reinterpret_cast<EntryRISCV64 *>(end));
+  uint32_t previousEnd = 0;
+  for (size_t i = 0; i != entries.size(); ++i) {
+    uint32_t functionBegin = entries[i].begin;
+    uint32_t functionEnd = entries[i].end;
+    uint32_t unwind = entries[i].unwind;
+    auto fail = [&](const Twine &message) {
+      Fatal(ctx) << "invalid RISC-V64 .pdata record " << i << ": "
+                 << message;
+    };
+
+    if ((functionBegin | functionEnd) & 1)
+      fail("function range is not two-byte aligned");
+    if (functionBegin >= functionEnd)
+      fail("function range is empty or reversed");
+    if (i && functionBegin < previousEnd)
+      fail("function range overlaps the previous record");
+    if (unwind & 3)
+      fail("unwind-data RVA is not four-byte aligned");
+
+    OutputSection *beginSection = findSection(functionBegin);
+    OutputSection *endSection = findSection(functionEnd - 1);
+    if (!beginSection || beginSection != endSection ||
+        !beginSection->isCodeSection())
+      fail("function range is outside one executable code section");
+
+    OutputSection *unwindSection = findSection(unwind);
+    if (!unwindSection || uint64_t(unwind) + 4 >
+                              unwindSection->getRVA() +
+                                  unwindSection->getVirtualSize())
+      fail("unwind-data RVA is outside the image");
+    uint32_t unwindPermissions = unwindSection->getPermissions();
+    if (!(unwindPermissions & IMAGE_SCN_MEM_READ) ||
+        (unwindPermissions & IMAGE_SCN_MEM_WRITE))
+      fail("unwind data is not in a read-only section");
+
+    previousEnd = functionEnd;
+  }
+}
+
 // Sort .pdata section contents according to PE/COFF spec 5.5.
 void Writer::sortExceptionTables() {
   llvm::TimeTraceScope timeScope("Sort exception table");
@@ -2996,6 +3061,9 @@ void Writer::sortExceptionTables() {
   case IMAGE_FILE_MACHINE_ALPHA64:
   case IMAGE_FILE_MACHINE_R4000:
     sortExceptionTable<EntryRISC>(pdata);
+    break;
+  case RISCV64:
+    sortRISCV64ExceptionTable(pdata);
     break;
   case ARM64EC:
   case ARM64X:
