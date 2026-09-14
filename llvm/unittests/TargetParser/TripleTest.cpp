@@ -3965,6 +3965,15 @@ TEST(DataLayoutTest, Alpha) {
             "e-p:64:64-f64:64-n32:64");
 }
 
+TEST(DataLayoutTest, RISCVWindows) {
+  EXPECT_EQ(Triple("riscv32-pc-windows-msvc").computeDataLayout("ilp32"),
+            "e-m:w-p:32:32-i64:64-n32-S128");
+  EXPECT_EQ(Triple("riscv64-pc-windows-msvc").computeDataLayout("lp64d"),
+            "e-m:w-p:64:64-i64:64-i128:128-n32:64-S128");
+  EXPECT_EQ(Triple("riscv64-unknown-linux-gnu").computeDataLayout("lp64d"),
+            "e-m:e-p:64:64-i64:64-i128:128-n32:64-S128");
+}
+
 TEST(DataLayoutTest, UEFI) {
   Triple TT = Triple("x86_64-unknown-uefi");
 

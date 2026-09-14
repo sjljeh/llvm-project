@@ -2024,8 +2024,20 @@ static std::string getBaseRelocTypeName(uint8_t Type, uint16_t Machine) {
   case COFF::IMAGE_REL_BASED_MIPS_JMPADDR:
     if (Machine == COFF::IMAGE_FILE_MACHINE_R4000)
       return "MIPS_JMPADDR";
+    if (Machine == COFF::IMAGE_FILE_MACHINE_RISCV32 ||
+        Machine == COFF::IMAGE_FILE_MACHINE_RISCV64)
+      return "RISCV_HIGH20";
     return "unknown (" + llvm::utostr(Type) + ")";
-  case COFF::IMAGE_REL_BASED_ARM_MOV32T: return "ARM_MOV32(T)";
+  case COFF::IMAGE_REL_BASED_ARM_MOV32T:
+    if (Machine == COFF::IMAGE_FILE_MACHINE_RISCV32 ||
+        Machine == COFF::IMAGE_FILE_MACHINE_RISCV64)
+      return "RISCV_LOW12I";
+    return "ARM_MOV32(T)";
+  case COFF::IMAGE_REL_BASED_RISCV_LOW12S:
+    if (Machine == COFF::IMAGE_FILE_MACHINE_RISCV32 ||
+        Machine == COFF::IMAGE_FILE_MACHINE_RISCV64)
+      return "RISCV_LOW12S";
+    return "unknown (" + llvm::utostr(Type) + ")";
   case COFF::IMAGE_REL_BASED_MIPS_JMPADDR16:
     if (Machine == COFF::IMAGE_FILE_MACHINE_R4000)
       return "MIPS_JMPADDR16";

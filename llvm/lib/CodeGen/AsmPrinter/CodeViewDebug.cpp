@@ -131,7 +131,7 @@ static CPUType mapArchToCVCPUType(Triple::ArchType Type) {
   case Triple::ArchType::ppcle:
     return CPUType::PPC601;
   case Triple::ArchType::riscv32:
-    return CPUType::Unknown;
+    return CPUType::RISCV32;
   case Triple::ArchType::riscv64:
     return CPUType::RISCV64;
   case Triple::ArchType::UnknownArch:

@@ -294,7 +294,7 @@ static std::string computeRISCVDataLayout(const Triple &TT, StringRef ABIName) {
   else
     Ret += "E";
 
-  Ret += "-m:e";
+  Ret += getManglingComponent(TT);
 
   // TODO: Maybe we should move RISCVABI to TargetParser, so we can reuse that
   // logic here instead of duplicating the string handling?

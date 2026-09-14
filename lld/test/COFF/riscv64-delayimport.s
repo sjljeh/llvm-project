@@ -3,7 +3,7 @@
 # RUN: llvm-dlltool -m riscv64 -d %t.dir/lib.def -l %t.dir/lib.lib
 # RUN: llvm-mc -triple riscv64-w64-windows-gnu -filetype=obj %t.dir/main.s -o %t.obj
 # RUN: lld-link -machine:riscv64 -entry:main -subsystem:console -delayload:lib.dll -out:%t.exe %t.obj %t.dir/lib.lib
-# RUN: llvm-objdump -d --no-print-imm-hex --no-show-raw-insn -M no-aliases %t.exe | FileCheck %s --check-prefix=CODE
+# RUN: llvm-objdump -d --no-print-imm-hex --no-show-raw-insn -M no-aliases --mattr=+d %t.exe | FileCheck %s --check-prefix=CODE
 # RUN: llvm-readobj --coff-imports --coff-basereloc %t.exe | FileCheck %s --check-prefix=TABLES
 # RUN: llvm-dlltool -m riscv32 -d %t.dir/lib.def -l %t.dir/lib32.lib
 # RUN: llvm-mc -triple riscv32-w64-windows-gnu -filetype=obj %t.dir/main.s -o %t.32.obj

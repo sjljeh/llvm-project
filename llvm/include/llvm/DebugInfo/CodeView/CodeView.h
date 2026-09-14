@@ -137,6 +137,7 @@ enum class CPUType : uint16_t {
   ARM64EC = 0xf8,
   ARM64X = 0xf9,
   RISCV64 = 0xfa,
+  RISCV32 = 0xfb,
   Unknown = 0xff,
   D3D11_Shader = 0x100,
 };
