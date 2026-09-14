@@ -21,6 +21,7 @@ add_llvm_tool(llvm-readobj
   llvm-readobj.cpp
   MachODumper.cpp
   ObjDumper.cpp
+  RISCVWinEHDumper.cpp
   WasmDumper.cpp
   Win64EHDumper.cpp
   WindowsResourceDumper.cpp
