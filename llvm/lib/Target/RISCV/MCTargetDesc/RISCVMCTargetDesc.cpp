@@ -18,6 +18,7 @@
 #include "RISCVTargetStreamer.h"
 #include "RISCVWinCOFFStreamer.h"
 #include "TargetInfo/RISCVTargetInfo.h"
+#include "llvm/DebugInfo/CodeView/CodeView.h"
 #include "llvm/MC/MCAsmBackend.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCCodeEmitter.h"
@@ -27,7 +28,6 @@
 #include "llvm/MC/MCObjectWriter.h"
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCStreamer.h"
-#include "llvm/MC/MCWinCOFFStreamer.h"
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/Compiler.h"
@@ -54,9 +54,58 @@ static MCInstrInfo *createRISCVMCInstrInfo() {
   return X;
 }
 
+void RISCV_MC::initLLVMToCVRegMapping(MCRegisterInfo *MRI) {
+  static const struct {
+    codeview::RegisterId CVReg;
+    MCPhysReg Reg;
+  } RegMap[] = {
+#define MAP_XREG(N)                                                            \
+  {codeview::RegisterId::RISCV_X##N, RISCV::X##N},                             \
+      {codeview::RegisterId::RISCV_X##N, RISCV::X##N##_W},                     \
+      {codeview::RegisterId::RISCV_X##N, RISCV::X##N##_H}
+      MAP_XREG(0),  MAP_XREG(1),  MAP_XREG(2),  MAP_XREG(3),
+      MAP_XREG(4),  MAP_XREG(5),  MAP_XREG(6),  MAP_XREG(7),
+      MAP_XREG(8),  MAP_XREG(9),  MAP_XREG(10), MAP_XREG(11),
+      MAP_XREG(12), MAP_XREG(13), MAP_XREG(14), MAP_XREG(15),
+      MAP_XREG(16), MAP_XREG(17), MAP_XREG(18), MAP_XREG(19),
+      MAP_XREG(20), MAP_XREG(21), MAP_XREG(22), MAP_XREG(23),
+      MAP_XREG(24), MAP_XREG(25), MAP_XREG(26), MAP_XREG(27),
+      MAP_XREG(28), MAP_XREG(29), MAP_XREG(30), MAP_XREG(31),
+#undef MAP_XREG
+#define MAP_FREG(N)                                                            \
+  {codeview::RegisterId::RISCV_F##N, RISCV::F##N##_H},                         \
+      {codeview::RegisterId::RISCV_F##N, RISCV::F##N##_F},                     \
+      {codeview::RegisterId::RISCV_F##N, RISCV::F##N##_D},                     \
+      {codeview::RegisterId::RISCV_F##N, RISCV::F##N##_Q}
+      MAP_FREG(0),  MAP_FREG(1),  MAP_FREG(2),  MAP_FREG(3),
+      MAP_FREG(4),  MAP_FREG(5),  MAP_FREG(6),  MAP_FREG(7),
+      MAP_FREG(8),  MAP_FREG(9),  MAP_FREG(10), MAP_FREG(11),
+      MAP_FREG(12), MAP_FREG(13), MAP_FREG(14), MAP_FREG(15),
+      MAP_FREG(16), MAP_FREG(17), MAP_FREG(18), MAP_FREG(19),
+      MAP_FREG(20), MAP_FREG(21), MAP_FREG(22), MAP_FREG(23),
+      MAP_FREG(24), MAP_FREG(25), MAP_FREG(26), MAP_FREG(27),
+      MAP_FREG(28), MAP_FREG(29), MAP_FREG(30), MAP_FREG(31),
+#undef MAP_FREG
+#define MAP_VREG(N) {codeview::RegisterId::RISCV_V##N, RISCV::V##N}
+      MAP_VREG(0),  MAP_VREG(1),  MAP_VREG(2),  MAP_VREG(3),
+      MAP_VREG(4),  MAP_VREG(5),  MAP_VREG(6),  MAP_VREG(7),
+      MAP_VREG(8),  MAP_VREG(9),  MAP_VREG(10), MAP_VREG(11),
+      MAP_VREG(12), MAP_VREG(13), MAP_VREG(14), MAP_VREG(15),
+      MAP_VREG(16), MAP_VREG(17), MAP_VREG(18), MAP_VREG(19),
+      MAP_VREG(20), MAP_VREG(21), MAP_VREG(22), MAP_VREG(23),
+      MAP_VREG(24), MAP_VREG(25), MAP_VREG(26), MAP_VREG(27),
+      MAP_VREG(28), MAP_VREG(29), MAP_VREG(30), MAP_VREG(31),
+#undef MAP_VREG
+  };
+
+  for (const auto &I : RegMap)
+    MRI->mapLLVMRegToCVReg(I.Reg, static_cast<int>(I.CVReg));
+}
+
 static MCRegisterInfo *createRISCVMCRegisterInfo(const Triple &TT) {
   MCRegisterInfo *X = new MCRegisterInfo();
   InitRISCVMCRegisterInfo(X, RISCV::X1);
+  RISCV_MC::initLLVMToCVRegMapping(X);
   return X;
 }
 
