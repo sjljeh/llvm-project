@@ -13,6 +13,7 @@
 
 #include "ARMWinEHPrinter.h"
 #include "ObjDumper.h"
+#include "RISCVWinEHDumper.h"
 #include "StackMapPrinter.h"
 #include "Win64EHDumper.h"
 #include "llvm-readobj.h"
@@ -1851,6 +1852,18 @@ void COFFDumper::printUnwindInfo() {
                                        COFF::IMAGE_FILE_MACHINE_ARMNT);
     // TODO Propagate the error.
     consumeError(Decoder.dumpProcedureData(*Obj));
+    break;
+  }
+  case COFF::IMAGE_FILE_MACHINE_RISCV64: {
+    RISCVWinEH::Dumper Dumper(W);
+    RISCVWinEH::Dumper::SymbolResolver Resolver =
+        [](const object::coff_section *Section, uint64_t Offset,
+           SymbolRef &Symbol, void *UserData) -> std::error_code {
+      auto *COFF = reinterpret_cast<COFFDumper *>(UserData);
+      return COFF->resolveSymbol(Section, Offset, Symbol);
+    };
+    RISCVWinEH::Dumper::Context Ctx(*Obj, Resolver, this);
+    Dumper.printData(Ctx);
     break;
   }
   default:
