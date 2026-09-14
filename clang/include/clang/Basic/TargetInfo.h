@@ -1667,7 +1667,7 @@ public:
             (getTriple().isPPC32() &&
              getTriple().isWindowsMSVCEnvironment()) ||
             getTriple().getArch() == llvm::Triple::aarch64 ||
-            getTriple().isThumb());
+            getTriple().isThumb() || getTriple().isRISCV64());
   }
 
   /// Return true if {|} are normal characters in the asm string.

@@ -4,6 +4,8 @@
 // RUN:         | FileCheck %s --check-prefix=CHECK --check-prefix=X86
 // RUN: %clang_cc1 %s -triple aarch64-windows -fms-extensions -emit-llvm -o - \
 // RUN:         | FileCheck %s --check-prefixes=CHECK,ARM64
+// RUN: %clang_cc1 %s -triple riscv64-windows -fms-extensions -emit-llvm -o - \
+// RUN:         | FileCheck %s --check-prefixes=CHECK,RISCV64
 // RUN: %clang_cc1 %s -triple thumbv7-windows -fms-extensions -emit-llvm -o - \
 // RUN:         | FileCheck %s --check-prefixes=CHECK,ARM
 // RUN: %clang_cc1 %s -triple i686-pc-windows-gnu -fms-extensions -emit-llvm -o - \
@@ -35,6 +37,7 @@ int safe_div(int numerator, int denominator, int *res) {
 // X64-SAME:      personality ptr @__C_specific_handler
 // ARM64-SAME:    personality ptr @__C_specific_handler
 // ARM-SAME:      personality ptr @__C_specific_handler
+// RISCV64-SAME:  personality ptr @__C_specific_handler
 // X86-SAME:      personality ptr @_except_handler3
 // CHECK: invoke {{.*}}void @try_body(i32 noundef %{{.*}}, i32 noundef %{{.*}}, ptr noundef %{{.*}}) #[[NOINLINE:[0-9]+]]
 // CHECK:       to label %{{.*}} unwind label %[[catchpad:[^ ]*]]

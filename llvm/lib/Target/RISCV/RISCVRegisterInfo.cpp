@@ -610,6 +610,20 @@ bool RISCVRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
   DebugLoc DL = MI.getDebugLoc();
 
   int FrameIndex = MI.getOperand(FIOperandNum).getIndex();
+
+  // LOCAL_ESCAPE does not address the frame at run time. It defines the
+  // constant consumed by llvm.localrecover in an outlined Windows SEH
+  // funclet, relative to the value returned by llvm.localaddress.
+  if (MI.getOpcode() == TargetOpcode::LOCAL_ESCAPE) {
+    MachineOperand &FI = MI.getOperand(FIOperandNum);
+    StackOffset Offset =
+        getFrameLowering(MF)->getNonLocalFrameIndexReference(MF, FrameIndex);
+    assert(!Offset.getScalable() &&
+           "nonlocal scalable frame offsets are not supported");
+    FI.ChangeToImmediate(Offset.getFixed());
+    return false;
+  }
+
   Register FrameReg;
   StackOffset Offset =
       getFrameLowering(MF)->getFrameIndexReference(MF, FrameIndex, FrameReg);

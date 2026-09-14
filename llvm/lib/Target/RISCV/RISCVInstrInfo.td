@@ -160,6 +160,11 @@ def riscv_hi : RVSDNode<"HI", SDTIntUnaryOp>;
 // Represents an AUIPC+ADDI pair. Selected to PseudoLLA.
 def riscv_lla : RVSDNode<"LLA", SDTIntUnaryOp>;
 
+// Materializes the absolute frame offset assigned by llvm.localescape.
+def riscv_local_recover : SDNode<"ISD::LOCAL_RECOVER",
+                                  SDTypeProfile<1, 1, [SDTCisSameAs<0, 1>,
+                                                       SDTCisInt<1>]>>;
+
 // Selected as PseudoAddTPRel. Used to emit a TP-relative relocation.
 def riscv_add_tprel : RVSDNode<"ADD_TPREL",
                                SDTypeProfile<1, 3, [SDTCisSameAs<0, 1>,
@@ -1591,6 +1596,23 @@ def GIAddrRegImm :
   GIComplexOperandMatcher<s32, "selectAddrRegImm">,
   GIComplexPatternEquiv<AddrRegImm>;
 
+/// ReactOS-private RISC-V64 RVUW state transitions. These pseudos are placed
+/// immediately after the machine instruction whose completed effect they
+/// describe, so their labels remain exact with mixed 16/32-bit instructions.
+let hasSideEffects = 0, mayLoad = 0, mayStore = 0, isCodeGenOnly = 1,
+    Size = 0 in {
+def RVUW_SetCFA : Pseudo<(outs), (ins i32imm:$reg, i32imm:$offset), []>,
+                  Sched<[]>;
+def RVUW_SaveGPR : Pseudo<(outs), (ins i32imm:$reg, i32imm:$offset), []>,
+                   Sched<[]>;
+def RVUW_SameGPR : Pseudo<(outs), (ins i32imm:$reg), []>, Sched<[]>;
+def RVUW_GPRFromGPR : Pseudo<(outs), (ins i32imm:$reg, i32imm:$source), []>,
+                      Sched<[]>;
+def RVUW_PrologEnd : Pseudo<(outs), (ins), []>, Sched<[]>;
+def RVUW_EpilogStart : Pseudo<(outs), (ins), []>, Sched<[]>;
+def RVUW_EpilogEnd : Pseudo<(outs), (ins), []>, Sched<[]>;
+}
+
 /// Stack probing
 
 let hasSideEffects = 1, mayLoad = 1, mayStore = 1, isCodeGenOnly = 1,
@@ -1903,6 +1925,12 @@ let isBarrier = 1, isReturn = 1, isTerminator = 1 in
 def PseudoRET : Pseudo<(outs), (ins), [(riscv_ret_glue)]>,
                 PseudoInstExpansion<(JALR X0, X1, 0)>;
 
+// Return from an outlined Windows cleanup funclet to the exception runtime.
+let isBarrier = 1, isReturn = 1, isTerminator = 1, isEHScopeReturn = 1,
+    hasSideEffects = 1, hasCtrlDep = 1, isCodeGenOnly = 1 in
+def CLEANUPRET : Pseudo<(outs), (ins), [(cleanupret bb)]>,
+                 PseudoInstExpansion<(JALR X0, X1, 0)>;
+
 // PseudoTAIL is a pseudo instruction similar to PseudoCALL and will eventually
 // expand to auipc and jalr while encoding.
 // Define AsmString to print "tail" when compile with -S flag.
@@ -1944,6 +1972,14 @@ let hasSideEffects = 0, mayLoad = 0, mayStore = 0, Size = 8,
     isReMaterializable = 1 in
 def PseudoMovImm : Pseudo<(outs GPR:$dst), (ins i32imm:$imm), []>,
                    Sched<[WriteIALU]>;
+
+// A LOCAL_RECOVER symbol is an absolute signed frame offset, not an address.
+// It is expanded after frame allocation, once LOCAL_ESCAPE has assigned it.
+let hasSideEffects = 0, mayLoad = 0, mayStore = 0, Size = 8 in
+def PseudoMovMCSym : Pseudo<(outs GPR:$dst), (ins bare_symbol:$sym), []>,
+                     Sched<[WriteIALU]>;
+def : Pat<(XLenVT (riscv_local_recover mcsym:$sym)),
+          (PseudoMovMCSym mcsym:$sym)>;
 
 // Materializes "$base + (imm << 12)" as a single pseudo so that
 // MachineLateInstrsCleanup can CSE identical upper-immediate additions.

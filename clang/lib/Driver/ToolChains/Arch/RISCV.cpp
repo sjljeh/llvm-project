@@ -138,8 +138,15 @@ void riscv::getRISCVTargetFeatures(const Driver &D, const llvm::Triple &Triple,
   RESERVE_REG(x31)
 #undef RESERVE_REG
 
-  // -mrelax is default, unless -mno-relax is specified.
-  if (Args.hasFlag(options::OPT_mrelax, options::OPT_mno_relax, true))
+  // RVUW offsets cover exact encoded byte ranges. Linker relaxation would
+  // require the linker to rewrite every affected state offset atomically, so
+  // the private RISC-V64 Windows ABI rejects it for version 1.
+  bool IsRVUWTarget = Triple.isRISCV64() && Triple.isOSBinFormatCOFF();
+  if (IsRVUWTarget && Args.hasArg(options::OPT_mrelax))
+    D.Diag(diag::err_drv_unsupported_opt_for_target)
+        << Args.getLastArg(options::OPT_mrelax)->getAsString(Args)
+        << Triple.getTriple();
+  if (Args.hasFlag(options::OPT_mrelax, options::OPT_mno_relax, !IsRVUWTarget))
     Features.push_back("+relax");
   else
     Features.push_back("-relax");

@@ -627,7 +627,8 @@ toolchains::MinGW::getDefaultUnwindTableLevel(const ArgList &Args) const {
     return UnwindTableLevel::Asynchronous;
 
   if (getArch() == llvm::Triple::x86_64 || getArch() == llvm::Triple::arm ||
-      getArch() == llvm::Triple::thumb || getArch() == llvm::Triple::aarch64)
+      getArch() == llvm::Triple::thumb || getArch() == llvm::Triple::aarch64 ||
+      getArch() == llvm::Triple::riscv64)
     return UnwindTableLevel::Asynchronous;
   return UnwindTableLevel::None;
 }
@@ -646,7 +647,8 @@ bool toolchains::MinGW::isPICDefaultForced() const { return true; }
 llvm::ExceptionHandling
 toolchains::MinGW::GetExceptionModel(const ArgList &Args) const {
   if (getArch() == llvm::Triple::x86_64 || getArch() == llvm::Triple::aarch64 ||
-      getArch() == llvm::Triple::arm || getArch() == llvm::Triple::thumb)
+      getArch() == llvm::Triple::arm || getArch() == llvm::Triple::thumb ||
+      getArch() == llvm::Triple::riscv64)
     return llvm::ExceptionHandling::WinEH;
   return llvm::ExceptionHandling::DwarfCFI;
 }

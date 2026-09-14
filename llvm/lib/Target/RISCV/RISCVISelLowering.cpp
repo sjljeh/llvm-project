@@ -949,6 +949,7 @@ RISCVTargetLowering::RISCVTargetLowering(const TargetMachine &TM,
 
   setOperationAction({ISD::TRAP, ISD::DEBUGTRAP}, MVT::Other, Legal);
   setOperationAction(ISD::INTRINSIC_WO_CHAIN, MVT::Other, Custom);
+  setOperationAction(ISD::INTRINSIC_WO_CHAIN, XLenVT, Custom);
   if (Subtarget.is64Bit())
     setOperationAction(ISD::INTRINSIC_WO_CHAIN, MVT::i32, Custom);
 
@@ -12297,6 +12298,25 @@ SDValue RISCVTargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
   switch (IntNo) {
   default:
     break; // Don't custom lower most intrinsics.
+  case Intrinsic::localaddress: {
+    MachineFunction &MF = DAG.getMachineFunction();
+    MachineFrameInfo &MFI = MF.getFrameInfo();
+    MFI.setFrameAddressIsTaken(true);
+    Register FrameReg = Subtarget.getRegisterInfo()->getFrameRegister(MF);
+    return DAG.getCopyFromReg(DAG.getEntryNode(), DL, FrameReg, Op.getSimpleValueType());
+  }
+  case Intrinsic::eh_recoverfp: {
+    SDValue FnOp = Op.getOperand(1);
+    SDValue IncomingFPOp = Op.getOperand(2);
+    GlobalAddressSDNode *GSD = dyn_cast<GlobalAddressSDNode>(FnOp);
+    auto *Fn = dyn_cast_or_null<Function>(GSD ? GSD->getGlobal() : nullptr);
+    if (!Fn)
+      report_fatal_error("llvm.eh.recoverfp must take a function as the first argument");
+
+    // The RISC-V64 dispatcher passes the parent's RVUW establisher frame,
+    // which is the same fixed frame value returned by llvm.localaddress.
+    return IncomingFPOp;
+  }
   case Intrinsic::riscv_tuple_insert: {
     SDValue Vec = Op.getOperand(1);
     SDValue SubVec = Op.getOperand(2);

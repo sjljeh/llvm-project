@@ -24,6 +24,7 @@
 #include "RISCVRegisterInfo.h"
 #include "TargetInfo/RISCVTargetInfo.h"
 #include "llvm/ADT/APInt.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/BinaryFormat/ELF.h"
 #include "llvm/CodeGen/AsmPrinter.h"
@@ -63,6 +64,7 @@ public:
 
 private:
   const RISCVSubtarget *STI;
+  bool EndRVUWEpilogAfterNextInstruction = false;
 
 public:
   explicit RISCVAsmPrinter(TargetMachine &TM,
@@ -386,6 +388,13 @@ void RISCVAsmPrinter::emitNTLHint(const MachineInstr *MI) {
 }
 
 void RISCVAsmPrinter::emitInstruction(const MachineInstr *MI) {
+  bool FinishRVUWEpilog = EndRVUWEpilogAfterNextInstruction;
+  EndRVUWEpilogAfterNextInstruction = false;
+  scope_exit FinishRVUWEpilogGuard([&] {
+    if (FinishRVUWEpilog)
+      getTargetStreamer().emitRVUWEpilogEnd();
+  });
+
   RISCV_MC::verifyInstructionPredicates(MI->getOpcode(), STI->getFeatureBits());
 
   emitNTLHint(MI);
@@ -397,6 +406,44 @@ void RISCVAsmPrinter::emitInstruction(const MachineInstr *MI) {
   }
 
   switch (MI->getOpcode()) {
+  case RISCV::PseudoMovMCSym: {
+    Register DestReg = MI->getOperand(0).getReg();
+    MCSymbol *FrameAlloc = MI->getOperand(1).getMCSymbol();
+    int64_t FrameOffset;
+    if (!FrameAlloc->isVariable() ||
+        !FrameAlloc->getVariableValue()->evaluateAsAbsolute(FrameOffset))
+      report_fatal_error("unresolved RISC-V nonlocal frame offset");
+
+    SmallVector<MCInst, 8> Sequence;
+    RISCVMatInt::generateMCInstSeq(FrameOffset, *STI, DestReg, Sequence);
+    for (const MCInst &Inst : Sequence)
+      EmitToStreamer(*OutStreamer, Inst);
+    return;
+  }
+  case RISCV::RVUW_SetCFA:
+    getTargetStreamer().emitRVUWSetCFA(MI->getOperand(0).getImm(), MI->getOperand(1).getImm());
+    return;
+  case RISCV::RVUW_SaveGPR:
+    getTargetStreamer().emitRVUWSaveGPR(MI->getOperand(0).getImm(), MI->getOperand(1).getImm());
+    return;
+  case RISCV::RVUW_SameGPR:
+    getTargetStreamer().emitRVUWSameGPR(MI->getOperand(0).getImm());
+    return;
+  case RISCV::RVUW_GPRFromGPR:
+    getTargetStreamer().emitRVUWGPRFromGPR(MI->getOperand(0).getImm(), MI->getOperand(1).getImm());
+    return;
+  case RISCV::RVUW_PrologEnd:
+    getTargetStreamer().emitRVUWPrologEnd();
+    return;
+  case RISCV::RVUW_EpilogStart:
+    getTargetStreamer().emitRVUWEpilogStart();
+    return;
+  case RISCV::RVUW_EpilogEnd:
+    // The scope is end-exclusive and includes the return or tail branch. The
+    // marker is kept before the terminator in MachineIR, but its MC label must
+    // be emitted after that instruction's final encoded byte.
+    EndRVUWEpilogAfterNextInstruction = true;
+    return;
   case RISCV::HWASAN_CHECK_MEMACCESS_SHORTGRANULES:
     LowerHWASAN_CHECK_MEMACCESS(*MI);
     return;
@@ -565,12 +612,16 @@ void RISCVAsmPrinter::emitTargetFeaturePop(const MCSubtargetInfo &STI,
 }
 
 bool RISCVAsmPrinter::runOnMachineFunction(MachineFunction &MF) {
+  assert(!EndRVUWEpilogAfterNextInstruction &&
+         "unterminated RISC-V64 RVUW epilogue in previous function");
   STI = &MF.getSubtarget<RISCVSubtarget>();
 
   bool EmittedOptionArch = emitTargetFeaturePush(*STI);
 
   SetupMachineFunction(MF);
   emitFunctionBody();
+  assert(!EndRVUWEpilogAfterNextInstruction &&
+         "RISC-V64 RVUW epilogue marker was not followed by a terminator");
 
   // Emit the XRay table
   emitXRayTable();
