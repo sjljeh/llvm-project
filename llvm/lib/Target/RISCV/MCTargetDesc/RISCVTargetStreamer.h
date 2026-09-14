@@ -60,6 +60,16 @@ public:
   virtual void emitIntTextAttribute(unsigned Attribute, unsigned IntValue,
                                     StringRef StringValue);
 
+  // ReactOS-private RISC-V64 RVUW state directives. Register operands are
+  // architectural GPR numbers, not LLVM register identifiers.
+  virtual void emitRVUWSetCFA(unsigned Register, int64_t Offset) {}
+  virtual void emitRVUWSaveGPR(unsigned Register, int64_t Offset) {}
+  virtual void emitRVUWSameGPR(unsigned Register) {}
+  virtual void emitRVUWGPRFromGPR(unsigned Register, unsigned Source) {}
+  virtual void emitRVUWPrologEnd() {}
+  virtual void emitRVUWEpilogStart() {}
+  virtual void emitRVUWEpilogEnd() {}
+
   void emitTargetAttributes(const MCSubtargetInfo &STI, bool EmitStackAlign);
   void setTargetABI(RISCVABI::ABI ABI);
   RISCVABI::ABI getTargetABI() const { return TargetABI; }
@@ -93,6 +103,29 @@ public:
   void emitDirectiveOptionRVC() override;
   void emitDirectiveOptionNoRVC() override;
   void emitDirectiveVariantCC(MCSymbol &Symbol) override;
+  void emitRVUWSetCFA(unsigned Register, int64_t Offset) override;
+  void emitRVUWSaveGPR(unsigned Register, int64_t Offset) override;
+  void emitRVUWSameGPR(unsigned Register) override;
+  void emitRVUWGPRFromGPR(unsigned Register, unsigned Source) override;
+  void emitRVUWPrologEnd() override;
+  void emitRVUWEpilogStart() override;
+  void emitRVUWEpilogEnd() override;
+};
+
+class RISCVTargetWinCOFFStreamer : public RISCVTargetStreamer {
+public:
+  RISCVTargetWinCOFFStreamer(MCStreamer &S) : RISCVTargetStreamer(S) {}
+
+  void emitRVUWSetCFA(unsigned Register, int64_t Offset) override;
+  void emitRVUWSaveGPR(unsigned Register, int64_t Offset) override;
+  void emitRVUWSameGPR(unsigned Register) override;
+  void emitRVUWGPRFromGPR(unsigned Register, unsigned Source) override;
+  void emitRVUWPrologEnd() override;
+  void emitRVUWEpilogStart() override;
+  void emitRVUWEpilogEnd() override;
+
+private:
+  void emitRVUWCode(unsigned Opcode, unsigned Register, int64_t Operand);
 };
 
 }

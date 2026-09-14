@@ -963,6 +963,22 @@ static MCSection *getWinCFISection(MCContext &Context, unsigned *NextWinCFIID,
   if (TextSecCOFF->getCharacteristics() & COFF::IMAGE_SCN_LNK_COMDAT) {
     KeySym = TextSecCOFF->getCOMDATSymbol();
 
+    // RVUW gives each function's metadata an explicit section identity as
+    // well as an associative lifetime.  Keeping the function suffix is useful
+    // to object tools and prevents independent same-name metadata groups from
+    // being mistaken for one logical record before final .pdata/.xdata
+    // merging.
+    if (Context.getAsmInfo().getWinEHEncodingType() ==
+        WinEH::EncodingType::RISCV64) {
+      StringRef Suffix = TextSecCOFF->getName().split('$').second;
+      if (Suffix.empty())
+        Suffix = KeySym->getName();
+      std::string SectionName =
+          (MainCFISecCOFF->getName() + "$" + Suffix).str();
+      auto *NamedCFISec = Context.getCOFFSection(SectionName, MainCFISecCOFF->getCharacteristics());
+      return Context.getAssociativeCOFFSection(NamedCFISec, KeySym, UniqueID);
+    }
+
     // In a GNU environment, we can't use associative comdats. Instead, do what
     // GCC does, which is to make plain comdat selectany section named like
     // ".[px]data$_Z3foov".

@@ -254,6 +254,7 @@ class RISCVAsmParser : public MCTargetAsmParser {
   bool parseDirectiveAttribute();
   bool parseDirectiveInsn(SMLoc L);
   bool parseDirectiveVariantCC();
+  bool parseDirectiveRVUW(StringRef Directive, SMLoc Loc);
 
   /// Helper to reset target features for a new arch string. It
   /// also records the new arch string that is expanded by RISCVISAInfo
@@ -3257,8 +3258,58 @@ ParseStatus RISCVAsmParser::parseDirective(AsmToken DirectiveID) {
     return parseDirectiveInsn(DirectiveID.getLoc());
   if (IDVal == ".variant_cc")
     return parseDirectiveVariantCC();
+  if (IDVal == ".seh_set_cfa" || IDVal == ".seh_save_gpr" ||
+      IDVal == ".seh_same_gpr" || IDVal == ".seh_gpr_from_gpr")
+    return parseDirectiveRVUW(IDVal, DirectiveID.getLoc());
 
   return ParseStatus::NoMatch;
+}
+
+bool RISCVAsmParser::parseDirectiveRVUW(StringRef Directive, SMLoc Loc) {
+  const Triple &TT = getSTI().getTargetTriple();
+  if (!TT.isRISCV64() || !TT.isOSBinFormatCOFF())
+    return Error(Loc, Directive + " is only supported by the RISC-V64 COFF target");
+  if (getSTI().hasFeature(RISCV::FeatureRelax))
+    return Error(Loc, Directive + " requires linker relaxation to be disabled");
+
+  auto ParseGPR = [&](unsigned &Encoding) {
+    MCRegister Reg;
+    SMLoc StartLoc;
+    SMLoc EndLoc;
+    if (parseRegister(Reg, StartLoc, EndLoc))
+      return true;
+    if (!getRISCVMCRegisterClass(RISCV::GPRRegClassID).contains(Reg))
+      return Error(StartLoc, "RVUW operand must be an integer register");
+    Encoding = getContext().getRegisterInfo()->getEncodingValue(Reg);
+    return false;
+  };
+
+  unsigned Register;
+  if (ParseGPR(Register))
+    return true;
+
+  int64_t Offset = 0;
+  unsigned Source = 0;
+  if (Directive == ".seh_set_cfa" || Directive == ".seh_save_gpr") {
+    if (getParser().parseComma() || getParser().parseAbsoluteExpression(Offset))
+      return true;
+  } else if (Directive == ".seh_gpr_from_gpr") {
+    if (getParser().parseComma() || ParseGPR(Source))
+      return true;
+  }
+
+  if (getParser().parseEOL("unexpected token in RVUW directive"))
+    return true;
+
+  if (Directive == ".seh_set_cfa")
+    getTargetStreamer().emitRVUWSetCFA(Register, Offset);
+  else if (Directive == ".seh_save_gpr")
+    getTargetStreamer().emitRVUWSaveGPR(Register, Offset);
+  else if (Directive == ".seh_same_gpr")
+    getTargetStreamer().emitRVUWSameGPR(Register);
+  else
+    getTargetStreamer().emitRVUWGPRFromGPR(Register, Source);
+  return false;
 }
 
 bool RISCVAsmParser::resetToArch(StringRef Arch, SMLoc Loc, std::string &Result,

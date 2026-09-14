@@ -173,6 +173,37 @@ void RISCVTargetAsmStreamer::emitDirectiveVariantCC(MCSymbol &Symbol) {
   OS << "\t.variant_cc\t" << Symbol.getName() << "\n";
 }
 
+void RISCVTargetAsmStreamer::emitRVUWSetCFA(unsigned Register,
+                                            int64_t Offset) {
+  OS << "\t.seh_set_cfa\tx" << Register << ", " << Offset << "\n";
+}
+
+void RISCVTargetAsmStreamer::emitRVUWSaveGPR(unsigned Register,
+                                             int64_t Offset) {
+  OS << "\t.seh_save_gpr\tx" << Register << ", " << Offset << "\n";
+}
+
+void RISCVTargetAsmStreamer::emitRVUWSameGPR(unsigned Register) {
+  OS << "\t.seh_same_gpr\tx" << Register << "\n";
+}
+
+void RISCVTargetAsmStreamer::emitRVUWGPRFromGPR(unsigned Register,
+                                                unsigned Source) {
+  OS << "\t.seh_gpr_from_gpr\tx" << Register << ", x" << Source << "\n";
+}
+
+void RISCVTargetAsmStreamer::emitRVUWPrologEnd() {
+  getStreamer().emitWinCFIEndProlog();
+}
+
+void RISCVTargetAsmStreamer::emitRVUWEpilogStart() {
+  getStreamer().emitWinCFIBeginEpilogue();
+}
+
+void RISCVTargetAsmStreamer::emitRVUWEpilogEnd() {
+  getStreamer().emitWinCFIEndEpilogue();
+}
+
 void RISCVTargetAsmStreamer::emitAttribute(unsigned Attribute, unsigned Value) {
   OS << "\t.attribute\t" << Attribute << ", " << Twine(Value) << "\n";
 }

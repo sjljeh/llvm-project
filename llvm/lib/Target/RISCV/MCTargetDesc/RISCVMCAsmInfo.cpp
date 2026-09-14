@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "RISCVMCAsmInfo.h"
+#include "llvm/ADT/Enum.h"
 #include "llvm/BinaryFormat/Dwarf.h"
 #include "llvm/BinaryFormat/ELF.h"
 #include "llvm/MC/MCAssembler.h"
@@ -19,6 +20,11 @@
 #include "llvm/MC/MCValue.h"
 #include "llvm/TargetParser/Triple.h"
 using namespace llvm;
+
+constexpr EnumStringDef<MCAsmInfo::AtSpecifierKind> COFFAtSpecifierDefs[] = {
+    {{"IMGREL"}, MCSymbolRefExpr::VK_COFF_IMGREL32},
+};
+constexpr auto COFFAtSpecifiers = BUILD_ENUM_STRINGS(COFFAtSpecifierDefs);
 
 void RISCVMCAsmInfo::anchor() {}
 
@@ -50,9 +56,16 @@ RISCVMCAsmInfoCOFF::RISCVMCAsmInfoCOFF(const Triple &TT,
   CommentString = "#";
   AlignmentIsInBytes = false;
   SupportsDebugInformation = true;
-  ExceptionsType = ExceptionHandling::WinEH;
-  WinEHEncodingType = WinEH::EncodingType::Itanium;
+  if (TT.isRISCV64()) {
+    ExceptionsType = ExceptionHandling::WinEH;
+    WinEHEncodingType = WinEH::EncodingType::RISCV64;
+    // RVUW metadata has the same lifetime as the function it describes.  Use
+    // real associative COMDATs even in the GNU environment so dead stripping
+    // and COMDAT selection cannot orphan .pdata, .xdata, or handler data.
+    HasCOFFAssociativeComdats = true;
+  }
   DwarfRegNumForCFI = false;
+  initializeAtSpecifiers(COFFAtSpecifiers);
 }
 
 void RISCVMCAsmInfoCOFF::printSpecifierExpr(
