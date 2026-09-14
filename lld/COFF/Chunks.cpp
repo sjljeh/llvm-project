@@ -620,8 +620,7 @@ void ImportThunkChunkRISCV::writeTo(uint8_t *buf) const {
   if (machine == RISCV32)
     write32le(buf + 4, 0x0002a283);
   int64_t offset = int64_t(impSymbol->getRVA()) - int64_t(rva);
-  if (applyRISCVUType(buf, offset, "import thunk for " + impSymbol->getName()))
-    applyRISCVIType(buf + 4, offset);
+  applyRISCVPCRelPair(buf, offset, "import thunk for " + impSymbol->getName());
 }
 
 // A Thumb2, PIC, non-interworking range extension thunk.
