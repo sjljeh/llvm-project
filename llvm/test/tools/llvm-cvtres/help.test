@@ -7,7 +7,7 @@
 ; HELP_TEST-NEXT:   /{{DEFINE}}:symbol Not implemented
 ; HELP_TEST-NEXT:   /FOLDDUPS: Not implemented
 ; HELP_TEST-NEXT:   /HELP Display available options
-; HELP_TEST-NEXT:   /MACHINE:{ARM|ARM64|EBC|IA64|X64|X86}
+; HELP_TEST-NEXT:   /MACHINE:{ARM|ARM64|EBC|IA64|RISCV32|RISCV64|X64|X86}
 ; HELP_TEST-NEXT:   Machine architecture
 ; HELP_TEST-DAG:    /NOLOGO Not implemented
 ; HELP_TEST-NEXT:   /OUT:filename Output file
