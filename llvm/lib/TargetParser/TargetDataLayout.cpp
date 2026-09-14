@@ -263,7 +263,8 @@ static std::string computeRISCVDataLayout(const Triple &TT, StringRef ABIName) {
 
   std::string Ret;
   Ret.reserve(128);
-  Ret += TT.isLittleEndian() ? "e-m:e" : "E-m:e";
+  Ret += TT.isLittleEndian() ? "e" : "E";
+  Ret += getManglingComponent(TT);
 
   // TODO: Maybe we should move RISCVABI to TargetParser, so we can reuse that
   // logic here instead of duplicating the string handling?
