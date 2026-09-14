@@ -34,6 +34,9 @@ public:
   StackOffset getFrameIndexReference(const MachineFunction &MF, int FI,
                                      Register &FrameReg) const override;
 
+  StackOffset getNonLocalFrameIndexReference(const MachineFunction &MF,
+                                             int FI) const override;
+
   void determineCalleeSaves(MachineFunction &MF, BitVector &SavedRegs,
                             RegScavenger *RS) const override;
 
@@ -87,8 +90,8 @@ public:
 
   void allocateStack(MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI,
                      MachineFunction &MF, uint64_t Offset,
-                     uint64_t RealStackSize, bool EmitCFI, bool NeedProbe,
-                     uint64_t ProbeSize, bool DynAllocation,
+                     uint64_t RealStackSize, bool EmitCFI, bool EmitRVUW,
+                     bool NeedProbe, uint64_t ProbeSize, bool DynAllocation,
                      MachineInstr::MIFlag Flag) const;
 
   uint64_t getStackThreshold() const override;
