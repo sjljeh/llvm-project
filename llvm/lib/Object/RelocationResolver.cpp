@@ -716,6 +716,30 @@ static uint64_t resolveCOFFARM64(uint64_t Type, uint64_t Offset, uint64_t S,
   }
 }
 
+static bool supportsCOFFRISCV(uint64_t Type) {
+  switch (Type) {
+  case COFF::IMAGE_REL_RISCV_SECREL:
+  case COFF::IMAGE_REL_RISCV_ADDR32:
+  case COFF::IMAGE_REL_RISCV_ADDR64:
+    return true;
+  default:
+    return false;
+  }
+}
+
+static uint64_t resolveCOFFRISCV(uint64_t Type, uint64_t Offset, uint64_t S,
+                                 uint64_t LocData, int64_t /*Addend*/) {
+  switch (Type) {
+  case COFF::IMAGE_REL_RISCV_SECREL:
+  case COFF::IMAGE_REL_RISCV_ADDR32:
+    return (S + LocData) & 0xFFFFFFFF;
+  case COFF::IMAGE_REL_RISCV_ADDR64:
+    return S + LocData;
+  default:
+    llvm_unreachable("Invalid relocation type");
+  }
+}
+
 static bool supportsCOFFMIPS(uint64_t Type) {
   switch (Type) {
   case COFF::IMAGE_REL_MIPS_SECREL:
@@ -841,6 +865,9 @@ getRelocationResolver(const ObjectFile &Obj) {
       return {supportsCOFFARM64, resolveCOFFARM64};
     case Triple::mipsel:
       return {supportsCOFFMIPS, resolveCOFFMIPS};
+    case Triple::riscv32:
+    case Triple::riscv64:
+      return {supportsCOFFRISCV, resolveCOFFRISCV};
     default:
       return {nullptr, nullptr};
     }
