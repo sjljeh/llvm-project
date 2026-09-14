@@ -326,12 +326,11 @@ static const uint8_t thunkRISCV64[] = {
     0x67, 0x00, 0x03, 0x00, // jr    t1
 };
 
-// The NT base integer calling convention passes floating-point arguments in
-// integer registers too. Preserve a0-a7 and the caller's return address, then
-// restore the original aligned stack before jumping to the resolved function;
-// arguments beyond a7 remain at their caller-supplied stack locations.
+// Preserve all integer and floating-point argument registers and the caller's
+// return address. The default RISC-V Windows profile uses the lp64d ABI, so a
+// delayed function can receive arguments in either a0-a7 or fa0-fa7.
 static const uint8_t tailMergeRISCV64[] = {
-    0x13, 0x01, 0x01, 0xfb, // addi sp, sp, -80
+    0x13, 0x01, 0x01, 0xf7, // addi sp, sp, -144
     0x23, 0x30, 0x11, 0x04, // sd   ra, 64(sp)
     0x23, 0x30, 0xa1, 0x00, // sd   a0, 0(sp)
     0x23, 0x34, 0xb1, 0x00, // sd   a1, 8(sp)
@@ -341,6 +340,14 @@ static const uint8_t tailMergeRISCV64[] = {
     0x23, 0x34, 0xf1, 0x02, // sd   a5, 40(sp)
     0x23, 0x38, 0x01, 0x03, // sd   a6, 48(sp)
     0x23, 0x3c, 0x11, 0x03, // sd   a7, 56(sp)
+    0x27, 0x34, 0xa1, 0x04, // fsd  fa0, 72(sp)
+    0x27, 0x38, 0xb1, 0x04, // fsd  fa1, 80(sp)
+    0x27, 0x3c, 0xc1, 0x04, // fsd  fa2, 88(sp)
+    0x27, 0x30, 0xd1, 0x06, // fsd  fa3, 96(sp)
+    0x27, 0x34, 0xe1, 0x06, // fsd  fa4, 104(sp)
+    0x27, 0x38, 0xf1, 0x06, // fsd  fa5, 112(sp)
+    0x27, 0x3c, 0x01, 0x07, // fsd  fa6, 120(sp)
+    0x27, 0x30, 0x11, 0x09, // fsd  fa7, 128(sp)
     0x93, 0x85, 0x02, 0x00, // mv   a1, t0
     0x17, 0x05, 0x00, 0x00, // auipc a0, 0    DELAY_IMPORT_DESCRIPTOR
     0x13, 0x05, 0x05, 0x00, // addi a0, a0, 0
@@ -355,8 +362,16 @@ static const uint8_t tailMergeRISCV64[] = {
     0x83, 0x37, 0x81, 0x02, // ld   a5, 40(sp)
     0x03, 0x38, 0x01, 0x03, // ld   a6, 48(sp)
     0x83, 0x38, 0x81, 0x03, // ld   a7, 56(sp)
+    0x07, 0x35, 0x81, 0x04, // fld  fa0, 72(sp)
+    0x87, 0x35, 0x01, 0x05, // fld  fa1, 80(sp)
+    0x07, 0x36, 0x81, 0x05, // fld  fa2, 88(sp)
+    0x87, 0x36, 0x01, 0x06, // fld  fa3, 96(sp)
+    0x07, 0x37, 0x81, 0x06, // fld  fa4, 104(sp)
+    0x87, 0x37, 0x01, 0x07, // fld  fa5, 112(sp)
+    0x07, 0x38, 0x81, 0x07, // fld  fa6, 120(sp)
+    0x87, 0x38, 0x01, 0x08, // fld  fa7, 128(sp)
     0x83, 0x30, 0x01, 0x04, // ld   ra, 64(sp)
-    0x13, 0x01, 0x01, 0x05, // addi sp, sp, 80
+    0x13, 0x01, 0x01, 0x09, // addi sp, sp, 144
     0x67, 0x80, 0x02, 0x00, // jr   t0
 };
 
@@ -639,9 +654,11 @@ public:
 
   void writeTo(uint8_t *buf) const override {
     memcpy(buf, tailMergeRISCV64, sizeof(tailMergeRISCV64));
-    applyRISCVPCRelPair(buf + 44, int64_t(desc->getRVA()) - rva - 44, "delay import descriptor");
+    applyRISCVPCRelPair(buf + 76, int64_t(desc->getRVA()) - rva - 76,
+                        "delay import descriptor");
     if (helper)
-      applyRISCVPCRelPair(buf + 52, int64_t(helper->getRVA()) - rva - 52, "delay import helper");
+      applyRISCVPCRelPair(buf + 84, int64_t(helper->getRVA()) - rva - 84,
+                          "delay import helper");
   }
 
   Chunk *desc = nullptr;
