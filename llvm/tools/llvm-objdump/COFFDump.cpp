@@ -22,6 +22,7 @@
 #include "llvm/Object/COFFImportFile.h"
 #include "llvm/Object/ObjectFile.h"
 #include "llvm/Support/Format.h"
+#include "llvm/Support/RISCVWinEH.h"
 #include "llvm/Support/ScopedPrinter.h"
 #include "llvm/Support/Win64EH.h"
 #include "llvm/Support/WithColor.h"
@@ -400,13 +401,14 @@ static void printCOFFSymbolAddress(raw_ostream &Out,
                                    const std::vector<RelocationRef> &Rels,
                                    uint64_t Offset, uint32_t Disp) {
   StringRef Sym;
-  if (!resolveSymbolName(Rels, Offset, Sym)) {
-    Out << Sym;
-    if (Disp > 0)
-      Out << format(" + 0x%04x", Disp);
-  } else {
+  if (Error E = resolveSymbolName(Rels, Offset, Sym)) {
+    consumeError(std::move(E));
     Out << format("0x%04x", Disp);
+    return;
   }
+  Out << Sym;
+  if (Disp > 0)
+    Out << format(" + 0x%04x", Disp);
 }
 
 static void
@@ -1051,7 +1053,249 @@ static void printRuntimeFunctionRels(const COFFObjectFile *Obj,
   }
 }
 
+namespace {
+
+struct RISCVLocatedData {
+  ArrayRef<uint8_t> Contents;
+  const coff_section *Section = nullptr;
+  std::vector<RelocationRef> Relocations;
+  uint64_t Offset = 0;
+};
+
+static Expected<RISCVLocatedData>
+locateRISCVObjectData(const COFFObjectFile *Obj,
+                      const std::vector<RelocationRef> &SourceRelocations,
+                      uint64_t RelocationOffset, uint32_t Value) {
+  SymbolRef Symbol;
+  if (Error E = resolveSymbol(SourceRelocations, RelocationOffset, Symbol))
+    return std::move(E);
+  Expected<section_iterator> SectionIt = Symbol.getSection();
+  if (!SectionIt)
+    return SectionIt.takeError();
+  if (*SectionIt == Obj->section_end())
+    return createStringError("RVUW relocation names no section");
+  const coff_section *Section = Obj->getCOFFSection(**SectionIt);
+  Expected<uint64_t> Address = Symbol.getAddress();
+  if (!Address)
+    return Address.takeError();
+  if (*Address > UINT64_MAX - Value)
+    return createStringError("RVUW section offset overflows");
+  uint64_t Offset = *Address + Value;
+  ArrayRef<uint8_t> Contents;
+  if (Error E = Obj->getSectionContents(Section, Contents))
+    return std::move(E);
+  if (Offset > Contents.size())
+    return createStringError("RVUW section offset is outside its section");
+
+  RISCVLocatedData Result{Contents.drop_front(Offset), Section, {}, Offset};
+  append_range(Result.Relocations, (**SectionIt).relocations());
+  llvm::sort(Result.Relocations, isRelocAddressLess);
+  return Result;
+}
+
+static Expected<RISCVLocatedData>
+locateRISCVImageData(const COFFObjectFile *Obj, uint32_t RVA,
+                     uint32_t MinimumSize, StringRef Description) {
+  ArrayRef<uint8_t> Prefix;
+  if (Error E = Obj->getRvaAndSizeAsBytes(RVA, MinimumSize, Prefix, Description.str().c_str()))
+    return std::move(E);
+  uintptr_t Address;
+  if (Error E = Obj->getRvaPtr(RVA, Address, Description.str().c_str()))
+    return std::move(E);
+  StringRef File = Obj->getData();
+  const uint8_t *Pointer = reinterpret_cast<const uint8_t *>(Address);
+  const uint8_t *FileEnd = reinterpret_cast<const uint8_t *>(File.end());
+  if (Pointer > FileEnd)
+    return createStringError("RVUW pointer is outside the file");
+  return RISCVLocatedData{
+      ArrayRef<uint8_t>(Pointer, static_cast<size_t>(FileEnd - Pointer)),
+      nullptr, {}, RVA};
+}
+
+static void printRISCVCode(const RISCVWinEH::DecodedCode &Code,
+                           StringRef Indent) {
+  outs() << formatv("{0}+{1:X4}: {2} x{3}", Indent, Code.CodeOffset,
+                    RISCVWinEH::getOpcodeName(Code.Opcode), Code.Register);
+  if (Code.Opcode == RISCVWinEH::UOP_GPRFromGPR ||
+      Code.Opcode == RISCVWinEH::UOP_FPRFromFPR)
+    outs() << formatv(", x{0}", Code.Operand);
+  else if (Code.Opcode != RISCVWinEH::UOP_SameGPR &&
+           Code.Opcode != RISCVWinEH::UOP_SameFPR &&
+           Code.Opcode != RISCVWinEH::UOP_SameFCSR)
+    outs() << formatv(", {0}", Code.Operand);
+  outs() << formatv(" (slot {0}, opinfo {1:X8})\n", Code.SlotIndex, Code.OpInfo);
+}
+
+static void printRISCVAddress(const RISCVLocatedData &Data, StringRef Label,
+                              uint64_t RelativeOffset, uint32_t Value) {
+  outs() << Label << ": ";
+  if (Data.Section)
+    printCOFFSymbolAddress(outs(), Data.Relocations, Data.Offset + RelativeOffset, Value);
+  else
+    outs() << format("0x%X", Value);
+  outs() << "\n";
+}
+
+static void printRISCVScopeTable(const COFFObjectFile *Obj,
+                                 const RISCVLocatedData &Data) {
+  if (Data.Contents.size() < 4) {
+    outs() << "      Validation Error: truncated C scope-table count\n";
+    return;
+  }
+  uint32_t Count = support::endian::read32le(Data.Contents.data());
+  if (uint64_t(Count) * 16 + 4 > Data.Contents.size()) {
+    outs() << "      Validation Error: C scope table exceeds available data\n";
+    return;
+  }
+  outs() << format("      C Scope Table (%u records):\n", Count);
+  for (uint32_t Index = 0; Index != Count; ++Index) {
+    uint64_t Offset = 4 + uint64_t(Index) * 16;
+    outs() << format("        Scope %u:\n", Index);
+    uint32_t Begin =
+        support::endian::read32le(Data.Contents.data() + Offset);
+    uint32_t End =
+        support::endian::read32le(Data.Contents.data() + Offset + 4);
+    uint32_t Handler =
+        support::endian::read32le(Data.Contents.data() + Offset + 8);
+    uint32_t Target =
+        support::endian::read32le(Data.Contents.data() + Offset + 12);
+    printRISCVAddress(Data, "          Begin Address", Offset, Begin);
+    printRISCVAddress(Data, "          End Address", Offset + 4, End);
+    printRISCVAddress(Data, "          Handler Address", Offset + 8, Handler);
+    printRISCVAddress(Data, "          Jump Target", Offset + 12, Target);
+  }
+}
+
+static void printRISCVUnwindInfo(const COFFObjectFile *Obj,
+                                 const RISCVLocatedData &Data,
+                                 uint32_t FunctionLength, bool Relocatable) {
+  using namespace RISCVWinEH;
+  outs() << "  RVUW Unwind Info:\n";
+  if (Data.Contents.size() < UnwindHeaderSize) {
+    outs() << "    Validation Error: truncated RVUW header\n\n";
+    return;
+  }
+  outs() << format("    Magic: 0x%08X\n", support::endian::read32le(Data.Contents.data()))
+         << format("    Version: %u\n", support::endian::read16le(Data.Contents.data() + 4))
+         << format("    Header Size: %u\n", support::endian::read16le(Data.Contents.data() + 6))
+         << format("    Record Size: %u\n", support::endian::read32le(Data.Contents.data() + 8))
+         << format("    Flags: 0x%X\n", support::endian::read32le(Data.Contents.data() + 12))
+         << format("    Prologue End: 0x%X\n", support::endian::read32le(Data.Contents.data() + 16))
+         << format("    Establisher Frame Offset: %d\n", static_cast<int32_t>(support::endian::read32le(Data.Contents.data() + 20)))
+         << format("    Prologue Code Slots: %u\n", support::endian::read16le(Data.Contents.data() + 24))
+         << format("    Epilogue Scope Count: %u\n", support::endian::read16le(Data.Contents.data() + 26))
+         << format("    Epilogue Code Slots: %u\n", support::endian::read16le(Data.Contents.data() + 28))
+         << format("    Required State: 0x%X\n", support::endian::read16le(Data.Contents.data() + 30));
+
+  Expected<DecodedUnwindInfo> Decoded =
+      decodeUnwindInfo(Data.Contents, FunctionLength, Relocatable);
+  if (!Decoded) {
+    outs() << "    Validation Error: " << toString(Decoded.takeError())
+           << "\n\n";
+    return;
+  }
+
+  outs() << "    Prologue Codes:\n";
+  for (const DecodedCode &Code : Decoded->PrologCodes)
+    printRISCVCode(Code, "      ");
+  outs() << "    Epilogue Scopes:\n";
+  for (const DecodedEpilogScope &Scope : Decoded->EpilogScopes) {
+    outs() << format("      [0x%X, 0x%X), slots %u..%u:\n", Scope.StartOffset,
+                     Scope.EndOffset, Scope.FirstCodeSlot,
+                     Scope.FirstCodeSlot + Scope.CodeSlots);
+    for (const DecodedCode &Code : Scope.Codes)
+      printRISCVCode(Code, "        ");
+  }
+
+  if (Decoded->Handler) {
+    uint64_t TailOffset = Decoded->RecordSize - sizeof(HandlerV1);
+    printRISCVAddress(Data, "    Exception Handler", TailOffset,
+                      Decoded->Handler->ExceptionHandlerRVA);
+    printRISCVAddress(Data, "    Handler Data", TailOffset + 4, Decoded->Handler->HandlerDataRVA);
+    Expected<RISCVLocatedData> HandlerData =
+        Relocatable
+            ? locateRISCVObjectData(Obj, Data.Relocations,
+                                    Data.Offset + TailOffset + 4,
+                                    Decoded->Handler->HandlerDataRVA)
+            : locateRISCVImageData(Obj,
+                                   Decoded->Handler->HandlerDataRVA, 4,
+                                   "RISC-V64 handler data");
+    if (HandlerData)
+      printRISCVScopeTable(Obj, *HandlerData);
+    else
+      consumeError(HandlerData.takeError());
+  } else if (Decoded->Chained) {
+    uint64_t TailOffset =
+        Decoded->RecordSize - sizeof(RISCVWinEH::RuntimeFunction);
+    outs() << "    Chained Runtime Function:\n";
+    printRISCVAddress(Data, "      Begin Address", TailOffset, Decoded->Chained->BeginAddress);
+    printRISCVAddress(Data, "      End Address", TailOffset + 4, Decoded->Chained->EndAddress);
+    printRISCVAddress(Data, "      Unwind Data", TailOffset + 8, Decoded->Chained->UnwindData);
+  }
+  outs() << "\n";
+}
+
+static void printRISCVUnwindInfo(const COFFObjectFile *Obj) {
+  bool Relocatable = !(Obj->getPE32Header() || Obj->getPE32PlusHeader());
+  for (const SectionRef &SectionRef : Obj->sections()) {
+    StringRef Name = unwrapOrError(SectionRef.getName(), Obj->getFileName());
+    if (Name != ".pdata" && !Name.starts_with(".pdata$"))
+      continue;
+    const coff_section *PData = Obj->getCOFFSection(SectionRef);
+    ArrayRef<uint8_t> Contents;
+    if (Error E = Obj->getSectionContents(PData, Contents))
+      reportError(std::move(E), Obj->getFileName());
+    if (Contents.size() % sizeof(RISCVWinEH::RuntimeFunction)) {
+      WithColor::warning(errs())
+          << "RISC-V64 .pdata size is not a multiple of 12\n";
+      continue;
+    }
+    std::vector<RelocationRef> PDataRelocations;
+    append_range(PDataRelocations, SectionRef.relocations());
+    llvm::sort(PDataRelocations, isRelocAddressLess);
+    RISCVLocatedData PDataLocation{Contents, PData, PDataRelocations, 0};
+
+    for (uint64_t Offset = 0; Offset != Contents.size();
+         Offset += sizeof(RISCVWinEH::RuntimeFunction)) {
+      RISCVWinEH::RuntimeFunction Entry;
+      Entry.BeginAddress =
+          support::endian::read32le(Contents.data() + Offset);
+      Entry.EndAddress =
+          support::endian::read32le(Contents.data() + Offset + 4);
+      Entry.UnwindData =
+          support::endian::read32le(Contents.data() + Offset + 8);
+      outs() << "RISC-V64 Function Table:\n";
+      printRISCVAddress(PDataLocation, "  Begin Address", Offset, Entry.BeginAddress);
+      printRISCVAddress(PDataLocation, "  End Address", Offset + 4, Entry.EndAddress);
+      printRISCVAddress(PDataLocation, "  Unwind Data", Offset + 8, Entry.UnwindData);
+
+      Expected<RISCVLocatedData> Data =
+          Relocatable
+              ? locateRISCVObjectData(Obj, PDataRelocations, Offset + 8, Entry.UnwindData)
+              : locateRISCVImageData(Obj, Entry.UnwindData,
+                                     RISCVWinEH::UnwindHeaderSize,
+                                     "RISC-V64 RVUW record");
+      if (!Data) {
+        WithColor::warning(errs()) << toString(Data.takeError()) << "\n";
+        continue;
+      }
+      uint32_t FunctionLength = std::numeric_limits<uint32_t>::max();
+      if (!Relocatable &&
+          uint32_t(Entry.EndAddress) > uint32_t(Entry.BeginAddress))
+        FunctionLength =
+            uint32_t(Entry.EndAddress) - uint32_t(Entry.BeginAddress);
+      printRISCVUnwindInfo(Obj, *Data, FunctionLength, Relocatable);
+    }
+  }
+}
+
+} // namespace
+
 void objdump::printCOFFUnwindInfo(const COFFObjectFile *Obj) {
+  if (Obj->getMachine() == COFF::IMAGE_FILE_MACHINE_RISCV64) {
+    printRISCVUnwindInfo(Obj);
+    return;
+  }
   if (Obj->getMachine() != COFF::IMAGE_FILE_MACHINE_AMD64) {
     WithColor::error(errs(), "llvm-objdump")
         << "unsupported image machine type "

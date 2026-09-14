@@ -48,6 +48,7 @@ driver_executable("llvm-readobj") {
     "ELFDumper.cpp",
     "MachODumper.cpp",
     "ObjDumper.cpp",
+    "RISCVWinEHDumper.cpp",
     "WasmDumper.cpp",
     "Win64EHDumper.cpp",
     "WindowsResourceDumper.cpp",
