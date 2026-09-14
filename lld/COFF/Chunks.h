@@ -1062,6 +1062,7 @@ inline void Chunk::setEntryThunk(Defined *entryThunk) {
 }
 
 void applyMOV32T(uint8_t *off, uint32_t v);
+void applyRISCVPCRelPair(uint8_t *off, int64_t value, const Twine &context);
 void applyBranch24T(uint8_t *off, int32_t v);
 
 void applyArm64Addr(uint8_t *off, uint64_t s, uint64_t p, int shift);

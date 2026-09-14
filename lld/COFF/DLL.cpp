@@ -319,6 +319,47 @@ static const uint8_t thunkARM64[] = {
     0x00, 0x00, 0x00, 0x14, // b       __tailMerge_<lib>
 };
 
+static const uint8_t thunkRISCV64[] = {
+    0x97, 0x02, 0x00, 0x00, // auipc t0, 0     __imp_<FUNCNAME>
+    0x93, 0x82, 0x02, 0x00, // addi  t0, t0, 0
+    0x17, 0x03, 0x00, 0x00, // auipc t1, 0     __tailMerge_<lib>
+    0x67, 0x00, 0x03, 0x00, // jr    t1
+};
+
+// The NT base integer calling convention passes floating-point arguments in
+// integer registers too. Preserve a0-a7 and the caller's return address, then
+// restore the original aligned stack before jumping to the resolved function;
+// arguments beyond a7 remain at their caller-supplied stack locations.
+static const uint8_t tailMergeRISCV64[] = {
+    0x13, 0x01, 0x01, 0xfb, // addi sp, sp, -80
+    0x23, 0x30, 0x11, 0x04, // sd   ra, 64(sp)
+    0x23, 0x30, 0xa1, 0x00, // sd   a0, 0(sp)
+    0x23, 0x34, 0xb1, 0x00, // sd   a1, 8(sp)
+    0x23, 0x38, 0xc1, 0x00, // sd   a2, 16(sp)
+    0x23, 0x3c, 0xd1, 0x00, // sd   a3, 24(sp)
+    0x23, 0x30, 0xe1, 0x02, // sd   a4, 32(sp)
+    0x23, 0x34, 0xf1, 0x02, // sd   a5, 40(sp)
+    0x23, 0x38, 0x01, 0x03, // sd   a6, 48(sp)
+    0x23, 0x3c, 0x11, 0x03, // sd   a7, 56(sp)
+    0x93, 0x85, 0x02, 0x00, // mv   a1, t0
+    0x17, 0x05, 0x00, 0x00, // auipc a0, 0    DELAY_IMPORT_DESCRIPTOR
+    0x13, 0x05, 0x05, 0x00, // addi a0, a0, 0
+    0x97, 0x00, 0x00, 0x00, // auipc ra, 0    __delayLoadHelper2
+    0xe7, 0x80, 0x00, 0x00, // jalr ra
+    0x93, 0x02, 0x05, 0x00, // mv   t0, a0
+    0x03, 0x35, 0x01, 0x00, // ld   a0, 0(sp)
+    0x83, 0x35, 0x81, 0x00, // ld   a1, 8(sp)
+    0x03, 0x36, 0x01, 0x01, // ld   a2, 16(sp)
+    0x83, 0x36, 0x81, 0x01, // ld   a3, 24(sp)
+    0x03, 0x37, 0x01, 0x02, // ld   a4, 32(sp)
+    0x83, 0x37, 0x81, 0x02, // ld   a5, 40(sp)
+    0x03, 0x38, 0x01, 0x03, // ld   a6, 48(sp)
+    0x83, 0x38, 0x81, 0x03, // ld   a7, 56(sp)
+    0x83, 0x30, 0x01, 0x04, // ld   ra, 64(sp)
+    0x13, 0x01, 0x01, 0x05, // addi sp, sp, 80
+    0x67, 0x80, 0x02, 0x00, // jr   t0
+};
+
 static const uint8_t tailMergeARM64[] = {
     0xfd, 0x7b, 0xb2, 0xa9, // stp     x29, x30, [sp, #-224]!
     0xfd, 0x03, 0x00, 0x91, // mov     x29, sp
@@ -564,6 +605,43 @@ public:
       applyArm64Addr(buf + 56, helper->getRVA(), rva + 56, 12);
       applyArm64Imm(buf + 60, helper->getRVA() & 0xfff, 0);
     }
+  }
+
+  Chunk *desc = nullptr;
+  Defined *helper = nullptr;
+};
+
+class ThunkChunkRISCV64 : public NonSectionCodeChunk {
+public:
+  ThunkChunkRISCV64(Defined *i, Chunk *tm) : imp(i), tailMerge(tm) {
+    setAlignment(4);
+  }
+  size_t getSize() const override { return sizeof(thunkRISCV64); }
+  MachineTypes getMachine() const override { return RISCV64; }
+
+  void writeTo(uint8_t *buf) const override {
+    memcpy(buf, thunkRISCV64, sizeof(thunkRISCV64));
+    applyRISCVPCRelPair(buf, int64_t(imp->getRVA()) - rva, "delay import thunk");
+    applyRISCVPCRelPair(buf + 8, int64_t(tailMerge->getRVA()) - rva - 8, "delay import tail branch");
+  }
+
+  Defined *imp = nullptr;
+  Chunk *tailMerge = nullptr;
+};
+
+class TailMergeChunkRISCV64 : public NonSectionCodeChunk {
+public:
+  TailMergeChunkRISCV64(Chunk *d, Defined *h) : desc(d), helper(h) {
+    setAlignment(4);
+  }
+  size_t getSize() const override { return sizeof(tailMergeRISCV64); }
+  MachineTypes getMachine() const override { return RISCV64; }
+
+  void writeTo(uint8_t *buf) const override {
+    memcpy(buf, tailMergeRISCV64, sizeof(tailMergeRISCV64));
+    applyRISCVPCRelPair(buf + 44, int64_t(desc->getRVA()) - rva - 44, "delay import descriptor");
+    if (helper)
+      applyRISCVPCRelPair(buf + 52, int64_t(helper->getRVA()) - rva - 52, "delay import helper");
   }
 
   Chunk *desc = nullptr;
@@ -1049,8 +1127,10 @@ Chunk *DelayLoadContents::newTailMergeChunk(SymbolTable &symtab, Chunk *dir) {
     return make<TailMergeChunkARM>(ctx, dir, helper);
   case ARM64:
     return make<TailMergeChunkARM64>(dir, helper);
+  case RISCV64:
+    return make<TailMergeChunkRISCV64>(dir, helper);
   default:
-    llvm_unreachable("unsupported machine type");
+    fatal("delay loading is not supported for this machine type");
   }
 }
 
@@ -1080,8 +1160,10 @@ Chunk *DelayLoadContents::newThunkChunk(DefinedImportData *s,
     return make<ThunkChunkARM>(ctx, s, tailMerge);
   case ARM64:
     return make<ThunkChunkARM64>(s, tailMerge);
+  case RISCV64:
+    return make<ThunkChunkRISCV64>(s, tailMerge);
   default:
-    llvm_unreachable("unsupported machine type");
+    fatal("delay loading is not supported for this machine type");
   }
 }
 

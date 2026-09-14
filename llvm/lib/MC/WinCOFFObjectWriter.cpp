@@ -960,8 +960,12 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
   }
 
   bool IsRISCVPCRelLo = false;
+  bool IsRISCVPCRelHi = false;
   if (Header.Machine == COFF::IMAGE_FILE_MACHINE_RISCV32 || Header.Machine == COFF::IMAGE_FILE_MACHINE_RISCV64) {
     switch (Reloc.Data.Type) {
+    case COFF::IMAGE_REL_RISCV_PCREL_HI20:
+      IsRISCVPCRelHi = true;
+      break;
     case COFF::IMAGE_REL_RISCV_PCREL_LO12_I:
     case COFF::IMAGE_REL_RISCV_PCREL_LO12_S:
       IsRISCVPCRelLo = true;
@@ -978,10 +982,14 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
       SecRelFixedValue += Asm->getSymbolOffset(A);
     NeedsSecRelSymbol = !isUInt<12>(SecRelFixedValue);
     SecRelSymbolOffset = Asm->getSymbolOffset(A) + FixedValue;
-  } else if (IsRISCVPCRelLo && UseSectionSymbol && A.isInSection()) {
+  } else if ((IsRISCVPCRelLo || IsRISCVPCRelHi) && UseSectionSymbol &&
+             A.isInSection()) {
     // The linker pairs a RISC-V PC-relative low half with its AUIPC through
     // the label's address, so the temporary AUIPC label must survive as a
     // real symbol instead of collapsing into a section-relative offset.
+    // Preserve a temporary high target too: the low instruction carries the
+    // expression constant, so folding the target's section offset into only
+    // the high instruction would lose that offset's low bits.
     NeedsSecRelSymbol = true;
     SecRelSymbolOffset = Asm->getSymbolOffset(A);
   }
@@ -993,7 +1001,8 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
       return;
     }
     Reloc.Symb = getOrCreateSecRelSymbol(A, SecRelSymbolOffset);
-    FixedValue = 0;
+    if (!IsRISCVPCRelHi)
+      FixedValue = 0;
   } else if (UseSectionSymbol) {
     MCSection *TargetSection = &A.getSection();
     assert(
