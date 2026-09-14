@@ -406,6 +406,8 @@ std::string riscv::getRISCVArch(const llvm::opt::ArgList &Args,
 
   if (Triple.getOS() == llvm::Triple::UnknownOS)
     return "rv64imac";
+  if (Triple.isOSWindows())
+    return "rva23u64";
   if (Triple.isAndroid())
     return "rv64imafdcv_zba_zbb_zbs";
   if (Triple.isOSFuchsia())
