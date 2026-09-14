@@ -757,6 +757,11 @@ static void applyRISCVIType(uint8_t *off, int64_t value) {
   write32le(off, (inst & 0x000fffff) | ((uint32_t(value) & 0xfff) << 20));
 }
 
+void applyRISCVPCRelPair(uint8_t *off, int64_t value, const Twine &context) {
+  if (applyRISCVUType(off, value, context))
+    applyRISCVIType(off + 4, value);
+}
+
 static void applyRISCVSType(uint8_t *off, int64_t value) {
   uint32_t inst = read32le(off);
   uint32_t imm = uint32_t(value) & 0xfff;
@@ -1906,8 +1911,7 @@ void ImportThunkChunkRISCV::writeTo(uint8_t *buf) const {
   if (machine == RISCV32)
     write32le(buf + 4, 0x0002a283);
   int64_t offset = int64_t(impSymbol->getRVA()) - int64_t(rva);
-  if (applyRISCVUType(buf, offset, "import thunk for " + impSymbol->getName()))
-    applyRISCVIType(buf + 4, offset);
+  applyRISCVPCRelPair(buf, offset, "import thunk for " + impSymbol->getName());
 }
 
 // A Thumb2, PIC, non-interworking range extension thunk.
