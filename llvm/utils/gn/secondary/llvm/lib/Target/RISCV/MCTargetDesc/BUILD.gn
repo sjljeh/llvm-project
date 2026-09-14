@@ -74,6 +74,8 @@ static_library("MCTargetDesc") {
     "RISCVMCObjectFileInfo.cpp",
     "RISCVMCTargetDesc.cpp",
     "RISCVMachObjectWriter.cpp",
+    "RISCVWinCOFFObjectWriter.cpp",
+    "RISCVWinCOFFStreamer.cpp",
     "RISCVMatInt.cpp",
     "RISCVTargetStreamer.cpp",
   ]

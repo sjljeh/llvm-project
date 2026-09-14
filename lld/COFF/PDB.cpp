@@ -1358,8 +1358,9 @@ static codeview::CPUType toCodeViewMachine(COFF::MachineTypes machine) {
   case COFF::IMAGE_FILE_MACHINE_R4000:
     return codeview::CPUType::MIPS;
   case COFF::IMAGE_FILE_MACHINE_RISCV32:
-  case COFF::IMAGE_FILE_MACHINE_RISCV64:
     return codeview::CPUType::Unknown;
+  case COFF::IMAGE_FILE_MACHINE_RISCV64:
+    return codeview::CPUType::RISCV64;
   default:
     llvm_unreachable("Unsupported CPU Type");
   }
