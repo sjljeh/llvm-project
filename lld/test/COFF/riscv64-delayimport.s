@@ -11,8 +11,8 @@
 
 # Two per-symbol thunks share one tail merge. Code uses PC-relative addresses,
 # not absolute/Thumb instruction relocations; only the delay IAT needs DIR64.
-# The tail preserves all eight NT integer argument registers and original SP.
-# No foreign unwind format is emitted; RVUW unwind support remains separate.
+# The tail preserves all eight integer and floating-point argument registers
+# and restores the original SP.
 # CODE: Disassembly of section .text:
 # CODE:      140001030: auipc t0, 2
 # CODE-NEXT: 140001034: addi t0, t0, -40
@@ -22,7 +22,7 @@
 # CODE-NEXT: 140001044: addi t0, t0, -48
 # CODE-NEXT: 140001048: auipc t1, 0
 # CODE-NEXT: 14000104c: jalr zero, 8(t1)
-# CODE-NEXT: 140001050: addi sp, sp, -80
+# CODE-NEXT: 140001050: addi sp, sp, -144
 # CODE-NEXT: 140001054: sd ra, 64(sp)
 # CODE-NEXT: 140001058: sd a0, 0(sp)
 # CODE-NEXT: 14000105c: sd a1, 8(sp)
@@ -32,23 +32,39 @@
 # CODE-NEXT: 14000106c: sd a5, 40(sp)
 # CODE-NEXT: 140001070: sd a6, 48(sp)
 # CODE-NEXT: 140001074: sd a7, 56(sp)
-# CODE-NEXT: 140001078: addi a1, t0, 0
-# CODE-NEXT: 14000107c: auipc a0, 1
-# CODE-NEXT: 140001080: addi a0, a0, -124
-# CODE-NEXT: 140001084: auipc ra, 0
-# CODE-NEXT: 140001088: jalr ra, -112(ra)
-# CODE-NEXT: 14000108c: addi t0, a0, 0
-# CODE-NEXT: 140001090: ld a0, 0(sp)
-# CODE-NEXT: 140001094: ld a1, 8(sp)
-# CODE-NEXT: 140001098: ld a2, 16(sp)
-# CODE-NEXT: 14000109c: ld a3, 24(sp)
-# CODE-NEXT: 1400010a0: ld a4, 32(sp)
-# CODE-NEXT: 1400010a4: ld a5, 40(sp)
-# CODE-NEXT: 1400010a8: ld a6, 48(sp)
-# CODE-NEXT: 1400010ac: ld a7, 56(sp)
-# CODE-NEXT: 1400010b0: ld ra, 64(sp)
-# CODE-NEXT: 1400010b4: addi sp, sp, 80
-# CODE-NEXT: 1400010b8: jalr zero, 0(t0)
+# CODE-NEXT: 140001078: fsd fa0, 72(sp)
+# CODE-NEXT: 14000107c: fsd fa1, 80(sp)
+# CODE-NEXT: 140001080: fsd fa2, 88(sp)
+# CODE-NEXT: 140001084: fsd fa3, 96(sp)
+# CODE-NEXT: 140001088: fsd fa4, 104(sp)
+# CODE-NEXT: 14000108c: fsd fa5, 112(sp)
+# CODE-NEXT: 140001090: fsd fa6, 120(sp)
+# CODE-NEXT: 140001094: fsd fa7, 128(sp)
+# CODE-NEXT: 140001098: addi a1, t0, 0
+# CODE-NEXT: 14000109c: auipc a0, 1
+# CODE-NEXT: 1400010a0: addi a0, a0, -156
+# CODE-NEXT: 1400010a4: auipc ra, 0
+# CODE-NEXT: 1400010a8: jalr ra, -144(ra)
+# CODE-NEXT: 1400010ac: addi t0, a0, 0
+# CODE-NEXT: 1400010b0: ld a0, 0(sp)
+# CODE-NEXT: 1400010b4: ld a1, 8(sp)
+# CODE-NEXT: 1400010b8: ld a2, 16(sp)
+# CODE-NEXT: 1400010bc: ld a3, 24(sp)
+# CODE-NEXT: 1400010c0: ld a4, 32(sp)
+# CODE-NEXT: 1400010c4: ld a5, 40(sp)
+# CODE-NEXT: 1400010c8: ld a6, 48(sp)
+# CODE-NEXT: 1400010cc: ld a7, 56(sp)
+# CODE-NEXT: 1400010d0: fld fa0, 72(sp)
+# CODE-NEXT: 1400010d4: fld fa1, 80(sp)
+# CODE-NEXT: 1400010d8: fld fa2, 88(sp)
+# CODE-NEXT: 1400010dc: fld fa3, 96(sp)
+# CODE-NEXT: 1400010e0: fld fa4, 104(sp)
+# CODE-NEXT: 1400010e4: fld fa5, 112(sp)
+# CODE-NEXT: 1400010e8: fld fa6, 120(sp)
+# CODE-NEXT: 1400010ec: fld fa7, 128(sp)
+# CODE-NEXT: 1400010f0: ld ra, 64(sp)
+# CODE-NEXT: 1400010f4: addi sp, sp, 144
+# CODE-NEXT: 1400010f8: jalr zero, 0(t0)
 # TABLES: DelayImport {
 # TABLES: Name: lib.dll
 # TABLES: Symbol: func (0)
