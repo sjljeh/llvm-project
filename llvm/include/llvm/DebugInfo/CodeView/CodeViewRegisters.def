@@ -1028,8 +1028,8 @@ CV_REGISTER(ALPHA_SOFTFPCR, 78)
 
 #if defined(CV_REGISTERS_ALL) || defined(CV_REGISTERS_RISCV)
 
-// Provisional RISC-V CodeView register numbering. Keep these values in sync
-// with the RISC-V Windows ABI contract used by this fork.
+// RISC-V CodeView register numbering. Keep these values in sync with the
+// RISC-V Windows ABI contract used by this fork.
 CV_REGISTER(RISCV_NOREG, 0)
 
 CV_REGISTER(RISCV_X0, 10)

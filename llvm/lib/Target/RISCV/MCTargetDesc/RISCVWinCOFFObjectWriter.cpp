@@ -8,6 +8,7 @@
 
 #include "RISCVMCTargetDesc.h"
 #include "RISCVFixupKinds.h"
+#include "RISCVMCAsmInfo.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/BinaryFormat/COFF.h"
 #include "llvm/MC/MCAsmBackend.h"
