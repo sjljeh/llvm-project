@@ -220,7 +220,11 @@ static void printUnwindInfo(ScopedPrinter &SW, const Dumper::Context &Ctx,
     DictScope H(SW, "Handler");
     uint32_t HandlerRVA = Decoded->Handler->ExceptionHandlerRVA;
     uint32_t HandlerDataRVA = Decoded->Handler->HandlerDataRVA;
+    bool IsCSpecificHandler = false;
     if (Data.Section) {
+      if (std::optional<SymbolRef> Symbol = resolveSymbol(
+              Ctx, Data.Section, Data.SectionOffset + TailOffset))
+        IsCSpecificHandler = symbolName(*Symbol) == "__C_specific_handler";
       printAddress(SW, Ctx, "ExceptionHandler", Data.Section,
                    Data.SectionOffset + TailOffset, HandlerRVA);
       printAddress(SW, Ctx, "HandlerData", Data.Section,
@@ -230,34 +234,19 @@ static void printUnwindInfo(ScopedPrinter &SW, const Dumper::Context &Ctx,
       SW.printHex("HandlerData", HandlerDataRVA);
     }
 
-    Expected<LocatedData> HandlerData =
-        Data.Section
-            ? locateRelocatedData(Ctx, Data.Section,
-                                  Data.SectionOffset + TailOffset + 4,
-                                  HandlerDataRVA)
-            : [&]() -> Expected<LocatedData> {
-                ArrayRef<uint8_t> Contents;
-                if (!HandlerDataRVA)
-                  return createStringError("handler data RVA is zero");
-                if (Error E = Ctx.COFF.getRvaAndSizeAsBytes(
-                        HandlerDataRVA, 4, Contents,
-                        "RISC-V64 handler data"))
-                  return std::move(E);
-                uintptr_t Address;
-                if (Error E = Ctx.COFF.getRvaPtr(HandlerDataRVA, Address))
-                  return std::move(E);
-                StringRef File = Ctx.COFF.getData();
-                const uint8_t *Ptr = reinterpret_cast<const uint8_t *>(Address);
-                const uint8_t *FileEnd =
-                    reinterpret_cast<const uint8_t *>(File.end());
-                return LocatedData{
-                    ArrayRef<uint8_t>(Ptr, static_cast<size_t>(FileEnd - Ptr)),
-                    nullptr, HandlerDataRVA};
-              }();
-    if (HandlerData)
-      printScopeTable(SW, Ctx, *HandlerData);
-    else
-      consumeError(HandlerData.takeError());
+    // Handler data is personality-specific. Decode it as a C scope table only
+    // when the relocation identifies __C_specific_handler; C++ personalities
+    // use an unrelated FuncInfo structure, and images may not retain enough
+    // symbol information to distinguish the formats safely.
+    if (IsCSpecificHandler) {
+      Expected<LocatedData> HandlerData = locateRelocatedData(
+          Ctx, Data.Section, Data.SectionOffset + TailOffset + 4,
+          HandlerDataRVA);
+      if (HandlerData)
+        printScopeTable(SW, Ctx, *HandlerData);
+      else
+        consumeError(HandlerData.takeError());
+    }
   } else if (Decoded->Chained) {
     TailOffset -= sizeof(RuntimeFunction);
     DictScope C(SW, "Chained");
