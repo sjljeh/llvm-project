@@ -2340,6 +2340,15 @@ void RISCVFrameLowering::processFunctionBeforeFrameFinalized(
 // by the frame pointer.
 // Let eliminateCallFramePseudoInstr preserve stack space for it.
 bool RISCVFrameLowering::hasReservedCallFrame(const MachineFunction &MF) const {
+  // hasRVVFrameObject() deliberately uses the presence of V instructions as a
+  // conservative proxy, which is stable across register allocation. Windows
+  // funclets, however, require a fixed call frame and RVUW separately rejects
+  // functions that acquire actual scalable-vector frame state. Do not reject
+  // an otherwise scalar funclet merely because its subtarget enables V.
+  if (MF.hasEHFunclets() &&
+      MF.getSubtarget<RISCVSubtarget>().getTargetTriple().isOSWindows())
+    return !MF.getFrameInfo().hasVarSizedObjects();
+
   return !MF.getFrameInfo().hasVarSizedObjects() &&
          !(hasFP(MF) && hasRVVFrameObject(MF));
 }

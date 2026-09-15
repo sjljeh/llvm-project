@@ -24,17 +24,23 @@ void g() {
 
 // ASM: .seh_proc "?g@@YAXXZ"
 // ASM: .seh_handler __CxxFrameHandler3, @unwind, @except
-// ASM: .seh_stackalloc
+// ASM: .seh_set_cfa x2, 16
+// ASM: .seh_save_gpr x1, -8
 // ASM: .seh_endprologue
+// ASM: .seh_proc "?catch$1@?0??g@@YAXXZ@4HA"
+// ASM: auipc a0, %pcrel_hi($ehgcr_0_2)
+// ASM: addi a0, a0, %pcrel_lo(
+// ASM: ret
 // ASM: "$cppxdata$?g@@YAXXZ":
 
 // OBJ: Format: COFF-RISCV64
 // OBJ: Name: .xdata
 // OBJ: Name: .pdata
 // OBJ: Section {{.*}} .pdata {
-// OBJ: IMAGE_REL_RISCV_ADDR32NB "?g@@YAXXZ"
+// OBJ: IMAGE_REL_RISCV_ADDR32NB .text
 // OBJ: IMAGE_REL_RISCV_ADDR32NB .xdata
 // OBJ: UnwindInformation [
 // OBJ: RuntimeFunction {
 // OBJ: UnwindInfo {
 // OBJ: Version: 1
+// OBJ-NOT: CSpecificScopeTable

@@ -1931,6 +1931,15 @@ let isBarrier = 1, isReturn = 1, isTerminator = 1, isEHScopeReturn = 1,
 def CLEANUPRET : Pseudo<(outs), (ins), [(cleanupret bb)]>,
                  PseudoInstExpansion<(JALR X0, X1, 0)>;
 
+// Return from an outlined Windows catch funclet with the continuation address
+// in a0, following the RISC-V Windows exception ABI.
+let isBarrier = 1, isReturn = 1, isTerminator = 1, isEHScopeReturn = 1,
+    hasSideEffects = 1, hasCtrlDep = 1, isCodeGenOnly = 1, Defs = [X10],
+    Uses = [X1], Size = 12 in
+def CATCHRET : Pseudo<
+    (outs), (ins simm21_lsb0_jal:$dst, simm21_lsb0_jal:$from),
+    [(catchret bb:$dst, bb:$from)]>;
+
 // PseudoTAIL is a pseudo instruction similar to PseudoCALL and will eventually
 // expand to auipc and jalr while encoding.
 // Define AsmString to print "tail" when compile with -S flag.

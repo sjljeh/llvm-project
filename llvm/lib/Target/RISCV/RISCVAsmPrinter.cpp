@@ -406,6 +406,32 @@ void RISCVAsmPrinter::emitInstruction(const MachineInstr *MI) {
   }
 
   switch (MI->getOpcode()) {
+  case RISCV::CATCHRET: {
+    const MachineBasicBlock *TargetMBB = MI->getOperand(0).getMBB();
+    const MCSymbol *TargetSym = TargetMBB->isEHContTarget()
+                                    ? TargetMBB->getEHContSymbol()
+                                    : TargetMBB->getSymbol();
+    const MCSymbolRefExpr *Target =
+        MCSymbolRefExpr::create(TargetSym, OutContext);
+    const MCExpr *Hi =
+        MCSpecifierExpr::create(Target, RISCV::S_PCREL_HI, OutContext);
+    MCSymbol *Anchor = OutContext.createTempSymbol("pcrel_hi");
+    OutStreamer->emitLabel(Anchor);
+    const MCExpr *Lo = MCSpecifierExpr::create(
+        MCSymbolRefExpr::create(Anchor, OutContext), RISCV::S_PCREL_LO,
+        OutContext);
+    EmitToStreamer(*OutStreamer,
+                   MCInstBuilder(RISCV::AUIPC).addReg(RISCV::X10).addExpr(Hi));
+    EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::ADDI)
+                                       .addReg(RISCV::X10)
+                                       .addReg(RISCV::X10)
+                                       .addExpr(Lo));
+    EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::JALR)
+                                       .addReg(RISCV::X0)
+                                       .addReg(RISCV::X1)
+                                       .addImm(0));
+    return;
+  }
   case RISCV::PseudoMovMCSym: {
     Register DestReg = MI->getOperand(0).getReg();
     MCSymbol *FrameAlloc = MI->getOperand(1).getMCSymbol();

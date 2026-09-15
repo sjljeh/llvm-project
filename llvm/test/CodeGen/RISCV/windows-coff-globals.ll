@@ -14,6 +14,7 @@ define i32 @load_var() {
 ; CHECK:         .Lpcrel_hi0:
 ; CHECK-NEXT:    auipc a0, %pcrel_hi(var)
 ; CHECK-NEXT:    lw a0, %pcrel_lo(.Lpcrel_hi0)(a0)
+; CHECK-NEXT:    .seh_startepilogue
 ; CHECK-NEXT:    ret
   %v = load i32, ptr @var
   ret i32 %v
@@ -25,6 +26,7 @@ define i32 @load_imported() {
 ; CHECK-NEXT:    auipc a0, %pcrel_hi(__imp_imported)
 ; CHECK-NEXT:    ld a0, %pcrel_lo(.Lpcrel_hi1)(a0)
 ; CHECK-NEXT:    lw a0, 0(a0)
+; CHECK-NEXT:    .seh_startepilogue
 ; CHECK-NEXT:    ret
   %v = load i32, ptr @imported
   ret i32 %v
@@ -35,6 +37,7 @@ define ptr @weak_address() {
 ; CHECK:         .Lpcrel_hi2:
 ; CHECK-NEXT:    auipc a0, %pcrel_hi(.refptr.weak_var)
 ; CHECK-NEXT:    ld a0, %pcrel_lo(.Lpcrel_hi2)(a0)
+; CHECK-NEXT:    .seh_startepilogue
 ; CHECK-NEXT:    ret
   ret ptr @weak_var
 }
@@ -46,6 +49,7 @@ define ptr @weak_address_offset() {
 ; CHECK-NEXT:    auipc a0, %pcrel_hi(.refptr.weak_var)
 ; CHECK-NEXT:    ld a0, %pcrel_lo(.Lpcrel_hi3)(a0)
 ; CHECK-NEXT:    addi a0, a0, 8
+; CHECK-NEXT:    .seh_startepilogue
 ; CHECK-NEXT:    ret
   ret ptr getelementptr (i8, ptr @weak_var, i64 8)
 }
@@ -56,6 +60,7 @@ define i32 @load_imported_offset() {
 ; CHECK-NEXT:    auipc a0, %pcrel_hi(__imp_imported)
 ; CHECK-NEXT:    ld a0, %pcrel_lo(.Lpcrel_hi4)(a0)
 ; CHECK-NEXT:    lw a0, 4(a0)
+; CHECK-NEXT:    .seh_startepilogue
 ; CHECK-NEXT:    ret
   %v = load i32, ptr getelementptr (i8, ptr @imported, i64 4)
   ret i32 %v

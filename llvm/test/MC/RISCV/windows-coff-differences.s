@@ -10,7 +10,7 @@
   .word .Linfo_foo - .Ltable
 
 # As an extension, allow 64-bit label differences. They lower to REL32 because
-# the provisional RISC-V COFF contract has no REL64 relocation.
+# the RISC-V Windows COFF contract has no REL64 relocation.
   .quad .Linfo_foo - .Ltable
 
 # CHECK: Format: COFF-RISCV64
