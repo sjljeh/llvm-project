@@ -2,8 +2,8 @@
 ; RUN: llc -mtriple=riscv32-pc-windows-msvc -filetype=obj < %s -o %t.obj
 ; RUN: llvm-readobj --file-headers --relocations --codeview %t.obj | FileCheck %s
 
-; Verify that RV32 uses the RISC-V register set with a distinct provisional
-; CodeView CPU value.
+; Verify that RV32 uses the RISC-V register set with a distinct CodeView CPU
+; value.
 ;
 ; CHECK: Machine: IMAGE_FILE_MACHINE_RISCV32 (0x5032)
 ; CHECK: IMAGE_REL_RISCV_SECREL function

@@ -37,6 +37,12 @@ public:
   StackOffset getNonLocalFrameIndexReference(const MachineFunction &MF,
                                              int FI) const override;
 
+  // RISC-V funclets receive the parent's frame pointer directly in s0, so the
+  // C++ EH metadata does not need an x86-style displacement to recover it.
+  unsigned getWinEHParentFrameOffset(const MachineFunction &) const override {
+    return 0;
+  }
+
   void determineCalleeSaves(MachineFunction &MF, BitVector &SavedRegs,
                             RegScavenger *RS) const override;
 

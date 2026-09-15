@@ -2,7 +2,7 @@
 ; RUN: llc -mtriple=riscv64-pc-windows-msvc -filetype=obj < %s -o %t.obj
 ; RUN: llvm-readobj --file-headers --relocations --codeview %t.obj | FileCheck %s
 
-; Verify the provisional RISC-V Windows CodeView CPU and register numbering.
+; Verify the RISC-V Windows CodeView CPU and register numbering.
 ;
 ; CHECK: Machine: IMAGE_FILE_MACHINE_RISCV64 (0x5064)
 ; CHECK: IMAGE_REL_RISCV_SECREL main
