@@ -158,7 +158,13 @@
 #  if __riscv_xlen == 32
 #   define _LIBUNWIND_CURSOR_SIZE (_LIBUNWIND_CONTEXT_SIZE + 7)
 #  elif __riscv_xlen == 64
-#   define _LIBUNWIND_CURSOR_SIZE (_LIBUNWIND_CONTEXT_SIZE + 12)
+#   if defined(__SEH__)
+// The SEH cursor owns the native CONTEXT, DISPATCHER_CONTEXT, and history
+// table in addition to the ordinary libunwind state.
+#    define _LIBUNWIND_CURSOR_SIZE 116
+#   else
+#    define _LIBUNWIND_CURSOR_SIZE (_LIBUNWIND_CONTEXT_SIZE + 12)
+#   endif
 #  else
 #   error "Unsupported RISC-V ABI"
 #  endif
