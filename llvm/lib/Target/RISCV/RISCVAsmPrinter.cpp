@@ -1414,6 +1414,13 @@ void RISCVAsmPrinter::emitMachineConstantPoolValue(
   }
 
   const MCExpr *Expr = MCSymbolRefExpr::create(MCSym, OutContext);
+  if (RCPV->isSecRel()) {
+    assert(TM.getTargetTriple().isOSBinFormatCOFF() &&
+           "section-relative constant on a non-COFF target");
+    OutStreamer->emitCOFFSecRel32(MCSym, 0);
+    return;
+  }
+
   uint64_t Size = getDataLayout().getTypeAllocSize(RCPV->getType());
   OutStreamer->emitValue(Expr, Size);
 }

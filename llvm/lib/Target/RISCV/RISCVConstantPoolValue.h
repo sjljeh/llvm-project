@@ -28,8 +28,9 @@ class LLVMContext;
 class RISCVConstantPoolValue : public MachineConstantPoolValue {
   const GlobalValue *GV;
   const StringRef S;
+  bool IsSecRel;
 
-  RISCVConstantPoolValue(Type *Ty, const GlobalValue *GV);
+  RISCVConstantPoolValue(Type *Ty, const GlobalValue *GV, bool IsSecRel);
   RISCVConstantPoolValue(LLVMContext &C, StringRef S);
 
 private:
@@ -40,10 +41,12 @@ public:
   ~RISCVConstantPoolValue() override = default;
 
   static RISCVConstantPoolValue *Create(const GlobalValue *GV);
+  static RISCVConstantPoolValue *CreateSecRel(const GlobalValue *GV);
   static RISCVConstantPoolValue *Create(LLVMContext &C, StringRef S);
 
   bool isGlobalValue() const { return Kind == RISCVCPKind::GlobalValue; }
   bool isExtSymbol() const { return Kind == RISCVCPKind::ExtSymbol; }
+  bool isSecRel() const { return IsSecRel; }
 
   const GlobalValue *getGlobalValue() const { return GV; }
   StringRef getSymbol() const { return S; }

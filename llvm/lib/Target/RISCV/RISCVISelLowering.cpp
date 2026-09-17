@@ -10228,6 +10228,55 @@ SDValue RISCVTargetLowering::getStaticTLSAddr(GlobalAddressSDNode *N,
   return DAG.getNode(RISCVISD::ADD_LO, DL, Ty, MNAdd, AddrLo);
 }
 
+SDValue RISCVTargetLowering::getWindowsTLSAddr(GlobalAddressSDNode *N,
+                                               SelectionDAG &DAG) const {
+  assert(Subtarget.getTargetTriple().isOSWindows() &&
+         "Windows-specific TLS lowering on a non-Windows target");
+
+  SDLoc DL(N);
+  EVT PtrVT = getPointerTy(DAG.getDataLayout());
+  SDValue Chain = DAG.getEntryNode();
+
+  // On Windows/RISC-V, x4 points at the TEB. ThreadLocalStoragePointer is at
+  // the common 64-bit TEB offset 0x58 and points at the process TLS array.
+  SDValue TEB = DAG.getRegister(RISCV::X4, PtrVT);
+  SDValue TLSArrayAddr = DAG.getNode(
+      ISD::ADD, DL, PtrVT, TEB, DAG.getIntPtrConstant(0x58, DL));
+  SDValue TLSArray = DAG.getLoad(
+      PtrVT, DL, Chain, TLSArrayAddr, MachinePointerInfo());
+  Chain = TLSArray.getValue(1);
+
+  // Each image owns a 32-bit _tls_index, assigned by the loader. Use a local
+  // PC-relative address because the symbol belongs to the current image.
+  SDValue TLSIndexSym = DAG.getExternalSymbol("_tls_index", PtrVT);
+  SDValue TLSIndexAddr = getAddr(cast<ExternalSymbolSDNode>(TLSIndexSym), DAG, /*IsLocal=*/true);
+  SDValue TLSIndex = DAG.getExtLoad(
+      ISD::ZEXTLOAD, DL, PtrVT, Chain, TLSIndexAddr, MachinePointerInfo(),
+      MVT::i32);
+  Chain = TLSIndex.getValue(1);
+
+  // The TLS array contains one pointer-sized entry per loaded image.
+  SDValue Slot = DAG.getNode(ISD::SHL, DL, PtrVT, TLSIndex,
+                             DAG.getConstant(3, DL, PtrVT));
+  SDValue TLSBlockAddr = DAG.getNode(ISD::ADD, DL, PtrVT, TLSArray, Slot);
+  SDValue TLSBlock = DAG.getLoad(
+      PtrVT, DL, Chain, TLSBlockAddr, MachinePointerInfo());
+  Chain = TLSBlock.getValue(1);
+
+  // IMAGE_REL_RISCV_SECREL is a whole 32-bit relocation, unlike ARM64's
+  // split section-relative relocations. Put it in a constant-pool word and
+  // load that linker-filled offset PC-relatively.
+  RISCVConstantPoolValue *CPV = RISCVConstantPoolValue::CreateSecRel(N->getGlobal());
+  SDValue CPAddr = DAG.getTargetConstantPool(CPV, PtrVT, Align(4));
+  CPAddr = DAG.getNode(RISCVISD::LLA, DL, PtrVT, CPAddr);
+  SDValue Offset = DAG.getExtLoad(
+      ISD::ZEXTLOAD, DL, PtrVT, Chain, CPAddr,
+      MachinePointerInfo::getConstantPool(DAG.getMachineFunction()),
+      MVT::i32);
+
+  return DAG.getNode(ISD::ADD, DL, PtrVT, TLSBlock, Offset);
+}
+
 SDValue RISCVTargetLowering::getDynamicTLSAddr(GlobalAddressSDNode *N,
                                                SelectionDAG &DAG) const {
   SDLoc DL(N);
@@ -10281,6 +10330,9 @@ SDValue RISCVTargetLowering::lowerGlobalTLSAddress(SDValue Op,
 
   if (DAG.getTarget().useEmulatedTLS())
     return LowerToTLSEmulatedModel(N, DAG);
+
+  if (Subtarget.getTargetTriple().isOSWindows())
+    return getWindowsTLSAddr(N, DAG);
 
   TLSModel::Model Model = getTargetMachine().getTLSModel(N->getGlobal());
 
