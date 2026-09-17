@@ -19,15 +19,23 @@
 
 using namespace llvm;
 
-RISCVConstantPoolValue::RISCVConstantPoolValue(Type *Ty, const GlobalValue *GV)
-    : MachineConstantPoolValue(Ty), GV(GV), Kind(RISCVCPKind::GlobalValue) {}
+RISCVConstantPoolValue::RISCVConstantPoolValue(Type *Ty, const GlobalValue *GV,
+                                               bool IsSecRel)
+    : MachineConstantPoolValue(Ty), GV(GV), S(), IsSecRel(IsSecRel),
+      Kind(RISCVCPKind::GlobalValue) {}
 
 RISCVConstantPoolValue::RISCVConstantPoolValue(LLVMContext &C, StringRef S)
-    : MachineConstantPoolValue(Type::getInt64Ty(C)), S(S),
-      Kind(RISCVCPKind::ExtSymbol) {}
+    : MachineConstantPoolValue(Type::getInt64Ty(C)), GV(nullptr), S(S),
+      IsSecRel(false), Kind(RISCVCPKind::ExtSymbol) {}
 
 RISCVConstantPoolValue *RISCVConstantPoolValue::Create(const GlobalValue *GV) {
-  return new RISCVConstantPoolValue(GV->getType(), GV);
+  return new RISCVConstantPoolValue(GV->getType(), GV, false);
+}
+
+RISCVConstantPoolValue *
+RISCVConstantPoolValue::CreateSecRel(const GlobalValue *GV) {
+  return new RISCVConstantPoolValue(
+      Type::getInt32Ty(GV->getContext()), GV, true);
 }
 
 RISCVConstantPoolValue *RISCVConstantPoolValue::Create(LLVMContext &C,
@@ -52,18 +60,21 @@ int RISCVConstantPoolValue::getExistingMachineCPValue(MachineConstantPool *CP,
 }
 
 void RISCVConstantPoolValue::addSelectionDAGCSEId(FoldingSetNodeID &ID) {
-  if (isGlobalValue())
+  if (isGlobalValue()) {
     ID.AddPointer(GV);
-  else {
+    ID.AddBoolean(IsSecRel);
+  } else {
     assert(isExtSymbol() && "unrecognized constant pool type");
     ID.AddString(S);
   }
 }
 
 void RISCVConstantPoolValue::print(raw_ostream &O) const {
-  if (isGlobalValue())
+  if (isGlobalValue()) {
     O << GV->getName();
-  else {
+    if (IsSecRel)
+      O << "@secrel32";
+  } else {
     assert(isExtSymbol() && "unrecognized constant pool type");
     O << S;
   }
@@ -71,7 +82,7 @@ void RISCVConstantPoolValue::print(raw_ostream &O) const {
 
 bool RISCVConstantPoolValue::equals(const RISCVConstantPoolValue *A) const {
   if (isGlobalValue() && A->isGlobalValue())
-    return GV == A->GV;
+    return GV == A->GV && IsSecRel == A->IsSecRel;
   if (isExtSymbol() && A->isExtSymbol())
     return S == A->S;
 
