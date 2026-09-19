@@ -56,8 +56,8 @@ RISCVMCAsmInfoCOFF::RISCVMCAsmInfoCOFF(const Triple &TT,
   CommentString = "#";
   AlignmentIsInBytes = false;
   SupportsDebugInformation = true;
+  ExceptionsType = TT.getDefaultExceptionHandling();
   if (TT.isRISCV64()) {
-    ExceptionsType = ExceptionHandling::WinEH;
     WinEHEncodingType = WinEH::EncodingType::RISCV64;
     // RVUW metadata has the same lifetime as the function it describes.  Use
     // real associative COMDATs even in the GNU environment so dead stripping
