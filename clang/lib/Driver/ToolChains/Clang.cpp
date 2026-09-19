@@ -3824,6 +3824,19 @@ static void RenderSCPOptions(const ToolChain &TC, const ArgList &Args,
                              ArgStringList &CmdArgs) {
   const llvm::Triple &EffectiveTriple = TC.getEffectiveTriple();
 
+  if (EffectiveTriple.isOSWindows() &&
+      EffectiveTriple.getArch() == llvm::Triple::riscv64) {
+    // Windows guard pages require every page of a growing stack to be touched.
+    // RISC-V uses inline probes instead of the __chkstk calling convention.
+    bool Enable = Args.hasFlag(options::OPT_fstack_clash_protection,
+                               options::OPT_fno_stack_clash_protection, true);
+    Enable &= Args.hasFlag(options::OPT_mstack_arg_probe,
+                           options::OPT_mno_stack_arg_probe, true);
+    if (Enable)
+      CmdArgs.push_back("-fstack-clash-protection");
+    return;
+  }
+
   if (!EffectiveTriple.isOSFreeBSD() && !EffectiveTriple.isOSLinux() &&
       !EffectiveTriple.isOSFuchsia())
     return;
