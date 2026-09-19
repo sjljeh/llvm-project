@@ -1,8 +1,8 @@
 // REQUIRES: riscv-registered-target
-// RUN: %clang --target=riscv64-w64-windows-gnu -march=rv64gc -mabi=lp64 -mno-relax -ffreestanding -funwind-tables -fms-extensions -Xclang -fasync-exceptions -O0 -S %s -o - | FileCheck %s
-// RUN: %clang --target=riscv64-w64-windows-gnu -march=rv64gc -mabi=lp64 -mno-relax -ffreestanding -funwind-tables -fms-extensions -Xclang -fasync-exceptions -O2 -S %s -o - | FileCheck %s
-// RUN: %clang --target=riscv64-w64-windows-gnu -march=rv64gc -mabi=lp64 -mno-relax -ffreestanding -funwind-tables -fms-extensions -Xclang -fasync-exceptions -O0 -c %s -o %t.o
-// RUN: %clang --target=riscv64-w64-windows-gnu -march=rv64gc -mabi=lp64 -mno-relax -ffreestanding -funwind-tables -fms-extensions -Xclang -fasync-exceptions -O2 -c %s -o %t.o
+// RUN: %clang --target=riscv64-w64-windows-gnu -march=rv64gc -mabi=lp64 -mno-relax -ffreestanding -funwind-tables -fms-extensions -O0 -S %s -o - | FileCheck %s
+// RUN: %clang --target=riscv64-w64-windows-gnu -march=rv64gc -mabi=lp64 -mno-relax -ffreestanding -funwind-tables -fms-extensions -O2 -S %s -o - | FileCheck %s
+// RUN: %clang --target=riscv64-w64-windows-gnu -march=rv64gc -mabi=lp64 -mno-relax -ffreestanding -funwind-tables -fms-extensions -O0 -c %s -o %t.o
+// RUN: %clang --target=riscv64-w64-windows-gnu -march=rv64gc -mabi=lp64 -mno-relax -ffreestanding -funwind-tables -fms-extensions -O2 -c %s -o %t.o
 // RUN: %clang_cl --target=riscv64-pc-windows-msvc /kernel /Od /c /Fo%t.kernel.obj %s
 // RUN: llvm-readobj --file-headers --unwind %t.kernel.obj | FileCheck %s --check-prefix=KERNEL
 
