@@ -1599,7 +1599,9 @@ def GIAddrRegImm :
 /// ReactOS-private RISC-V64 RVUW state transitions. These pseudos are placed
 /// immediately after the machine instruction whose completed effect they
 /// describe, so their labels remain exact with mixed 16/32-bit instructions.
-let hasSideEffects = 0, mayLoad = 0, mayStore = 0, isCodeGenOnly = 1,
+/// Treat metadata updates as side effects: hoisting an epilogue start out of
+/// two successors would merge their scopes while leaving two epilogue ends.
+let hasSideEffects = 1, mayLoad = 0, mayStore = 0, isCodeGenOnly = 1,
     Size = 0 in {
 def RVUW_SetCFA : Pseudo<(outs), (ins i32imm:$reg, i32imm:$offset), []>,
                   Sched<[]>;
