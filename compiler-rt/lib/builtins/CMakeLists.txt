@@ -1003,19 +1003,20 @@ set(powerpc64le_SOURCES ${powerpc64_SOURCES})
 set(riscv_SOURCES
   cpu_model/riscv.c
   riscv/fp_mode.c
-  riscv/save.S
-  riscv/restore.S
   ${GENERIC_SOURCES}
   ${GENERIC_TF_SOURCES}
 )
-set(riscv32_SOURCES
-  riscv/mulsi3.S
-  ${riscv_SOURCES}
-)
-set(riscv64_SOURCES
-  riscv/muldi3.S
-  ${riscv_SOURCES}
-)
+# Windows/RVUW requires inline frame saves and restores; its code generator
+# rejects the ELF save/restore-libcall convention.
+if(NOT WIN32)
+  list(APPEND riscv_SOURCES riscv/save.S riscv/restore.S)
+endif()
+set(riscv32_SOURCES ${riscv_SOURCES})
+set(riscv64_SOURCES ${riscv_SOURCES})
+if(NOT WIN32)
+  list(APPEND riscv32_SOURCES riscv/mulsi3.S)
+  list(APPEND riscv64_SOURCES riscv/muldi3.S)
+endif()
 
 set(sparc_SOURCES ${GENERIC_SOURCES} ${GENERIC_TF_SOURCES})
 set(sparcv9_SOURCES ${GENERIC_SOURCES} ${GENERIC_TF_SOURCES})
