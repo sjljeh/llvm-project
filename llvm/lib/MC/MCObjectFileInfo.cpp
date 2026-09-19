@@ -726,7 +726,8 @@ void MCObjectFileInfo::initCOFFMCObjectFileInfo(const Triple &T) {
                                         COFF::IMAGE_SCN_MEM_READ);
 
   if (T.getArch() == Triple::x86_64 || T.getArch() == Triple::aarch64 ||
-      T.getArch() == Triple::arm || T.getArch() == Triple::thumb) {
+      T.getArch() == Triple::arm || T.getArch() == Triple::thumb ||
+      T.getArch() == Triple::riscv64) {
     // On Windows with SEH, the LSDA is emitted into the .xdata section
     LSDASection = nullptr;
   } else {
