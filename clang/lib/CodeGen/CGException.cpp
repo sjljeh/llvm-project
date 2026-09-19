@@ -1750,7 +1750,14 @@ void CodeGenFunction::VolatilizeTryBlocks(
       !BB->getParent() /* not emitted */ || BB->empty())
     return;
 
-  if (!BB->isEHPad()) {
+  // Emission of the try body may end in a conditional-expression merge that
+  // contains only PHIs. isEHPad() requires a non-PHI instruction; this block
+  // has no memory operations or successors to visit yet.
+  auto FirstNonPHI = BB->getFirstNonPHIIt();
+  if (FirstNonPHI == BB->end())
+    return;
+
+  if (!FirstNonPHI->isEHPad()) {
     for (llvm::BasicBlock::iterator J = BB->begin(), JE = BB->end(); J != JE;
          ++J) {
       if (auto LI = dyn_cast<llvm::LoadInst>(J)) {
