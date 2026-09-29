@@ -202,7 +202,14 @@
 #endif
 #define HIDDEN_SYMBOL(name)
 
-#if defined(__MINGW32__)
+#if defined(__MINGW32__) && defined(__powerpc__)
+#define WEAK_ALIAS(name, aliasname)                                            \
+  .globl SYMBOL_NAME(aliasname) SEPARATOR                                      \
+  EXPORT_SYMBOL(aliasname) SEPARATOR                                           \
+  SYMBOL_NAME(aliasname) = SYMBOL_NAME(name) SEPARATOR                         \
+  .globl ..##aliasname SEPARATOR                                               \
+  ..##aliasname = ..##name
+#elif defined(__MINGW32__)
 #define WEAK_ALIAS(name, aliasname)                                            \
   .globl SYMBOL_NAME(aliasname) SEPARATOR                                      \
   EXPORT_SYMBOL(aliasname) SEPARATOR                                           \
@@ -273,6 +280,19 @@ aliasname:                                                                     \
   .csect .text[PR], 2 SEPARATOR                                                \
 .name:
   // clang-format on
+#elif defined(__powerpc__) && defined(_WIN32)
+// Windows NT PowerPC: "name" is the {code, TOC} descriptor and "..name" is
+// the code entry used by direct calls.
+#define DEFINE_LIBUNWIND_FUNCTION(name)                                        \
+  .section .rdata,"dr" SEPARATOR                                               \
+  .p2align 2 SEPARATOR                                                         \
+  .globl SYMBOL_NAME(name) SEPARATOR                                           \
+  SYMBOL_NAME(name):                                                           \
+  .long ..##name SEPARATOR                                                     \
+  .long .toc SEPARATOR                                                         \
+  .text SEPARATOR                                                              \
+  .globl ..##name SEPARATOR                                                    \
+  ..##name:
 #else
 #define DEFINE_LIBUNWIND_FUNCTION(name)                                        \
   .globl SYMBOL_NAME(name) SEPARATOR                                           \
