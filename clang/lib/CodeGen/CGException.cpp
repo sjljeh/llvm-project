@@ -1845,7 +1845,7 @@ struct PerformSEHFinally final : EHScopeStack::Cleanup {
     //   since _leave/fall-through is always Indexed 0,
     //   just use NormalCleanupDestSlot (>= 1 for goto/return/..),
     //   as 1st Arg to indicate abnormal termination
-    if (!F.isForEHCleanup() && F.hasExitSwitch()) {
+    if (!F.isForEHCleanup() && F.hasNormalCleanupDest()) {
       Address Addr = CGF.getNormalCleanupDestSlot();
       llvm::Value *Load = CGF.Builder.CreateLoad(Addr, "cleanup.dest");
       llvm::Value *Zero = llvm::Constant::getNullValue(CGM.Int32Ty);
