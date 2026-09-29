@@ -1502,13 +1502,13 @@ def DYNALLOC : PPCEmitTimePseudo<(outs gprc:$result), (ins gprc:$negsize, memri:
 def DYNAREAOFFSET : PPCEmitTimePseudo<(outs i32imm:$result), (ins memri:$fpsi), "#DYNAREAOFFSET",
                        [(set i32:$result, (PPCdynareaoffset iaddr:$fpsi))]>;
 
-let isCodeGenOnly = 1, hasSideEffects = 1, hasNoSchedulingInfo = 1 in
+let isCodeGenOnly = 1, hasSideEffects = 1, hasNoSchedulingInfo = 1, Size = 0 in
 def SEH_PrologEnd : PPCEmitTimePseudo<(outs), (ins), "#SEH_PrologEnd", []>;
 
 def PPCLocalRecover : SDNode<"ISD::LOCAL_RECOVER",
                              SDTypeProfile<1, 1, [SDTCisSameAs<0, 1>,
                                                   SDTCisInt<1>]>>;
-let isCodeGenOnly = 1, hasSideEffects = 0, hasNoSchedulingInfo = 1 in
+let isCodeGenOnly = 1, hasSideEffects = 0, hasNoSchedulingInfo = 1, Size = 8 in
 def SEH_RecoverFrameOffset : PPCEmitTimePseudo<
     (outs gprc:$dst), (ins i32imm:$offset), "#SEH_RecoverFrameOffset",
     [(set i32:$dst, (PPCLocalRecover mcsym:$offset))]>;
@@ -1518,7 +1518,7 @@ let isTerminator = 1, hasSideEffects = 1, isBarrier = 1, hasCtrlDep = 1,
     hasNoSchedulingInfo = 1, Uses = [LR, RM] in {
   def CLEANUPRET : PPCEmitTimePseudo<(outs), (ins), "#CLEANUPRET",
                                      [(cleanupret bb)]>;
-  let Defs = [R3] in
+  let Defs = [R3], Size = 12 in
   def CATCHRET : PPCEmitTimePseudo<
       (outs), (ins directbrtarget:$dst, directbrtarget:$from), "#CATCHRET $dst",
       [(catchret bb:$dst, bb:$from)]>;

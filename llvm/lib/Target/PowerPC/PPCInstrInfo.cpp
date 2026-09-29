@@ -34,6 +34,7 @@
 #include "llvm/CodeGen/ScheduleDAG.h"
 #include "llvm/CodeGen/SlotIndexes.h"
 #include "llvm/CodeGen/StackMaps.h"
+#include "llvm/IR/EHPersonalities.h"
 #include "llvm/IR/Module.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/TargetRegistry.h"
@@ -2998,6 +2999,14 @@ unsigned PPCInstrInfo::getInstSizeInBytes(const MachineInstr &MI) const {
   unsigned Opcode = MI.getOpcode();
 
   switch (Opcode) {
+  case TargetOpcode::EH_LABEL: {
+    // With asynchronous EH, AsmPrinter emits a nop after an EH label that is
+    // followed by a memory access so the access lies inside the EH region.
+    auto Next = std::next(MI.getIterator());
+    if (usesAsynchronousEH(MI.getMF()->getFunction()) && Next != MI.getParent()->end() && (Next->mayLoadOrStore() || Next->mayRaiseFPException()))
+      return 4;
+    return 0;
+  }
   case PPC::INLINEASM:
   case PPC::INLINEASM_BR: {
     const MachineFunction *MF = MI.getParent()->getParent();
