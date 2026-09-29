@@ -1624,6 +1624,13 @@ void PPCFrameLowering::emitEpilogue(MachineFunction &MF,
   MachineBasicBlock::iterator MBBI = MBB.getFirstTerminator();
   DebugLoc dl;
 
+  // Funclet return blocks need not be their entry blocks. The terminator,
+  // rather than isEHFuncletEntry(), identifies the epilogue's frame owner.
+  const bool IsWinEHFuncletEpilogue =
+      Subtarget.isWin32ABI() && MBBI != MBB.end() &&
+      (MBBI->getOpcode() == PPC::CLEANUPRET ||
+       MBBI->getOpcode() == PPC::CATCHRET);
+
   if (MBBI != MBB.end())
     dl = MBBI->getDebugLoc();
 
@@ -1803,7 +1810,12 @@ void PPCFrameLowering::emitEpilogue(MachineFunction &MF,
     // enabled (=> hasFastCall()==true) the fastcc call might contain a tail
     // call which invalidates the stack pointer value in SP(0). So we use the
     // value of R31 in this case. Similar situation exists with setjmp.
-    else if (FI->hasFastCall() || MF.exposesReturnsTwice()) {
+    // A Windows funclet addresses escaped parent locals through FP, but its
+    // own stack frame is still rooted at SP. In particular, a setjmp in the
+    // parent marks the whole MachineFunction returns-twice; restoring a
+    // funclet's SP from its parent-relative FP skips the active unwind.
+    else if ((FI->hasFastCall() || MF.exposesReturnsTwice()) &&
+             !IsWinEHFuncletEpilogue) {
       assert(HasFP && "Expecting a valid frame pointer.");
       if (!HasRedZone)
         RBReg = FPReg;
