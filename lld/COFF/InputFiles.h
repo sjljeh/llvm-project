@@ -168,6 +168,10 @@ public:
   // Returns a Symbol object for the symbolIndex'th symbol in the
   // underlying object file.
   Symbol *getSymbol(uint32_t symbolIndex) {
+    // MIPS, PowerPC and Alpha PAIR relocations store an addend, not a symbol
+    // index, in this field.
+    if (symbolIndex >= symbols.size())
+      return nullptr;
     return symbols[symbolIndex];
   }
 
