@@ -22,9 +22,11 @@ int seh_with_setjmp(void *buffer) {
 // generated cleanup funclet must still restore its own stack frame from r1;
 // r31 addresses escaped parent locals and cannot be used as its stack base.
 // ASM-LABEL: "?dtor$
-// ASM: stwu 1, -{{[0-9]+}}(1)
-// ASM: addi 31, 2, -{{[0-9]+}}
+// ASM: stwu 1, -[[SIZE:[0-9]+]](1)
+// ASM: addi 31, 2, -[[SIZE]]
 // ASM: bl "..?fin$
+// ASM-NOT: mr 1, 31
 // ASM: lwz 31, {{[0-9]+}}(1)
-// ASM: addi 1, 1, {{[0-9]+}}
-// ASM: blr
+// ASM-NEXT: addi 1, 1, [[SIZE]]
+// ASM-NEXT: mtlr 0
+// ASM-NEXT: blr
