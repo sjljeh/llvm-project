@@ -834,6 +834,11 @@ void CodeGenFunction::PopCleanupBlock(bool FallthroughIsBranchThrough,
       // Force the entry block to exist.
       llvm::BasicBlock *NormalEntry = CreateNormalEntry(*this, Scope);
 
+      // Every edge threaded through this cleanup carries a destination index.
+      // A SEH finally uses it to distinguish normal and abnormal exits even
+      // when all edges branch through to an enclosing cleanup without a switch.
+      cleanupFlags.setHasNormalCleanupDest();
+
       // I.  Set up the fallthrough edge in.
 
       CGBuilderTy::InsertPoint savedInactiveFallthroughIP;
@@ -889,7 +894,7 @@ void CodeGenFunction::PopCleanupBlock(bool FallthroughIsBranchThrough,
 
       // If there's exactly one branch-after and no other threads,
       // we can route it without a switch.
-      // Skip for SEH, since ExitSwitch is used to generate code to indicate
+      // Skip for SEH, since the destination slot is used to indicate
       // abnormal termination. (SEH: Except _leave and fall-through at
       // the end, all other exits in a _try (return/goto/continue/break)
       // are considered as abnormal terminations, using NormalCleanupDestSlot
@@ -924,9 +929,6 @@ void CodeGenFunction::PopCleanupBlock(bool FallthroughIsBranchThrough,
 
         // TODO: base this on the number of branch-afters and fixups
         const unsigned SwitchCapacity = 10;
-
-        // pass the abnormal exit flag to Fn (SEH cleanup)
-        cleanupFlags.setHasExitSwitch();
 
         llvm::LoadInst *Load = createLoadInstBefore(getNormalCleanupDestSlot(),
                                                     "cleanup.dest", *this);
