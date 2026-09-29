@@ -4,6 +4,9 @@
 // RUN: %clang_cc1 -fms-extensions -triple i686-windows-msvc -Wno-implicit-function-declaration -emit-llvm %s -o - | FileCheck --check-prefix=I386 %s
 // RUN: %clang_cc1 -fms-extensions -triple x86_64-windows-msvc -Wno-implicit-function-declaration -emit-llvm %s -o - | FileCheck --check-prefix=X64 %s
 // RUN: %clang_cc1 -fms-extensions -triple aarch64-windows-msvc -Wno-implicit-function-declaration -emit-llvm %s -o - | FileCheck --check-prefix=AARCH64 %s
+// RUN: %clang_cc1 -fms-extensions -DDECLARE_SETJMP -triple powerpcle-windows-msvc -emit-llvm %s -o - | FileCheck --check-prefix=PPC %s
+// RUN: %clang_cc1 -fms-extensions -triple powerpcle-windows-msvc -Wno-implicit-function-declaration -emit-llvm %s -o - | FileCheck --check-prefix=PPC %s
+// RUN: %clang_cc1 -fms-extensions -DDECLARE_SETJMP -triple powerpcle-windows-gnu -emit-llvm %s -o - | FileCheck --check-prefix=PPC %s
 typedef char jmp_buf[1];
 
 #ifdef DECLARE_SETJMP
@@ -28,6 +31,11 @@ int test_setjmp(void) {
   // AARCH64:       %[[addr:.*]] = call ptr @llvm.sponentry.p0()
   // AARCH64:       %[[call:.*]] = call i32 @_setjmpex(ptr @jb, ptr %[[addr]])
   // AARCH64-NEXT:  ret i32 %[[call]]
+
+  // PPC-LABEL: define dso_local i32 @test_setjmp
+  // PPC-NOT:   @llvm.frameaddress
+  // PPC:       %[[call:.*]] = call i32 @setjmp(ptr @jb) #[[RT:[0-9]+]]
+  // PPC-NEXT:  ret i32 %[[call]]
 }
 
 int test_setjmpex(void) {
@@ -41,4 +49,11 @@ int test_setjmpex(void) {
   // AARCH64:       %[[addr:.*]] = call ptr @llvm.sponentry.p0()
   // AARCH64:       %[[call:.*]] = call i32 @_setjmpex(ptr @jb, ptr %[[addr]])
   // AARCH64-NEXT:  ret i32 %[[call]]
+
+  // PPC-LABEL: define dso_local i32 @test_setjmpex
+  // PPC-NOT:   @llvm.frameaddress
+  // PPC:       %[[call:.*]] = call i32 @_setjmpex(ptr @jb) #[[RT]]
+  // PPC-NEXT:  ret i32 %[[call]]
 }
+
+// PPC: attributes #[[RT]] = { returns_twice }

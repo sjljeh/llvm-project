@@ -1780,9 +1780,10 @@ enum class MSVCSetJmpKind {
 };
 }
 
-/// MSVC handles setjmp a bit differently on different platforms. On every
-/// architecture except 32-bit x86, the frame address is passed. On x86, extra
-/// parameters can be passed as variadic arguments, but we always pass none.
+/// MSVC handles setjmp a bit differently on different platforms. NT PowerPC
+/// takes only the buffer; its extended entry finds the frame by virtual unwind.
+/// On x86, extra parameters can be passed as variadic arguments, but we always
+/// pass none. Other targets pass a frame address.
 static RValue EmitMSVCRTSetJmp(CodeGenFunction &CGF, MSVCSetJmpKind SJKind,
                                const CallExpr *E) {
   llvm::Value *Arg1 = nullptr;
@@ -1795,19 +1796,27 @@ static RValue EmitMSVCRTSetJmp(CodeGenFunction &CGF, MSVCSetJmpKind SJKind,
     Arg1 = llvm::ConstantInt::get(CGF.IntTy, 0);
     IsVarArg = true;
   } else {
-    Name = SJKind == MSVCSetJmpKind::_setjmp ? "_setjmp" : "_setjmpex";
-    Arg1Ty = CGF.Int8PtrTy;
-    if (CGF.getTarget().getTriple().getArch() == llvm::Triple::aarch64) {
-      Arg1 = CGF.Builder.CreateCall(
-          CGF.CGM.getIntrinsic(Intrinsic::sponentry, CGF.AllocaInt8PtrTy));
-    } else
-      Arg1 = CGF.Builder.CreateCall(
-          CGF.CGM.getIntrinsic(Intrinsic::frameaddress, CGF.AllocaInt8PtrTy),
-          llvm::ConstantInt::get(CGF.Int32Ty, 0));
+    // NT PowerPC's public CRT exports ordinary setjmp under the name
+    // "setjmp".  It does not export "_setjmp" as other targets do.
+    Name = SJKind == MSVCSetJmpKind::_setjmp
+               ? (CGF.getTarget().getTriple().isPPC32() ? "setjmp" : "_setjmp")
+               : "_setjmpex";
+    if (!CGF.getTarget().getTriple().isPPC32()) {
+      Arg1Ty = CGF.Int8PtrTy;
+      if (CGF.getTarget().getTriple().getArch() == llvm::Triple::aarch64) {
+        Arg1 = CGF.Builder.CreateCall(
+            CGF.CGM.getIntrinsic(Intrinsic::sponentry, CGF.AllocaInt8PtrTy));
+      } else
+        Arg1 = CGF.Builder.CreateCall(
+            CGF.CGM.getIntrinsic(Intrinsic::frameaddress, CGF.AllocaInt8PtrTy),
+            llvm::ConstantInt::get(CGF.Int32Ty, 0));
+    }
   }
 
   // Mark the call site and declaration with ReturnsTwice.
-  llvm::Type *ArgTypes[2] = {CGF.Int8PtrTy, Arg1Ty};
+  SmallVector<llvm::Type *, 2> ArgTypes{CGF.Int8PtrTy};
+  if (Arg1)
+    ArgTypes.push_back(Arg1Ty);
   llvm::AttributeList ReturnsTwiceAttr = llvm::AttributeList::get(
       CGF.getLLVMContext(), llvm::AttributeList::FunctionIndex,
       llvm::Attribute::ReturnsTwice);
@@ -1817,7 +1826,9 @@ static RValue EmitMSVCRTSetJmp(CodeGenFunction &CGF, MSVCSetJmpKind SJKind,
 
   llvm::Value *Buf = CGF.Builder.CreateBitOrPointerCast(
       CGF.EmitScalarExpr(E->getArg(0)), CGF.Int8PtrTy);
-  llvm::Value *Args[] = {Buf, Arg1};
+  SmallVector<llvm::Value *, 2> Args{Buf};
+  if (Arg1)
+    Args.push_back(Arg1);
   llvm::CallBase *CB = CGF.EmitRuntimeCallOrInvoke(SetJmpFn, Args);
   CB->setAttributes(ReturnsTwiceAttr);
   return RValue::get(CB);
