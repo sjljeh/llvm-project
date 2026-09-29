@@ -80,6 +80,31 @@ struct _DISPATCHER_CONTEXT {
 };
   #endif
 
+  #if defined(_WIN32) && defined(_LIBUNWIND_TARGET_PPC)
+// Windows NT PowerPC passes language handlers the four-field NT4
+// DISPATCHER_CONTEXT. libunwind keeps the fields that other targets read from
+// the system context after that prefix, in the order used by the dispatcher
+// of the NT PowerPC runtime. A handler that libunwind calls directly then
+// sees the same layout as when the system dispatcher calls it.
+struct LIBUNWIND_PPC_DISPATCHER_CONTEXT {
+  ULONG_PTR ControlPc;
+  PRUNTIME_FUNCTION FunctionEntry;
+  ULONG_PTR EstablisherFrame;
+  PCONTEXT ContextRecord;
+  ULONG_PTR TargetPc;
+  PEXCEPTION_ROUTINE LanguageHandler;
+  PVOID HandlerData;
+  PUNWIND_HISTORY_TABLE HistoryTable;
+  ULONG ScopeIndex;
+  // NT PowerPC function table entries hold virtual addresses; always zero.
+  ULONG_PTR ImageBase;
+};
+static_assert(sizeof(DISPATCHER_CONTEXT) == offsetof(LIBUNWIND_PPC_DISPATCHER_CONTEXT, TargetPc) && offsetof(DISPATCHER_CONTEXT, ContextRecord) == offsetof(LIBUNWIND_PPC_DISPATCHER_CONTEXT, ContextRecord), "the NT4 DISPATCHER_CONTEXT must be the prefix of libunwind's context");
+typedef LIBUNWIND_PPC_DISPATCHER_CONTEXT LIBUNWIND_DISPATCHER_CONTEXT;
+  #else
+typedef DISPATCHER_CONTEXT LIBUNWIND_DISPATCHER_CONTEXT;
+  #endif
+
 struct UNWIND_INFO {
   uint8_t Version : 3;
   uint8_t Flags : 5;
@@ -543,9 +568,22 @@ public:
   virtual void        saveVFPAsX();
 #endif
 
-  DISPATCHER_CONTEXT *getDispatcherContext() { return &_dispContext; }
+  LIBUNWIND_DISPATCHER_CONTEXT *getDispatcherContext() { return &_dispContext; }
   void setDispatcherContext(DISPATCHER_CONTEXT *disp) {
+#if defined(_LIBUNWIND_TARGET_PPC)
+    // The NT4 context has no handler fields. The function table entry names
+    // the language handler and its data.
+    _dispContext.ControlPc = disp->ControlPc;
+    _dispContext.FunctionEntry = disp->FunctionEntry;
+    _dispContext.EstablisherFrame = disp->EstablisherFrame;
+    _dispContext.ContextRecord = disp->ContextRecord;
+    _dispContext.TargetPc = 0;
+    _dispContext.LanguageHandler = disp->FunctionEntry ? disp->FunctionEntry->ExceptionHandler : nullptr;
+    _dispContext.HandlerData = disp->FunctionEntry ? disp->FunctionEntry->HandlerData : nullptr;
+    _dispContext.ScopeIndex = 0;
+#else
     _dispContext = *disp;
+#endif
     _info.lsda = reinterpret_cast<unw_word_t>(_dispContext.HandlerData);
     if (_dispContext.LanguageHandler) {
       _info.handler = reinterpret_cast<unw_word_t>(__libunwind_seh_personality);
@@ -559,8 +597,16 @@ public:
 
 private:
 
+#if defined(_LIBUNWIND_TARGET_PPC)
+  // libunwind's IP is the address after the instruction that left the frame,
+  // normally a return address. The NT PowerPC control PC is the address of
+  // that instruction, which the unwinder and scope tables expect.
+  pint_t getLastPC() const { return _dispContext.ControlPc + 4; }
+  void setLastPC(pint_t pc) { _dispContext.ControlPc = pc - 4; }
+#else
   pint_t getLastPC() const { return _dispContext.ControlPc; }
   void setLastPC(pint_t pc) { _dispContext.ControlPc = pc; }
+#endif
   RUNTIME_FUNCTION *lookUpSEHUnwindInfo(pint_t pc, pint_t *base) {
 #ifdef __arm__
     // Remove the thumb bit; FunctionEntry ranges don't include the thumb bit.
@@ -573,13 +619,36 @@ private:
     // setInfoBasedOnIPRegister(), using its two-byte minimum instruction size.
     pc -= 1;
 #endif
+#if defined(_LIBUNWIND_TARGET_PPC)
+    // The NT4 lookup takes only the PC; the table holds virtual addresses.
+    _dispContext.FunctionEntry = RtlLookupFunctionEntry(pc);
+    _dispContext.ImageBase = 0;
+#else
     _dispContext.FunctionEntry = RtlLookupFunctionEntry(pc,
                                                         &_dispContext.ImageBase,
                                                         _dispContext.HistoryTable);
+#endif
     *base = _dispContext.ImageBase;
     return _dispContext.FunctionEntry;
   }
   bool getInfoFromSEH(pint_t pc);
+#if defined(_LIBUNWIND_TARGET_PPC)
+  int stepWithSEHData() {
+    // The NT4 RtlVirtualUnwind returns the caller's control PC and leaves Iar
+    // unchanged. The handler of the frame came from its function table entry.
+    BOOLEAN inFunction = FALSE;
+    ULONG establisherFrame = 0;
+    ULONG controlPc = RtlVirtualUnwind(_dispContext.ControlPc, _dispContext.FunctionEntry, _dispContext.ContextRecord, &inFunction, &establisherFrame, nullptr, 0, 0xffffffffUL);
+    _dispContext.EstablisherFrame = establisherFrame;
+    _dispContext.ContextRecord->Iar = controlPc ? controlPc + 4 : 0;
+    _info.lsda = reinterpret_cast<unw_word_t>(_dispContext.HandlerData);
+    if (_dispContext.LanguageHandler) {
+      _info.handler = reinterpret_cast<unw_word_t>(__libunwind_seh_personality);
+    } else
+      _info.handler = 0;
+    return UNW_STEP_SUCCESS;
+  }
+#else
   int stepWithSEHData() {
     _dispContext.LanguageHandler = RtlVirtualUnwind(UNW_FLAG_UHANDLER,
                                                     _dispContext.ImageBase,
@@ -597,17 +666,14 @@ private:
       _info.handler = 0;
     return UNW_STEP_SUCCESS;
   }
+#endif
 
   A                   &_addressSpace;
   unw_proc_info_t      _info;
-  DISPATCHER_CONTEXT   _dispContext;
+  LIBUNWIND_DISPATCHER_CONTEXT _dispContext;
   CONTEXT              _msContext;
   UNWIND_HISTORY_TABLE _histTable;
   bool                 _unwindInfoMissing;
-#if defined(_LIBUNWIND_TARGET_PPC)
-  // Keep the size a multiple of the 16-byte unw_cursor_t alignment.
-  uint64_t             _padding;
-#endif
 };
 
 
@@ -2392,6 +2458,7 @@ bool UnwindCursor<A, R>::getInfoFromSEH(pint_t pc) {
   if (pc != getLastPC()) {
     _dispContext.HandlerData = unwindEntry->HandlerData;
     _dispContext.LanguageHandler = unwindEntry->ExceptionHandler;
+    _dispContext.ScopeIndex = 0;
     _info.lsda = reinterpret_cast<unw_word_t>(unwindEntry->HandlerData);
     _info.handler = unwindEntry->ExceptionHandler
                         ? reinterpret_cast<unw_word_t>(
