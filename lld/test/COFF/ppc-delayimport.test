@@ -1,0 +1,100 @@
+# Copyright (c) 2026 Ahmed ARIF
+
+# REQUIRES: ppc
+# RUN: split-file %s %t
+# RUN: llvm-mc -triple=powerpcle-pc-windows -filetype=obj %t/lib.s -o %t/lib.obj
+# RUN: llvm-mc -triple=powerpcle-pc-windows -filetype=obj %t/main.s -o %t/main.obj
+# RUN: llvm-mc -triple=powerpcle-pc-windows -filetype=obj %t/helper.s -o %t/helper.obj
+# RUN: lld-link /dll /entry:dllentry /nodefaultlib /out:%t/lib.dll /implib:%t/lib.lib %t/lib.obj
+# RUN: lld-link /nodefaultlib /entry:main /subsystem:console /out:%t/main.exe %t/main.obj %t/helper.obj %t/lib.lib /delayload:lib.dll
+# RUN: llvm-readobj --coff-imports %t/main.exe | FileCheck %s --check-prefix=IMPORTS
+# RUN: llvm-objdump -d --no-show-raw-insn %t/main.exe | FileCheck %s --check-prefix=DISASM
+# RUN: llvm-objdump -s -j .text %t/main.exe | FileCheck %s --check-prefix=DESC
+
+# The delay IAT slot initially holds the thunk's own {code, TOC} descriptor.
+# IMPORTS:      DelayImport {
+# IMPORTS-NEXT:   Name: lib.dll
+# IMPORTS:        ImportAddressTable: 0x3008
+# IMPORTS:        Import {
+# IMPORTS-NEXT:     Symbol: add1
+# IMPORTS-NEXT:     Address: 0x401030
+
+# DESC: 401030 38104000 00a04000 4000803d 08308c39
+
+# The thunk passes the IAT slot address in r12 and branches to the tail merge,
+# which calls __delayLoadHelper2 through its descriptor, restores the argument
+# registers and jumps through the returned descriptor with the callee's TOC.
+# DISASM:      401038: lis 12, 64
+# DISASM-NEXT: 40103c: addi 12, 12, 12296
+# DISASM-NEXT: 401040: b 0x401044
+# DISASM-NEXT: 401044: mflr 0
+# DISASM-NEXT: 401048: stw 0, 8(1)
+# DISASM-NEXT: 40104c: stwu 1, -192(1)
+# DISASM-NEXT: 401050: stw 3, 56(1)
+# DISASM:      40106c: stw 10, 84(1)
+# DISASM-NEXT: 401070: stfd 1, 88(1)
+# DISASM:      4010a0: stfd 13, 184(1)
+# DISASM-NEXT: 4010a4: mr 4, 12
+# DISASM-NEXT: 4010a8: lis 3, 64
+# DISASM-NEXT: 4010ac: addi 3, 3, 8208
+# DISASM-NEXT: 4010b0: lis 11, 64
+# DISASM-NEXT: 4010b4: addi 11, 11, 8200
+# DISASM-NEXT: 4010b8: lwz 0, 0(11)
+# DISASM-NEXT: 4010bc: mtctr 0
+# DISASM-NEXT: 4010c0: bctrl
+# DISASM-NEXT: 4010c4: mr 11, 3
+# DISASM-NEXT: 4010c8: lwz 3, 56(1)
+# DISASM:      401118: lfd 13, 184(1)
+# DISASM-NEXT: 40111c: addi 1, 1, 192
+# DISASM-NEXT: 401120: lwz 0, 8(1)
+# DISASM-NEXT: 401124: mtlr 0
+# DISASM-NEXT: 401128: lwz 0, 0(11)
+# DISASM-NEXT: 40112c: lwz 2, 4(11)
+# DISASM-NEXT: 401130: mtctr 0
+# DISASM-NEXT: 401134: bctr
+
+#--- lib.s
+.text
+.globl ..add1
+..add1:
+  addi 3, 3, 1
+  blr
+.globl ..dllentry
+..dllentry:
+  li 3, 1
+  blr
+.section .rdata,"dr"
+.globl add1
+add1:
+  .long ..add1
+  .long .toc
+.globl dllentry
+dllentry:
+  .long ..dllentry
+  .long .toc
+.section .drectve,"yn"
+.ascii " /export:add1"
+
+#--- main.s
+.text
+.globl ..main
+..main:
+  bl ..add1
+  .znop ..add1
+  blr
+.section .rdata,"dr"
+.globl main
+main:
+  .long ..main
+  .long .toc
+
+#--- helper.s
+.text
+.globl ..__delayLoadHelper2
+..__delayLoadHelper2:
+  blr
+.section .rdata,"dr"
+.globl __delayLoadHelper2
+__delayLoadHelper2:
+  .long ..__delayLoadHelper2
+  .long .toc
