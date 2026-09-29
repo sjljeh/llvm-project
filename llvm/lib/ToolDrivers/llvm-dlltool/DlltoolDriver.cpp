@@ -83,6 +83,7 @@ MachineTypes getEmulation(StringRef S) {
       .Case("riscv32", IMAGE_FILE_MACHINE_RISCV32)
       .Case("riscv64", IMAGE_FILE_MACHINE_RISCV64)
       .Case("r4000", IMAGE_FILE_MACHINE_R4000)
+      .Case("ppc", IMAGE_FILE_MACHINE_POWERPC)
       .Default(IMAGE_FILE_MACHINE_UNKNOWN);
 }
 
@@ -103,6 +104,8 @@ MachineTypes getMachine(Triple T) {
     return COFF::IMAGE_FILE_MACHINE_RISCV32;
   case Triple::riscv64:
     return COFF::IMAGE_FILE_MACHINE_RISCV64;
+  case Triple::ppcle:
+    return COFF::IMAGE_FILE_MACHINE_POWERPC;
   default:
     return COFF::IMAGE_FILE_MACHINE_UNKNOWN;
   }
@@ -323,7 +326,7 @@ int llvm::dlltoolDriverMain(llvm::ArrayRef<const char *> ArgsArr) {
                     false);
     llvm::outs()
         << "\nTARGETS: i386, i386:x86-64, arm, arm64, arm64ec, r4000, "
-           "riscv32, riscv64\n";
+           "riscv32, riscv64, ppc\n";
     return 1;
   }
 

@@ -53,6 +53,8 @@ StringRef COFFImportFile::getFileFormatName() const {
     return "COFF-import-file-RISCV32";
   case COFF::IMAGE_FILE_MACHINE_RISCV64:
     return "COFF-import-file-RISCV64";
+  case COFF::IMAGE_FILE_MACHINE_POWERPC:
+    return "COFF-import-file-PowerPC";
   default:
     return "COFF-import-file-<unknown arch>";
   }
@@ -108,7 +110,7 @@ Error COFFImportFile::printSymbolName(raw_ostream &OS, DataRefImpl Symb) const {
     OS << "__imp_";
     break;
   case ECAuxSymbol:
-    OS << "__imp_aux_";
+    OS << (getMachine() == IMAGE_FILE_MACHINE_POWERPC ? ".." : "__imp_aux_");
     break;
   }
   const char *Name = Data.getBufferStart() + sizeof(coff_import_header);
@@ -142,6 +144,8 @@ static uint16_t getImgRelRelocation(MachineTypes Machine) {
   case IMAGE_FILE_MACHINE_RISCV32:
   case IMAGE_FILE_MACHINE_RISCV64:
     return IMAGE_REL_RISCV_ADDR32NB;
+  case IMAGE_FILE_MACHINE_POWERPC:
+    return IMAGE_REL_PPC_ADDR32NB;
   }
 }
 
@@ -261,8 +265,9 @@ public:
                                      MachineTypes Machine);
 
   // Create a weak external file which is described in PE/COFF Aux Format 3.
-  NewArchiveMember createWeakExternal(StringRef Sym, StringRef Weak, bool Imp,
-                                      MachineTypes Machine);
+  // Prefix is prepended to both names, e.g. "__imp_" for the IAT slot alias.
+  NewArchiveMember createWeakExternal(StringRef Sym, StringRef Weak,
+                                      StringRef Prefix, MachineTypes Machine);
 
   bool is64Bit() const { return COFF::is64Bit(NativeMachine); }
 };
@@ -584,7 +589,8 @@ ObjectFactory::createShortImport(StringRef Sym, uint16_t Ordinal,
 }
 
 NewArchiveMember ObjectFactory::createWeakExternal(StringRef Sym,
-                                                   StringRef Weak, bool Imp,
+                                                   StringRef Weak,
+                                                   StringRef Prefix,
                                                    MachineTypes Machine) {
   std::vector<uint8_t> Buffer;
   const uint32_t NumberOfSections = 1;
@@ -651,8 +657,7 @@ NewArchiveMember ObjectFactory::createWeakExternal(StringRef Sym,
   };
   SymbolTable[2].Name.Offset.Offset = sizeof(uint32_t);
 
-  //__imp_ String Table
-  StringRef Prefix = Imp ? "__imp_" : "";
+  // String Table
   SymbolTable[3].Name.Offset.Offset =
       sizeof(uint32_t) + Sym.size() + Prefix.size() + 1;
   append(Buffer, SymbolTable);
@@ -787,9 +792,13 @@ Error writeImportLibrary(StringRef ImportName, StringRef Path,
         // We have a regular import entry for a symbol with the name we
         // want to reference; produce an alias pointing at that.
         StringRef Symbol = It->second;
-        if (D.ImpType == IMPORT_CODE)
-          Members.push_back(OF.createWeakExternal(Symbol, D.Name, false, M));
-        Members.push_back(OF.createWeakExternal(Symbol, D.Name, true, M));
+        if (D.ImpType == IMPORT_CODE) {
+          Members.push_back(OF.createWeakExternal(Symbol, D.Name, "", M));
+          // PowerPC calls bind to the "..name" code entry of the import glue.
+          if (M == IMAGE_FILE_MACHINE_POWERPC)
+            Members.push_back(OF.createWeakExternal(Symbol, D.Name, "..", M));
+        }
+        Members.push_back(OF.createWeakExternal(Symbol, D.Name, "__imp_", M));
       } else {
         Members.push_back(OF.createShortImport(D.Name, D.Export->Ordinal,
                                                D.ImpType, IMPORT_NAME_EXPORTAS,

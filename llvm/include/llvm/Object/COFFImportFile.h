@@ -36,7 +36,8 @@ constexpr std::string_view NullThunkDataSuffix = "_NULL_THUNK_DATA";
 
 class LLVM_ABI COFFImportFile : public SymbolicFile {
 private:
-  enum SymbolIndex { ImpSymbol, ThunkSymbol, ECAuxSymbol, ECThunkSymbol };
+  // PowerPC code imports reuse the third slot for the "..name" code entry.
+  enum SymbolIndex { ImpSymbol, ThunkSymbol, ECAuxSymbol, ECThunkSymbol, PPCEntrySymbol = ECAuxSymbol };
 
 public:
   COFFImportFile(MemoryBufferRef Source)
@@ -62,6 +63,8 @@ public:
       Symb.p = ImpSymbol + 1;
     else if (COFF::isArm64EC(getMachine()))
       Symb.p = ECThunkSymbol + 1;
+    else if (getMachine() == COFF::IMAGE_FILE_MACHINE_POWERPC)
+      Symb.p = PPCEntrySymbol + 1;
     else
       Symb.p = ThunkSymbol + 1;
     return BasicSymbolRef(Symb, this);
