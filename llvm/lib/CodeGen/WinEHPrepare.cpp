@@ -434,12 +434,15 @@ void llvm::calculateSEHStateForAsynchEH(const BasicBlock *BB, int State,
 }
 
 // Given BB which ends in an unwind edge, return the EHPad that this BB belongs
-// to. If the unwind edge came from an invoke, return null.
+// to. An invoke inside a cleanup pad may be its only exit when the cleanup
+// body does not return, so it still contributes a nested unwind state.
 static const BasicBlock *getEHPadFromPredecessor(const BasicBlock *BB,
                                                  Value *ParentPad) {
   const Instruction *TI = BB->getTerminator();
-  if (isa<InvokeInst>(TI))
-    return nullptr;
+  if (isa<InvokeInst>(TI)) {
+    const auto *Pad = dyn_cast<CleanupPadInst>(&*BB->getFirstNonPHIIt());
+    return Pad && Pad->getParentPad() == ParentPad ? BB : nullptr;
+  }
   if (auto *CatchSwitch = dyn_cast<CatchSwitchInst>(TI)) {
     if (CatchSwitch->getParentPad() != ParentPad)
       return nullptr;
