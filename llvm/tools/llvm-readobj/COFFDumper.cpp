@@ -90,6 +90,7 @@ public:
   void printSectionHeaders() override;
   void printRelocations() override;
   void printUnwindInfo() override;
+  void printPPCRuntimeFunctions();
 
   void printNeededLibraries() override;
 
@@ -1837,6 +1838,36 @@ void COFFDumper::printSymbol(const SymbolRef &Sym) {
   }
 }
 
+// Windows NT PowerPC function table entries have no unwind codes; the
+// unwinder decodes the prologue that ends at PrologEndAddress.
+void COFFDumper::printPPCRuntimeFunctions() {
+  static const char *const Fields[] = {"BeginAddress", "EndAddress", "ExceptionHandler", "HandlerData", "PrologEndAddress"};
+  for (const SectionRef &Section : Obj->sections()) {
+    StringRef Name = unwrapOrError(Obj->getFileName(), Section.getName());
+    if (Name != ".pdata" && !Name.starts_with(".pdata$"))
+      continue;
+    const coff_section *PData = Obj->getCOFFSection(Section);
+    ArrayRef<uint8_t> Contents;
+    if (Error E = Obj->getSectionContents(PData, Contents))
+      reportError(std::move(E), Obj->getFileName());
+    for (size_t Offset = 0; Offset + 20 <= Contents.size(); Offset += 20) {
+      DictScope RF(W, "RuntimeFunction");
+      for (unsigned I = 0; I != std::size(Fields); ++I) {
+        uint32_t Value = support::endian::read32le(Contents.data() + Offset + I * 4);
+        StringRef SymName;
+        if (Obj->isRelocatableObject() && !resolveSymbolName(PData, Offset + I * 4, SymName)) {
+          W.startLine() << Fields[I] << ": " << SymName;
+          if (Value)
+            W.getOStream() << " +0x" << utohexstr(Value);
+          W.getOStream() << "\n";
+        } else {
+          W.printHex(Fields[I], Value);
+        }
+      }
+    }
+  }
+}
+
 void COFFDumper::printUnwindInfo() {
   ListScope D(W, "UnwindInformation");
   switch (Obj->getMachine()) {
@@ -1862,6 +1893,9 @@ void COFFDumper::printUnwindInfo() {
     consumeError(Decoder.dumpProcedureData(*Obj));
     break;
   }
+  case COFF::IMAGE_FILE_MACHINE_POWERPC:
+    printPPCRuntimeFunctions();
+    break;
   case COFF::IMAGE_FILE_MACHINE_RISCV64: {
     RISCVWinEH::Dumper Dumper(W);
     RISCVWinEH::Dumper::SymbolResolver Resolver =

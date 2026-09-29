@@ -201,7 +201,9 @@ void COFFDumper::dumpSections(unsigned NumSections) {
       object::symbol_iterator Sym = Reloc.getSymbol();
       bool IsMipsPair = Obj.getMachine() == COFF::IMAGE_FILE_MACHINE_R4000 &&
                         reloc->Type == COFF::IMAGE_REL_MIPS_PAIR;
-      if (IsMipsPair || Sym == Obj.symbol_end()) {
+      // A PowerPC PAIR keeps the low half of the addend in its symbol index.
+      bool IsPPCPair = Obj.getMachine() == COFF::IMAGE_FILE_MACHINE_POWERPC && (reloc->Type & COFF::IMAGE_REL_PPC_TYPEMASK) == COFF::IMAGE_REL_PPC_PAIR;
+      if (IsMipsPair || IsPPCPair || Sym == Obj.symbol_end()) {
         Rel.SymbolTableIndex = reloc->SymbolTableIndex;
         Rel.VirtualAddress = reloc->VirtualAddress;
         Rel.Type = reloc->Type;
