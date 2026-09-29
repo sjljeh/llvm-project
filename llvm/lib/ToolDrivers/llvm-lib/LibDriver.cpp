@@ -166,6 +166,7 @@ static Expected<COFF::MachineTypes> getCOFFFileMachine(MemoryBufferRef MB) {
       Machine != COFF::IMAGE_FILE_MACHINE_R4000 &&
       Machine != COFF::IMAGE_FILE_MACHINE_RISCV32 &&
       Machine != COFF::IMAGE_FILE_MACHINE_RISCV64 &&
+      Machine != COFF::IMAGE_FILE_MACHINE_POWERPC &&
       Machine != COFF::IMAGE_FILE_MACHINE_ARMNT && !COFF::isAnyArm64(Machine)) {
     return createStringError(inconvertibleErrorCode(),
                              "unknown machine: " + std::to_string(Machine));
@@ -198,6 +199,8 @@ static Expected<COFF::MachineTypes> getBitcodeFileMachine(MemoryBufferRef MB) {
     return COFF::IMAGE_FILE_MACHINE_RISCV32;
   case Triple::riscv64:
     return COFF::IMAGE_FILE_MACHINE_RISCV64;
+  case Triple::ppcle:
+    return COFF::IMAGE_FILE_MACHINE_POWERPC;
   default:
     return createStringError(inconvertibleErrorCode(),
                              "unknown arch in target triple: " + *TripleStr);

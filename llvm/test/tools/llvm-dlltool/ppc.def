@@ -1,0 +1,42 @@
+; Copyright (c) 2026 Ahmed ARIF
+
+; RUN: llvm-dlltool -m ppc -d %s -l %t.a
+; RUN: llvm-readobj %t.a | FileCheck %s
+; RUN: llvm-nm %t.a | FileCheck %s --check-prefix=SYMS
+
+; Windows NT PowerPC import objects advertise the "..name" code entry used by
+; direct calls in addition to the descriptor name and the __imp_ IAT slot.
+
+LIBRARY test.dll
+EXPORTS
+TestFunction
+TestData DATA
+AliasFunction==TestFunction
+
+; CHECK:      Format: COFF-PowerPC
+; CHECK:      Format: COFF-import-file-PowerPC
+; CHECK-NEXT: Type: code
+; CHECK-NEXT: Name type: name
+; CHECK-NEXT: Export name: TestFunction
+; CHECK-NEXT: Symbol: __imp_TestFunction
+; CHECK-NEXT: Symbol: TestFunction
+; CHECK-NEXT: Symbol: ..TestFunction
+; CHECK:      Format: COFF-import-file-PowerPC
+; CHECK-NEXT: Type: data
+; CHECK-NEXT: Name type: name
+; CHECK-NEXT: Export name: TestData
+; CHECK-NEXT: Symbol: __imp_TestData
+; CHECK-NOT:  Symbol:
+
+; SYMS:      T ..TestFunction
+; SYMS-NEXT: T TestFunction
+; SYMS-NEXT: T __imp_TestFunction
+; SYMS:      D __imp_TestData
+
+; An alias of a code import also aliases the "..name" code entry.
+; SYMS:      W AliasFunction
+; SYMS-NEXT: U TestFunction
+; SYMS:      W ..AliasFunction
+; SYMS-NEXT: U ..TestFunction
+; SYMS:      W __imp_AliasFunction
+; SYMS-NEXT: U __imp_TestFunction
