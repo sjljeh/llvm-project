@@ -47,9 +47,20 @@ using namespace libunwind;
 #define STATUS_GCC_UNWIND MAKE_GCC_EXCEPTION(1) // 0x21474343
 
 static int __unw_init_seh(unw_cursor_t *cursor, CONTEXT *ctx);
-static DISPATCHER_CONTEXT *__unw_seh_get_disp_ctx(unw_cursor_t *cursor);
+static LIBUNWIND_DISPATCHER_CONTEXT *__unw_seh_get_disp_ctx(unw_cursor_t *cursor);
 static void __unw_seh_set_disp_ctx(unw_cursor_t *cursor,
                                    DISPATCHER_CONTEXT *disp);
+
+/// The history table to pass on to RtlUnwindEx(). The NT4 PowerPC dispatcher
+/// context has none.
+static PUNWIND_HISTORY_TABLE __unw_seh_history_table(DISPATCHER_CONTEXT *disp) {
+#if defined(_LIBUNWIND_TARGET_PPC)
+  (void)disp;
+  return nullptr;
+#else
+  return disp->HistoryTable;
+#endif
+}
 
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wgnu-anonymous-struct"
@@ -134,7 +145,11 @@ _GCC_specific_handler(PEXCEPTION_RECORD ms_exc, PVOID frame, PCONTEXT ms_ctx,
   if (!ctx) {
     __unw_init_seh(&cursor, disp->ContextRecord);
     __unw_seh_set_disp_ctx(&cursor, disp);
+#if !defined(_LIBUNWIND_TARGET_PPC)
+    // The NT PowerPC ControlPc is the call instruction; the context record
+    // already holds the return address that the personality expects.
     __unw_set_reg(&cursor, UNW_REG_IP, disp->ControlPc);
+#endif
     ctx = (struct _Unwind_Context *)&cursor;
 
     if (!IS_UNWINDING(ms_exc->ExceptionFlags)) {
@@ -177,9 +192,14 @@ _GCC_specific_handler(PEXCEPTION_RECORD ms_exc, PVOID frame, PCONTEXT ms_ctx,
       ms_exc->ExceptionInformation[1] = (ULONG_PTR)frame;
     }
     // FIXME: Indicate target frame in foreign case!
+#if defined(_LIBUNWIND_TARGET_PPC)
+    // The NT4 PowerPC dispatcher context does not report the unwind target
+    // back to the target frame; remember it here.
+    exc->private_[2] = disp->ControlPc;
+#endif
     // phase 2: the clean up phase
     RtlUnwindEx(frame, (PVOID)disp->ControlPc, ms_exc, exc, disp->ContextRecord,
-                disp->HistoryTable);
+                __unw_seh_history_table(disp));
     _LIBUNWIND_ABORT("RtlUnwindEx() failed");
   case _URC_INSTALL_CONTEXT: {
     // If we were called by __libunwind_seh_personality(), indicate that
@@ -207,7 +227,7 @@ _GCC_specific_handler(PEXCEPTION_RECORD ms_exc, PVOID frame, PCONTEXT ms_ctx,
     __unw_get_reg(&cursor, UNW_RISCV_X10, &retval);
     __unw_get_reg(&cursor, UNW_RISCV_X11, &exc->private_[3]);
 #elif defined(__powerpc__)
-    exc->private_[2] = disp->TargetPc;
+    // private_[2] already holds the target of the unwind in progress.
     __unw_get_reg(&cursor, UNW_PPC_R3, &retval);
     __unw_get_reg(&cursor, UNW_PPC_R4, &exc->private_[3]);
 #endif
@@ -215,15 +235,18 @@ _GCC_specific_handler(PEXCEPTION_RECORD ms_exc, PVOID frame, PCONTEXT ms_ctx,
     ms_exc->ExceptionCode = STATUS_GCC_UNWIND;
 #ifdef __x86_64__
     ms_exc->ExceptionInformation[2] = disp->TargetIp;
-#elif defined(__arm__) || defined(__aarch64__) || defined(__riscv) || defined(__powerpc__)
+#elif defined(__arm__) || defined(__aarch64__) || defined(__riscv)
     ms_exc->ExceptionInformation[2] = disp->TargetPc;
+#elif defined(__powerpc__)
+    ms_exc->ExceptionInformation[2] = exc->private_[2];
 #endif
     ms_exc->ExceptionInformation[3] = exc->private_[3];
     // Give NTRTL some scratch space to keep track of the collided unwind.
     // Don't use the one that was passed in; we don't want to overwrite the
     // context in the DISPATCHER_CONTEXT.
     CONTEXT new_ctx;
-    RtlUnwindEx(frame, (PVOID)target, ms_exc, (PVOID)retval, &new_ctx, disp->HistoryTable);
+    RtlUnwindEx(frame, (PVOID)target, ms_exc, (PVOID)retval, &new_ctx,
+                __unw_seh_history_table(disp));
     _LIBUNWIND_ABORT("RtlUnwindEx() failed");
   }
   // Anything else indicates a serious problem.
@@ -249,7 +272,7 @@ __libunwind_seh_personality(int version, _Unwind_Action state,
   ms_exc.ExceptionInformation[0] = (ULONG_PTR)exc;
   ms_exc.ExceptionInformation[1] = (ULONG_PTR)context;
   ms_exc.ExceptionInformation[2] = state;
-  DISPATCHER_CONTEXT *disp_ctx =
+  LIBUNWIND_DISPATCHER_CONTEXT *disp_ctx =
       __unw_seh_get_disp_ctx((unw_cursor_t *)context);
 #if defined(__aarch64__)
   LOCAL_DISPATCHER_CONTEXT_NONVOLREG_ARM64 nonvol;
@@ -282,7 +305,8 @@ __libunwind_seh_personality(int version, _Unwind_Action state,
                              (void *)disp_ctx->ContextRecord, (void *)disp_ctx);
   int ms_act = static_cast<int>(
       disp_ctx->LanguageHandler(&ms_exc, (PVOID)disp_ctx->EstablisherFrame,
-                                disp_ctx->ContextRecord, disp_ctx));
+                                disp_ctx->ContextRecord,
+                                reinterpret_cast<DISPATCHER_CONTEXT *>(disp_ctx)));
   _LIBUNWIND_TRACE_UNWINDING("__libunwind_seh_personality() LanguageHandler "
                              "returned %d",
                              ms_act);
@@ -510,7 +534,7 @@ _Unwind_GetLanguageSpecificData(struct _Unwind_Context *context) {
 /// function.
 _LIBUNWIND_EXPORT uintptr_t
 _Unwind_GetRegionStart(struct _Unwind_Context *context) {
-  DISPATCHER_CONTEXT *disp = __unw_seh_get_disp_ctx((unw_cursor_t *)context);
+  LIBUNWIND_DISPATCHER_CONTEXT *disp = __unw_seh_get_disp_ctx((unw_cursor_t *)context);
   uintptr_t result = (uintptr_t)disp->FunctionEntry->BeginAddress + disp->ImageBase;
   _LIBUNWIND_TRACE_API("_Unwind_GetRegionStart(context=%p) => 0x%" PRIxPTR,
                        (void *)context, result);
@@ -558,7 +582,7 @@ static int __unw_init_seh(unw_cursor_t *cursor, CONTEXT *context) {
 #endif
 }
 
-static DISPATCHER_CONTEXT *__unw_seh_get_disp_ctx(unw_cursor_t *cursor) {
+static LIBUNWIND_DISPATCHER_CONTEXT *__unw_seh_get_disp_ctx(unw_cursor_t *cursor) {
 #ifdef _LIBUNWIND_TARGET_X86_64
   return reinterpret_cast<UnwindCursor<LocalAddressSpace, Registers_x86_64> *>(cursor)->getDispatcherContext();
 #elif defined(_LIBUNWIND_TARGET_ARM)
