@@ -704,9 +704,16 @@ void PPCFrameLowering::emitPrologue(MachineFunction &MF,
 
   auto EmitPrologEnd = [&]() {
     if (Subtarget.isWin32ABI() && (MF.hasWinCFI() || MF.hasEHFunclets() ||
-                                   MF.getFunction().needsUnwindTableEntry()))
-      BuildMI(MBB, MBBI, dl, TII.get(PPC::SEH_PrologEnd))
+                                   MF.getFunction().needsUnwindTableEntry())) {
+      // The generic callee saves were inserted before emitPrologue. Include
+      // them in the range decoded by the NT PowerPC unwinder.
+      auto PrologEnd = MBBI;
+      while (PrologEnd != MBB.end() &&
+             PrologEnd->getFlag(MachineInstr::FrameSetup))
+        ++PrologEnd;
+      BuildMI(MBB, PrologEnd, dl, TII.get(PPC::SEH_PrologEnd))
           .setMIFlag(MachineInstr::FrameSetup);
+    }
   };
 
   // Regarding this assert: Even though LR is saved in the caller's frame (i.e.,
@@ -1201,15 +1208,27 @@ void PPCFrameLowering::emitPrologue(MachineFunction &MF,
   if (HasFP) {
     if (IsWinEHFunclet) {
       MBB.addLiveIn(PPC::R2);
+      Register ParentSP = PPC::R2;
+      if (HasBP && MaxAlign > 1) {
+        // The parent aligned its incoming SP before allocating its frame.
+        // Reproduce that alignment before addressing its escaped locals.
+        BuildMI(MBB, MBBI, dl, TII.get(PPC::RLWINM), FPReg)
+            .addReg(ParentSP)
+            .addImm(0)
+            .addImm(0)
+            .addImm(31 - Log2(MaxAlign))
+            .setMIFlag(MachineInstr::FrameSetup);
+        ParentSP = FPReg;
+      }
       if (isInt<16>(NegFrameSize)) {
         BuildMI(MBB, MBBI, dl, TII.get(PPC::ADDI), FPReg)
-            .addReg(PPC::R2)
+            .addReg(ParentSP)
             .addImm(NegFrameSize)
             .setMIFlag(MachineInstr::FrameSetup);
       } else {
         TII.materializeImmPostRA(MBB, MBBI, dl, ScratchReg, NegFrameSize);
         BuildMI(MBB, MBBI, dl, TII.get(PPC::ADD4), FPReg)
-            .addReg(PPC::R2)
+            .addReg(ParentSP)
             .addReg(ScratchReg)
             .setMIFlag(MachineInstr::FrameSetup);
       }
@@ -2524,6 +2543,7 @@ bool PPCFrameLowering::spillCalleeSavedRegisters(
   bool CRSpilled = false;
   MachineInstrBuilder CRMIB;
   BitVector Spilled(TRI->getNumRegs());
+  auto BeforeSpills = MI == MBB.begin() ? MBB.end() : std::prev(MI);
 
   VSRContainingGPRs.clear();
 
@@ -2631,6 +2651,12 @@ bool PPCFrameLowering::spillCalleeSavedRegisters(
                                   Register());
       }
     }
+  }
+  if (Subtarget.isWin32ABI()) {
+    auto FirstSpill =
+        BeforeSpills == MBB.end() ? MBB.begin() : std::next(BeforeSpills);
+    for (auto I = FirstSpill; I != MI; ++I)
+      I->setFlag(MachineInstr::FrameSetup);
   }
   return true;
 }

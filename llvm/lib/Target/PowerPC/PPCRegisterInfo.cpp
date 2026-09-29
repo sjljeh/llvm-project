@@ -20,6 +20,7 @@
 #include "PPCTargetMachine.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/CodeGen/Analysis.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
@@ -29,6 +30,7 @@
 #include "llvm/CodeGen/TargetFrameLowering.h"
 #include "llvm/CodeGen/TargetInstrInfo.h"
 #include "llvm/CodeGen/VirtRegMap.h"
+#include "llvm/CodeGen/WinEHFuncInfo.h"
 #include "llvm/IR/CallingConv.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Type.h"
@@ -1841,9 +1843,26 @@ PPCRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
     return true;
   }
 
-  // Replace the FrameIndex with base register with GPR1 (SP) or GPR31 (FP).
-  MI.getOperand(FIOperandNum).ChangeToRegister(
-    FrameIndex < 0 ? getBaseRegister(MF) : getFrameRegister(MF), false);
+  // A Windows funclet uses r31 to access its parent's locals, but its callee
+  // saves belong to its own frame. Never overwrite the parent's saved caller
+  // registers while entering a funclet. Keep parent-frame references unchanged.
+  Register FrameReg =
+      FrameIndex < 0 ? getBaseRegister(MF) : getFrameRegister(MF);
+  if (Subtarget.isWin32ABI() && MF.hasEHFunclets() &&
+      llvm::any_of(MFI.getCalleeSavedInfo(), [&](const CalleeSavedInfo &CSI) {
+        return !CSI.isSpilledToReg() && CSI.getFrameIdx() == FrameIndex;
+      })) {
+    auto &Scopes = MF.getWinEHFuncInfo()->EHScopeMembership;
+    // Inline stack probes may have split a block since frame finalization.
+    if (!Scopes.contains(&MBB))
+      Scopes = getEHScopeMembership(MF);
+    // A realigned frame already addresses its fixed saves through its own
+    // base pointer, with offsets relative to the incoming stack pointer.
+    if (Scopes.lookup(&MBB) != MF.front().getNumber() &&
+        !(FrameIndex < 0 && hasBasePointer(MF)))
+      FrameReg = PPC::R1;
+  }
+  MI.getOperand(FIOperandNum).ChangeToRegister(FrameReg, false);
 
   // If the instruction is not present in ImmToIdxMap, then it has no immediate
   // form (and must be r+r).
