@@ -2347,9 +2347,11 @@ void PPCWinCOFFAsmPrinter::emitFunctionEntryLabel() {
 void PPCWinCOFFAsmPrinter::emitFunctionDescriptor() {
   const unsigned PointerSize = getDataLayout().getPointerSize();
   MCSectionSubPair Current = OutStreamer->getCurrentSection();
-  MCSection *DescSection =
-      OutContext.getCOFFSection(".rdata", COFF::IMAGE_SCN_CNT_INITIALIZED_DATA |
-                                              COFF::IMAGE_SCN_MEM_READ);
+  // A COMDAT function section is keyed by the descriptor symbol, which must
+  // then be defined in that section so both are selected together.
+  MCSection *DescSection = Current.first;
+  if (!static_cast<const MCSectionCOFF *>(Current.first)->getCOMDATSymbol())
+    DescSection = OutContext.getCOFFSection(".rdata", COFF::IMAGE_SCN_CNT_INITIALIZED_DATA | COFF::IMAGE_SCN_MEM_READ);
 
   OutStreamer->switchSection(DescSection);
   OutStreamer->emitValueToAlignment(Align(PointerSize));
