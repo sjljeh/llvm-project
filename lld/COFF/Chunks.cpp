@@ -418,6 +418,11 @@ void SectionChunk::applyRelPPC(uint8_t *off, const coff_relocation &rel,
   case IMAGE_REL_PPC_ADDR32NB:
     writePPC32(off, readPPC32(off, isLE) + s, isLE);
     break;
+  case IMAGE_REL_PPC_ADDR16:
+    // The low 16 bits of the target VA; the loader rebases them with a LOW
+    // base relocation.
+    applyPPCImm16(off, (va + readPPC16(off, isLE)) & 0xffff, isLE);
+    break;
   case IMAGE_REL_PPC_ADDR24:
     applyPPCAddr24(off, va + (readPPC32(off, isLE) & 0x03fffffc), isLE);
     break;
@@ -443,7 +448,12 @@ void SectionChunk::applyRelPPC(uint8_t *off, const coff_relocation &rel,
     int64_t sectionStart =
         static_cast<int64_t>(p) - static_cast<int64_t>(rel.VirtualAddress);
     int64_t addend = SignExtend64<16>(readPPC32(off, isLE) & 0x0000fffc);
-    applyPPCAddr14(off, static_cast<int64_t>(s) - sectionStart + addend, isLE);
+    int64_t value = static_cast<int64_t>(s) - sectionStart + addend;
+    if (!isInt<16>(value))
+      error("PowerPC REL14 relocation out of range");
+    if (value & 3)
+      error("PowerPC REL14 relocation is not four-byte aligned");
+    applyPPCAddr14(off, value, isLE);
     break;
   }
   case IMAGE_REL_PPC_TOCREL16:
@@ -474,6 +484,14 @@ void SectionChunk::applyRelPPC(uint8_t *off, const coff_relocation &rel,
     break;
   case IMAGE_REL_PPC_SECREL:
     applySecRel(this, off, os, s);
+    break;
+  case IMAGE_REL_PPC_SECREL16:
+    if (checkSecRel(this, os)) {
+      uint64_t v = s - os->getRVA() + readPPC16(off, isLE);
+      if (!isUInt<16>(v))
+        error("PowerPC SECREL16 relocation out of range in " + toString(file));
+      applyPPCImm16(off, v & 0xffff, isLE);
+    }
     break;
   case IMAGE_REL_PPC_SECRELLO:
     if (checkSecRel(this, os))
@@ -1502,7 +1520,7 @@ static bool addPPCBaserelHighLow(const SectionChunk *sec,
     }
     return true;
   }
-  if (type == IMAGE_REL_PPC_REFLO) {
+  if (type == IMAGE_REL_PPC_REFLO || type == IMAGE_REL_PPC_ADDR16) {
     res->emplace_back(sec->rva + rel.VirtualAddress, IMAGE_REL_BASED_LOW);
     return true;
   }
