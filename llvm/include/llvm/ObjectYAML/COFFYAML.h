@@ -210,6 +210,11 @@ struct ScalarEnumerationTraits<COFF::RelocationTypesRISCV> {
 };
 
 template <>
+struct ScalarEnumerationTraits<COFF::RelocationTypesPPC> {
+  LLVM_ABI static void enumeration(IO &IO, COFF::RelocationTypesPPC &Value);
+};
+
+template <>
 struct ScalarEnumerationTraits<COFF::WindowsSubsystem> {
   LLVM_ABI static void enumeration(IO &IO, COFF::WindowsSubsystem &Value);
 };

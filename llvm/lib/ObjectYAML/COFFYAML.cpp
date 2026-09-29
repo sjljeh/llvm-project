@@ -297,6 +297,35 @@ void ScalarEnumerationTraits<COFF::RelocationTypesRISCV>::enumeration(
   ECase(IMAGE_REL_RISCV_RVC_BRANCH);
 }
 
+void ScalarEnumerationTraits<COFF::RelocationTypesPPC>::enumeration(
+    IO &IO, COFF::RelocationTypesPPC &Value) {
+  ECase(IMAGE_REL_PPC_ABSOLUTE);
+  ECase(IMAGE_REL_PPC_ADDR64);
+  ECase(IMAGE_REL_PPC_ADDR32);
+  ECase(IMAGE_REL_PPC_ADDR24);
+  ECase(IMAGE_REL_PPC_ADDR16);
+  ECase(IMAGE_REL_PPC_ADDR14);
+  ECase(IMAGE_REL_PPC_REL24);
+  ECase(IMAGE_REL_PPC_REL14);
+  ECase(IMAGE_REL_PPC_TOCREL16);
+  ECase(IMAGE_REL_PPC_TOCREL14);
+  ECase(IMAGE_REL_PPC_ADDR32NB);
+  ECase(IMAGE_REL_PPC_SECREL);
+  ECase(IMAGE_REL_PPC_SECTION);
+  ECase(IMAGE_REL_PPC_IFGLUE);
+  ECase(IMAGE_REL_PPC_IMGLUE);
+  ECase(IMAGE_REL_PPC_SECREL16);
+  ECase(IMAGE_REL_PPC_REFHI);
+  ECase(IMAGE_REL_PPC_REFLO);
+  ECase(IMAGE_REL_PPC_PAIR);
+  ECase(IMAGE_REL_PPC_SECRELLO);
+  ECase(IMAGE_REL_PPC_SECRELHI);
+  ECase(IMAGE_REL_PPC_GPREL);
+  ECase(IMAGE_REL_PPC_TOKEN);
+  // Types combined with the NEG, BRTAKEN, BRNTAKEN or TOCDEFN flags.
+  IO.enumFallback<Hex16>(Value);
+}
+
 void ScalarEnumerationTraits<COFF::WindowsSubsystem>::enumeration(
     IO &IO, COFF::WindowsSubsystem &Value) {
   ECase(IMAGE_SUBSYSTEM_UNKNOWN);
@@ -514,6 +543,9 @@ void MappingTraits<COFFYAML::Relocation>::mapping(IO &IO,
   } else if (COFF::isAnyArm64(H.Machine)) {
     MappingNormalization<NType<COFF::RelocationTypesARM64>, uint16_t> NT(
         IO, Rel.Type);
+    IO.mapRequired("Type", NT->Type);
+  } else if (H.Machine == COFF::IMAGE_FILE_MACHINE_POWERPC) {
+    MappingNormalization<NType<COFF::RelocationTypesPPC>, uint16_t> NT(IO, Rel.Type);
     IO.mapRequired("Type", NT->Type);
   } else if (H.Machine == COFF::IMAGE_FILE_MACHINE_RISCV32 ||
              H.Machine == COFF::IMAGE_FILE_MACHINE_RISCV64) {
