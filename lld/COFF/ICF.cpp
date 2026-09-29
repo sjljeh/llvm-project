@@ -157,6 +157,9 @@ bool ICF::equalsConstant(const SectionChunk *a, const SectionChunk *b) {
     }
     Symbol *b1 = a->file->getSymbol(r1.SymbolTableIndex);
     Symbol *b2 = b->file->getSymbol(r2.SymbolTableIndex);
+    // PAIR relocations carry an addend in the symbol index field.
+    if (!b1 && !b2)
+      return r1.SymbolTableIndex == r2.SymbolTableIndex;
     if (b1 == b2)
       return true;
     if (auto *d1 = dyn_cast<DefinedRegular>(b1))
