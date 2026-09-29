@@ -1579,12 +1579,6 @@ void Writer::appendImportThunks() {
     if (!file->live)
       continue;
 
-    // A live PowerPC descriptor points at the import glue.
-    if (auto *desc = dyn_cast_or_null<DefinedImportThunk>(file->auxThunkSym))
-      if (auto *glue = dyn_cast_or_null<DefinedImportThunk>(file->thunkSym))
-        if (desc->getChunk()->live && desc->getChunk()->getMachine() == IMAGE_FILE_MACHINE_POWERPC)
-          glue->getChunk()->live = true;
-
     if (file->thunkSym) {
       if (!isa<DefinedImportThunk>(file->thunkSym))
         Fatal(ctx) << file->symtab.printSymbol(file->thunkSym)

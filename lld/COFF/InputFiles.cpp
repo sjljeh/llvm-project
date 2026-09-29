@@ -1380,9 +1380,8 @@ void ImportFile::parse() {
           return nullptr;
         return symtab.addImportThunk(symName, impSym, chunk);
       };
-      auto *glue = cast<ImportThunkChunkPPC>(makeImportThunk());
-      thunkSym = addThunk(saver().save(".." + name), glue);
-      auxThunkSym = addThunk(name, make<ImportDescriptorChunkPPC>(symtab.ctx, impSym, glue));
+      thunkSym = addThunk(saver().save(".." + name), makeImportThunk());
+      auxThunkSym = addThunk(name, make<ImportDescriptorChunkPPC>(symtab.ctx, impSym));
     } else if (!symtab.isEC()) {
       thunkSym = symtab.addImportThunk(name, impSym, makeImportThunk());
     } else {
