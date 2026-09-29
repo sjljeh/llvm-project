@@ -138,6 +138,8 @@ enum Specifier {
   S_U,              // symbol@u
   S_IFGLUE,         // internal specifier for PASM .znop
   S_PASM_BE,        // internal specifier for big-endian PASM data
+  S_SECREL_HA,      // symbol@secrel@ha (COFF IMAGE_REL_PPC_SECRELHI)
+  S_SECREL_LO,      // symbol@secrel@l (COFF IMAGE_REL_PPC_SECRELLO)
 };
 
 bool evaluateAsConstant(const MCSpecifierExpr &Expr, int64_t &Res);
