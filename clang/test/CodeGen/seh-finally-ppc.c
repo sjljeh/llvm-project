@@ -33,7 +33,7 @@ int seh_finally(volatile int *p) {
 // IR: call void @"?fin$0@0@seh_finally@@"(i8 noundef zeroext 1,
 // IR-LABEL: define internal void @"?fin$0@0@seh_finally@@"(
 // IR: call ptr @llvm.localrecover(ptr @seh_finally, ptr {{.*}}, i32 0)
-// IR: %{{.*}} = zext i8 %0 to i32
+// IR: %{{.*}} = zext i8 %{{.*}} to i32
 // IR: call void @consume(
 
 // The parent save and table format follow NT4 PowerPC. The unwind path enters
