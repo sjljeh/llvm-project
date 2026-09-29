@@ -370,6 +370,11 @@ static std::optional<uint64_t> getPPCTocRVA(const SectionChunk *sec) {
 }
 
 static std::optional<uint32_t> getPPCImportGlueInst(Symbol *sym) {
+  // Synthesized glue saves the caller's TOC at 4(r1).
+  if (auto *thunk = dyn_cast_or_null<DefinedImportThunk>(sym))
+    if (thunk->getChunk()->getMachine() == IMAGE_FILE_MACHINE_POWERPC)
+      return 0x80410004; // lwz r2,4(r1)
+
   auto *d = dyn_cast_or_null<DefinedRegular>(sym);
   if (!d)
     return std::nullopt;
@@ -1921,6 +1926,33 @@ void ImportThunkChunkARM64::writeTo(uint8_t *buf) const {
   memcpy(buf, importThunkARM64, sizeof(importThunkARM64));
   applyArm64Addr(buf, impSymbol->getRVA(), rva, 12);
   applyArm64Ldr(buf + 4, off);
+}
+
+void ImportThunkChunkPPC::getBaserels(std::vector<Baserel> *res) {
+  uint32_t va = impSymbol->getRVA() + ctx.config.imageBase;
+  res->emplace_back(rva, IMAGE_REL_BASED_HIGHADJ, va & 0xffff);
+  res->emplace_back(rva + 4, IMAGE_REL_BASED_LOW);
+}
+
+void ImportThunkChunkPPC::writeTo(uint8_t *buf) const {
+  uint32_t va = impSymbol->getRVA() + ctx.config.imageBase;
+  for (size_t i = 0; i != std::size(importThunkPPC); ++i)
+    writePPC32(buf + i * 4, importThunkPPC[i], true);
+  applyPPCImm16(buf, (va + 0x8000) >> 16, true);
+  applyPPCImm16(buf + 4, va & 0xffff, true);
+}
+
+void ImportDescriptorChunkPPC::getBaserels(std::vector<Baserel> *res) {
+  res->emplace_back(rva, IMAGE_REL_BASED_HIGHLOW);
+  res->emplace_back(rva + 4, IMAGE_REL_BASED_HIGHLOW);
+}
+
+void ImportDescriptorChunkPPC::writeTo(uint8_t *buf) const {
+  write32le(buf, glue->getRVA() + ctx.config.imageBase);
+  uint64_t toc = 0;
+  if (auto *d = dyn_cast_or_null<Defined>(ctx.symtab.find(".toc")))
+    toc = d->getRVA() + ctx.config.imageBase;
+  write32le(buf + 4, toc);
 }
 
 void ImportThunkChunkRISCV::writeTo(uint8_t *buf) const {

@@ -1,0 +1,55 @@
+# Copyright (c) 2026 Ahmed ARIF
+
+# REQUIRES: ppc
+# RUN: split-file %s %t
+# RUN: llvm-mc -triple=powerpcle-pc-windows -filetype=obj %t/local.s -o %t/local.obj
+# RUN: llvm-mc -triple=powerpcle-pc-windows -filetype=obj %t/main.s -o %t/main.obj
+# RUN: llvm-dlltool -m ppc -d %t/lib.def -l %t/lib.lib
+# RUN: lld-link /nodefaultlib /entry:main /subsystem:console /out:%t/main.exe %t/main.obj %t/local.obj %t/lib.lib
+# RUN: llvm-objdump -d --no-show-raw-insn %t/main.exe | FileCheck %s
+
+# main.obj calls malloc directly and also reads __imp_malloc. The import
+# member pulled in for __imp_malloc must not clash with the local malloc in
+# local.obj, which keeps serving the direct call.
+# CHECK:      <.text>:
+# CHECK:      bl 0x[[LOCAL:[0-9a-f]+]]
+# CHECK-NEXT: nop
+# CHECK:      [[LOCAL]]: li 3, 42
+
+#--- lib.def
+LIBRARY msvcrt.dll
+EXPORTS
+malloc
+
+#--- local.s
+.text
+.globl ..malloc
+..malloc:
+  li 3, 42
+  blr
+.section .rdata,"dr"
+.globl malloc
+malloc:
+  .long ..malloc
+  .long .toc
+
+#--- main.s
+.text
+.globl ..main
+..main:
+  mflr 0
+  stwu 1, -64(1)
+  stw 0, 72(1)
+  bl ..malloc
+  nop
+  lis 3, __imp_malloc@ha
+  lwz 3, __imp_malloc@l(3)
+  lwz 0, 72(1)
+  addi 1, 1, 64
+  mtlr 0
+  blr
+.section .rdata,"dr"
+.globl main
+main:
+  .long ..main
+  .long .toc

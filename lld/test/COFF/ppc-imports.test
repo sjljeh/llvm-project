@@ -1,0 +1,112 @@
+# Copyright (c) 2026 Ahmed ARIF
+
+# REQUIRES: ppc
+# RUN: split-file %s %t
+# RUN: llvm-mc -triple=powerpcle-pc-windows -filetype=obj %t/lib.s -o %t/lib.obj
+# RUN: llvm-mc -triple=powerpcle-pc-windows -filetype=obj %t/main.s -o %t/main.obj
+# RUN: lld-link /dll /entry:dllentry /nodefaultlib /out:%t/lib.dll /implib:%t/lib.lib %t/lib.obj
+# RUN: llvm-nm %t/lib.lib | FileCheck %s --check-prefix=IMPLIB
+# RUN: llvm-readobj --coff-exports %t/lib.dll | FileCheck %s --check-prefix=EXPORTS
+# RUN: lld-link /nodefaultlib /entry:main /subsystem:console /out:%t/main.exe %t/main.obj %t/lib.lib
+# RUN: llvm-objdump -d --no-show-raw-insn %t/main.exe | FileCheck %s --check-prefix=DISASM
+# RUN: llvm-objdump -s -j .text %t/main.exe | FileCheck %s --check-prefix=DESC
+# RUN: llvm-readobj --coff-imports --coff-basereloc %t/main.exe | FileCheck %s --check-prefix=IMPORTS
+
+# Short import objects expose the "..name" code entry used by calls, the
+# "name" descriptor, and the __imp_ IAT slot.
+# IMPLIB:      T ..add1
+# IMPLIB-NEXT: T __imp_add1
+# IMPLIB-NEXT: T add1
+
+# The DLL exports the descriptor, not the code entry.
+# EXPORTS:      Name: add1
+# EXPORTS-NEXT: RVA: 0x2000
+
+# The IFGLUE nop after a call that resolves to import glue becomes the TOC
+# restore "lwz r2,4(r1)". The glue saves the caller's TOC at 4(r1), loads the
+# callee descriptor from the IAT slot and switches to the callee's TOC.
+# DISASM:      <.text>:
+# DISASM-NEXT:   401000: mflr 0
+# DISASM-NEXT:   401004: stwu 1, -64(1)
+# DISASM-NEXT:   401008: stw 0, 72(1)
+# DISASM-NEXT:   40100c: bl 0x40102c
+# DISASM-NEXT:   401010: lwz 2, 4(1)
+# DISASM-NEXT:   401014: lis 3, 64
+# DISASM-NEXT:   401018: addi 3, 3, 4168
+# DISASM-NEXT:   40101c: lwz 0, 72(1)
+# DISASM-NEXT:   401020: addi 1, 1, 64
+# DISASM-NEXT:   401024: mtlr 0
+# DISASM-NEXT:   401028: blr
+# DISASM-NEXT:   40102c: lis 11, 64
+# DISASM-NEXT:   401030: lwz 11, 8248(11)
+# DISASM-NEXT:   401034: lwz 12, 0(11)
+# DISASM-NEXT:   401038: stw 2, 4(1)
+# DISASM-NEXT:   40103c: mtctr 12
+# DISASM-NEXT:   401040: lwz 2, 4(11)
+# DISASM-NEXT:   401044: bctr
+
+# The local descriptor for add1 at 0x401048 is {glue, biased TOC}.
+# DESC: 401040 04004b80 2004804e 2c104000 00a04000
+
+# IMPORTS:      Name: lib.dll
+# IMPORTS:      Symbol: add1
+# IMPORTS:      BaseReloc [
+# IMPORTS:        Type: HIGHADJ
+# IMPORTS-NEXT:   Address: 0x1014
+# IMPORTS:        Type: LOW
+# IMPORTS-NEXT:   Address: 0x1018
+# IMPORTS:        Type: HIGHADJ
+# IMPORTS-NEXT:   Address: 0x102C
+# IMPORTS:        Type: LOW
+# IMPORTS-NEXT:   Address: 0x1030
+# IMPORTS:        Type: HIGHLOW
+# IMPORTS-NEXT:   Address: 0x1048
+# IMPORTS:        Type: HIGHLOW
+# IMPORTS-NEXT:   Address: 0x104C
+
+#--- lib.s
+.text
+.globl ..add1
+..add1:
+  addi 3, 3, 1
+  blr
+.globl ..dllentry
+..dllentry:
+  li 3, 1
+  blr
+
+.section .rdata,"dr"
+.globl add1
+add1:
+  .long ..add1
+  .long .toc
+.globl dllentry
+dllentry:
+  .long ..dllentry
+  .long .toc
+
+.section .drectve,"yn"
+.ascii " /export:add1"
+
+#--- main.s
+# Calls add1 through import glue and returns the address of its descriptor.
+.text
+.globl ..main
+..main:
+  mflr 0
+  stwu 1, -64(1)
+  stw 0, 72(1)
+  bl ..add1
+  .znop ..add1
+  lis 3, add1@ha
+  addi 3, 3, add1@l
+  lwz 0, 72(1)
+  addi 1, 1, 64
+  mtlr 0
+  blr
+
+.section .rdata,"dr"
+.globl main
+main:
+  .long ..main
+  .long .toc

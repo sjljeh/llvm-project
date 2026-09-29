@@ -1279,6 +1279,8 @@ ImportThunkChunk *ImportFile::makeImportThunk() {
   case RISCV32:
   case RISCV64:
     return make<ImportThunkChunkRISCV>(symtab.ctx, impSym, getMachineType());
+  case IMAGE_FILE_MACHINE_POWERPC:
+    return make<ImportThunkChunkPPC>(symtab.ctx, impSym);
   }
   llvm_unreachable("unknown machine type");
 }
@@ -1367,7 +1369,21 @@ void ImportFile::parse() {
   // address pointed by the __imp_ symbol. (This allows you to call
   // DLL functions just like regular non-DLL functions.)
   if (isCode) {
-    if (!symtab.isEC()) {
+    if (hdr->Machine == IMAGE_FILE_MACHINE_POWERPC) {
+      // Calls reference the "..name" code entry, while "name" denotes the
+      // function descriptor. A member pulled in only for its __imp_ symbol
+      // must not clash with an object that already defines the function:
+      // that definition keeps serving direct calls.
+      auto addThunk = [&](StringRef symName, ImportThunkChunk *chunk) -> Defined * {
+        Symbol *existing = symtab.find(symName);
+        if (existing && isa<Defined>(existing) && !isa<DefinedImportThunk>(existing))
+          return nullptr;
+        return symtab.addImportThunk(symName, impSym, chunk);
+      };
+      auto *glue = cast<ImportThunkChunkPPC>(makeImportThunk());
+      thunkSym = addThunk(saver().save(".." + name), glue);
+      auxThunkSym = addThunk(name, make<ImportDescriptorChunkPPC>(symtab.ctx, impSym, glue));
+    } else if (!symtab.isEC()) {
       thunkSym = symtab.addImportThunk(name, impSym, makeImportThunk());
     } else {
       thunkSym = symtab.addImportThunk(
