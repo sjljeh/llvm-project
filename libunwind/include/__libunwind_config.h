@@ -69,7 +69,13 @@
 # elif defined(__powerpc__)
 #  define _LIBUNWIND_TARGET_PPC 1
 #  define _LIBUNWIND_CONTEXT_SIZE 117
-#  define _LIBUNWIND_CURSOR_SIZE 124
+#  if defined(__SEH__)
+// The Windows NT PowerPC SEH cursor owns the native CONTEXT,
+// DISPATCHER_CONTEXT, and history table.
+#    define _LIBUNWIND_CURSOR_SIZE 86
+#  else
+#    define _LIBUNWIND_CURSOR_SIZE 124
+#  endif
 #  define _LIBUNWIND_HIGHEST_DWARF_REGISTER _LIBUNWIND_HIGHEST_DWARF_REGISTER_PPC
 # elif defined(__aarch64__)
 #  define _LIBUNWIND_TARGET_AARCH64 1
