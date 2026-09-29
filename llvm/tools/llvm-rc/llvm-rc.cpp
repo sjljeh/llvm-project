@@ -743,6 +743,9 @@ void doCvtres(std::string Src, std::string Dest, std::string TargetTriple) {
   case Triple::riscv64:
     MachineType = COFF::IMAGE_FILE_MACHINE_RISCV64;
     break;
+  case Triple::ppcle:
+    MachineType = COFF::IMAGE_FILE_MACHINE_POWERPC;
+    break;
   default:
     fatalError("Unsupported architecture in target '" + Twine(TargetTriple) +
                "'");
