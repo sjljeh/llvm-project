@@ -41,22 +41,24 @@ int seh_filter(volatile int *p, int selector) {
 // IR: catchpad within {{.*}} [ptr @"?filt$0@0@seh_filter@@"]
 // IR-LABEL: define internal i32 @"?filt$0@0@seh_filter@@"(
 // The NT PowerPC filter helper receives the exception pointers in r3 and the
-// establisher's incoming SP in r2. It restores the parent's TOC from the
-// linkage area before evaluating a filter that may make calls.
+// establisher's incoming SP in r2. It materializes its image's TOC before
+// evaluating a filter that may make calls; the TOC word in the parent's frame
+// header belongs to import glue.
 // IR: call i32 @llvm.read_register.i32(metadata [[R2:![0-9]+]])
-// IR: getelementptr inbounds i8, ptr {{.*}}, i32 8
-// IR: call void @llvm.write_register.i32(metadata [[R2]], i32 {{.*}})
+// IR: call void @llvm.write_register.i32(metadata [[R2]], i32 ptrtoint (ptr @.toc to i32))
 // IR: call ptr @llvm.eh.recoverfp(ptr @seh_filter, ptr {{.*}})
 // IR: call ptr @llvm.localrecover(ptr @seh_filter, ptr {{.*}}, i32 0)
 // IR: call i32 @inspect_exception(
 // IR: [[R2]] = !{!"r2"}
 
-// The parent follows the VC4 layout: save r2 in the incoming linkage area,
-// establish a frame, and publish an absolute-address C scope table.
+// The parent leaves the TOC word of its caller's frame header to import glue,
+// saves LR at 8(entry SP), establishes a frame, and publishes an
+// absolute-address C scope table.
 // ASM-LABEL: ..seh_filter:
 // ASM: .seh_handler __C_specific_handler, @unwind, @except
-// ASM: stw 2, 8(1)
+// ASM-NOT: stw 2,
 // ASM: stwu 1, -80(1)
+// ASM: stw 0, 88(1)
 // ASM: mr 31, 1
 // ASM: .seh_endprologue
 // ASM: .Lseh_filter$frame_escape_0 = 64
@@ -68,11 +70,13 @@ int seh_filter(volatile int *p, int selector) {
 // ASM-NEXT: .long "..?filt$0@0@seh_filter@@" # FilterFunction
 // ASM-NEXT: .long {{.*}} # ExceptionHandler
 
-// The filter materializes the parent-frame and local-capture offsets, restores
-// the TOC from r2, and then calls the source filter expression.
+// The filter takes the establisher's SP from r2 before replacing r2 with its
+// TOC, materializes the parent-frame and local-capture offsets, and then calls
+// the source filter expression.
 // ASM-LABEL: "..?filt$0@0@seh_filter@@":
 // ASM: mr 3, 2
-// ASM-NEXT: lwz 4, 8(3)
+// ASM-NEXT: lis 4, .toc@ha
+// ASM-NEXT: la 4, .toc@l(4)
 // ASM-NEXT: mr 2, 4
 // ASM: lis 4, .Lseh_filter$parent_frame_offset@ha
 // ASM-NEXT: addi 4, 4, .Lseh_filter$parent_frame_offset@l
@@ -92,7 +96,7 @@ int seh_filter(volatile int *p, int selector) {
 // OBJ: 0x8 IMAGE_REL_PPC_ADDR32 __C_specific_handler
 // OBJ-NEXT: 0xC IMAGE_REL_PPC_ADDR32 .xdata
 // OBJ: Hex dump of section '.xdata':
-// OBJ-NEXT: 0x00000000 01000000 30000000 4c000000 00000000
+// OBJ-NEXT: 0x00000000 01000000 2c000000 4c000000 00000000
 // OBJ-NEXT: 0x00000010 54000000
 
 // ROUNDTRIP: Section {{.*}} .xdata {

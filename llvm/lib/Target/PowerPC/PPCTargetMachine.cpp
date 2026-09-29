@@ -243,6 +243,11 @@ static Reloc::Model getEffectiveRelocModel(const Triple &TT,
     report_fatal_error("invalid relocation model, AIX only supports PIC",
                        false);
 
+  // Windows NT PowerPC images are rebased through base relocations; the ELF
+  // PIC sequences (GOT, PIC base register) do not exist for COFF.
+  if (TT.isOSBinFormatCOFF())
+    return Reloc::Static;
+
   if (RM)
     return *RM;
 

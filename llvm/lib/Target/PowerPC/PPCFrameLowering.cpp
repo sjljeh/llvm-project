@@ -663,8 +663,6 @@ void PPCFrameLowering::emitPrologue(MachineFunction &MF,
   bool MustSaveLR = FI->mustSaveLR();
   bool MustSaveTOC = FI->mustSaveTOC();
   const bool IsWinEHFunclet = Subtarget.isWin32ABI() && MBB.isEHFuncletEntry();
-  const bool IsWinEHParent =
-      Subtarget.isWin32ABI() && MF.hasEHFunclets() && !MBB.isEHFuncletEntry();
   const SmallVectorImpl<Register> &MustSaveCRs = FI->getMustSaveCRs();
   bool MustSaveCR = !MustSaveCRs.empty();
   // Do we have a frame pointer and/or base pointer for this function?
@@ -852,15 +850,6 @@ void PPCFrameLowering::emitPrologue(MachineFunction &MF,
 
   if (MustSaveCR && !(SingleScratchReg && MustSaveLR))
     BuildMoveFromCR();
-
-  // _CallSettingFrame passes an EH funclet's parent incoming SP in r2 and
-  // restores the real TOC from offset 8. Preserve that slot in every parent.
-  if (IsWinEHParent)
-    BuildMI(MBB, MBBI, dl, StoreInst)
-        .addReg(TOCReg)
-        .addImm(TOCSaveOffset)
-        .addReg(SPReg)
-        .setMIFlag(MachineInstr::FrameSetup);
 
   if (HasRedZone) {
     if (HasFP)
@@ -1223,9 +1212,15 @@ void PPCFrameLowering::emitPrologue(MachineFunction &MF,
             .addReg(ScratchReg)
             .setMIFlag(MachineInstr::FrameSetup);
       }
-      BuildMI(MBB, MBBI, dl, TII.get(PPC::LWZ), PPC::R2)
-          .addImm(TOCSaveOffset)
+      // The incoming r2 is the parent frame pointer, not a TOC. Materialize
+      // this image's TOC directly. Saving it in the parent's incoming linkage
+      // area would overwrite a cross-image caller's TOC at 4(r1).
+      BuildMI(MBB, MBBI, dl, TII.get(PPC::LIS), PPC::R2)
+          .addExternalSymbol(".toc", PPCII::MO_HA)
+          .setMIFlag(MachineInstr::FrameSetup);
+      BuildMI(MBB, MBBI, dl, TII.get(PPC::ADDI), PPC::R2)
           .addReg(PPC::R2)
+          .addExternalSymbol(".toc", PPCII::MO_LO)
           .setMIFlag(MachineInstr::FrameSetup);
     } else {
       BuildMI(MBB, MBBI, dl, OrInst, FPReg).addReg(SPReg).addReg(SPReg);

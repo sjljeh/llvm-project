@@ -2151,13 +2151,8 @@ bool PPCAsmParser::parseDirectiveZnop(SMLoc L) {
   if (parseToken(AsmToken::EndOfStatement))
     return addErrorSuffix(" in '.znop' directive");
 
-  MCContext &Ctx = getContext();
-  const MCExpr *SymbolRef = MCSymbolRefExpr::create(Symbol, Ctx);
-  const MCExpr *IfGlue =
-      MCSpecifierExpr::create(SymbolRef, PPC::S_IFGLUE, Ctx);
-  const MCExpr *Value = MCBinaryExpr::createAdd(
-      IfGlue, MCConstantExpr::create(0x60000000, Ctx), Ctx);
-  getStreamer().emitValue(Value, 4, L);
+  if (auto *TStreamer = static_cast<PPCTargetStreamer *>(getStreamer().getTargetStreamer()))
+    TStreamer->emitIFGlueNop(*Symbol);
   return false;
 }
 
