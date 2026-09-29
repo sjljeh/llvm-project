@@ -603,6 +603,18 @@ static const uint32_t importThunkPPC[] = {
     0x4e800420, // bctr
 };
 
+// Code of a Windows NT PowerPC import descriptor. A caller that enters through
+// a descriptor has already saved its TOC: a pointer call keeps its own, and
+// glue in another image saved it at 4(r1). This code must not overwrite it.
+static const uint32_t importDescriptorThunkPPC[] = {
+    0x3d600000, // lis   r11, __imp_name@ha
+    0x816b0000, // lwz   r11, __imp_name@l(r11)
+    0x818b0000, // lwz   r12, 0(r11)
+    0x7d8903a6, // mtctr r12
+    0x804b0004, // lwz   r2, 4(r11)
+    0x4e800420, // bctr
+};
+
 static const uint8_t importThunkARM64EC[] = {
     0x0b, 0x00, 0x00, 0x90, // adrp x11, 0x0
     0x6b, 0x01, 0x40, 0xf9, // ldr  x11, [x11]
@@ -701,20 +713,19 @@ public:
 };
 
 // The {code entry, TOC} descriptor that the plain function name denotes on
-// Windows NT PowerPC. It lets code take the address of an imported function
-// without dllimport; the code entry is the import glue.
+// Windows NT PowerPC, followed by its code. It lets code take the address of an
+// imported function without dllimport, and it is what a DLL exports when it
+// re-exports an imported function.
 class ImportDescriptorChunkPPC : public ImportThunkChunk {
 public:
-  ImportDescriptorChunkPPC(COFFLinkerContext &ctx, Defined *s, ImportThunkChunkPPC *glue)
-      : ImportThunkChunk(ctx, s), glue(glue) {
+  ImportDescriptorChunkPPC(COFFLinkerContext &ctx, Defined *s)
+      : ImportThunkChunk(ctx, s) {
     setAlignment(4);
   }
-  size_t getSize() const override { return 8; }
+  size_t getSize() const override { return 8 + sizeof(importDescriptorThunkPPC); }
   void getBaserels(std::vector<Baserel> *res) override;
   void writeTo(uint8_t *buf) const override;
   MachineTypes getMachine() const override { return llvm::COFF::IMAGE_FILE_MACHINE_POWERPC; }
-
-  ImportThunkChunkPPC *glue;
 };
 
 // ARM64EC __impchk_* thunk implementation.

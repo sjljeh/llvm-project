@@ -11,6 +11,9 @@
 # RUN: llvm-objdump -d --no-show-raw-insn %t/main.exe | FileCheck %s --check-prefix=DISASM
 # RUN: llvm-objdump -s -j .text %t/main.exe | FileCheck %s --check-prefix=DESC
 # RUN: llvm-readobj --coff-imports --coff-basereloc %t/main.exe | FileCheck %s --check-prefix=IMPORTS
+# RUN: lld-link /dll /noentry /nodefaultlib /machine:ppc /out:%t/reexport.dll /export:add1 %t/lib.lib
+# RUN: llvm-readobj --coff-exports %t/reexport.dll | FileCheck %s --check-prefix=REEXPORT
+# RUN: llvm-objdump -d --no-show-raw-insn --start-address=0x10001008 --stop-address=0x10001020 %t/reexport.dll | FileCheck %s --check-prefix=REEXPORT-CODE
 
 # Short import objects expose the "..name" code entry used by calls, the
 # "name" descriptor, and the __imp_ IAT slot.
@@ -45,8 +48,16 @@
 # DISASM-NEXT:   401040: lwz 2, 4(11)
 # DISASM-NEXT:   401044: bctr
 
-# The local descriptor for add1 at 0x401048 is {glue, biased TOC}.
-# DESC: 401040 04004b80 2004804e 2c104000 00a04000
+# The local descriptor for add1 at 0x401048 is {its code, biased TOC}. A caller
+# entering through a descriptor has already saved its own TOC, so the code
+# does not store to 4(r1).
+# DESC: 401040 04004b80 2004804e 50104000 00a04000
+# DISASM:        401050: lis 11, 64
+# DISASM-NEXT:   401054: lwz 11, 8248(11)
+# DISASM-NEXT:   401058: lwz 12, 0(11)
+# DISASM-NEXT:   40105c: mtctr 12
+# DISASM-NEXT:   401060: lwz 2, 4(11)
+# DISASM-NEXT:   401064: bctr
 
 # IMPORTS:      Name: lib.dll
 # IMPORTS:      Symbol: add1
@@ -63,6 +74,22 @@
 # IMPORTS-NEXT:   Address: 0x1048
 # IMPORTS:        Type: HIGHLOW
 # IMPORTS-NEXT:   Address: 0x104C
+# IMPORTS:        Type: HIGHADJ
+# IMPORTS-NEXT:   Address: 0x1050
+# IMPORTS:        Type: LOW
+# IMPORTS-NEXT:   Address: 0x1054
+
+# A DLL that re-exports an imported function exports the import descriptor.
+# Import glue in the caller's image has already saved the caller's TOC at
+# 4(r1); the descriptor code must leave that word alone.
+# REEXPORT:      Name: add1
+# REEXPORT-NEXT: RVA: 0x1000
+# REEXPORT-CODE:      10001008: lis 11, 4096
+# REEXPORT-CODE-NEXT: 1000100c: lwz 11, 8308(11)
+# REEXPORT-CODE-NEXT: 10001010: lwz 12, 0(11)
+# REEXPORT-CODE-NEXT: 10001014: mtctr 12
+# REEXPORT-CODE-NEXT: 10001018: lwz 2, 4(11)
+# REEXPORT-CODE-NEXT: 1000101c: bctr
 
 #--- lib.s
 .text
