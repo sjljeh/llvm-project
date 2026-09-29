@@ -591,6 +591,18 @@ static const uint8_t importThunkRISCV[] = {
     0x67, 0x80, 0x02, 0x00, // jalr  zero, 0(t0)
 };
 
+// Windows NT PowerPC import glue. Callers branch to "..name" and follow the
+// call with an IFGLUE nop that the linker turns into "lwz r2,4(r1)".
+static const uint32_t importThunkPPC[] = {
+    0x3d600000, // lis   r11, __imp_name@ha
+    0x816b0000, // lwz   r11, __imp_name@l(r11)
+    0x818b0000, // lwz   r12, 0(r11)
+    0x90410004, // stw   r2, 4(r1)
+    0x7d8903a6, // mtctr r12
+    0x804b0004, // lwz   r2, 4(r11)
+    0x4e800420, // bctr
+};
+
 static const uint8_t importThunkARM64EC[] = {
     0x0b, 0x00, 0x00, 0x90, // adrp x11, 0x0
     0x6b, 0x01, 0x40, 0xf9, // ldr  x11, [x11]
@@ -674,6 +686,35 @@ public:
 
 private:
   MachineTypes machine;
+};
+
+class ImportThunkChunkPPC : public ImportThunkChunk {
+public:
+  explicit ImportThunkChunkPPC(COFFLinkerContext &ctx, Defined *s)
+      : ImportThunkChunk(ctx, s) {
+    setAlignment(4);
+  }
+  size_t getSize() const override { return sizeof(importThunkPPC); }
+  void getBaserels(std::vector<Baserel> *res) override;
+  void writeTo(uint8_t *buf) const override;
+  MachineTypes getMachine() const override { return llvm::COFF::IMAGE_FILE_MACHINE_POWERPC; }
+};
+
+// The {code entry, TOC} descriptor that the plain function name denotes on
+// Windows NT PowerPC. It lets code take the address of an imported function
+// without dllimport; the code entry is the import glue.
+class ImportDescriptorChunkPPC : public ImportThunkChunk {
+public:
+  ImportDescriptorChunkPPC(COFFLinkerContext &ctx, Defined *s, ImportThunkChunkPPC *glue)
+      : ImportThunkChunk(ctx, s), glue(glue) {
+    setAlignment(4);
+  }
+  size_t getSize() const override { return 8; }
+  void getBaserels(std::vector<Baserel> *res) override;
+  void writeTo(uint8_t *buf) const override;
+  MachineTypes getMachine() const override { return llvm::COFF::IMAGE_FILE_MACHINE_POWERPC; }
+
+  ImportThunkChunkPPC *glue;
 };
 
 // ARM64EC __impchk_* thunk implementation.
