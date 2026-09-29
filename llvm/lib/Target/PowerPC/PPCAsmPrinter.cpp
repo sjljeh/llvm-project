@@ -344,6 +344,8 @@ public:
   }
   void emitFunctionEntryLabel() override;
   void emitFunctionDescriptor() override;
+  void emitGlobalAlias(const Module &M, const GlobalAlias &GA) override;
+  void emitEndOfAsmFile(Module &M) override;
 };
 
 } // end anonymous namespace
@@ -2358,6 +2360,38 @@ void PPCWinCOFFAsmPrinter::emitFunctionDescriptor() {
       MCSymbolRefExpr::create(OutContext.getOrCreateSymbol(".toc"), OutContext),
       PointerSize);
   OutStreamer->switchSection(Current.first, Current.second);
+}
+
+void PPCWinCOFFAsmPrinter::emitGlobalAlias(const Module &M, const GlobalAlias &GA) {
+  AsmPrinter::emitGlobalAlias(M, GA);
+
+  // The alias above names the descriptor. Direct calls reference the "..name"
+  // code entry, so a function alias needs a matching code entry alias.
+  const auto *Aliasee = dyn_cast<GlobalValue>(GA.getAliasee()->stripPointerCasts());
+  if (!Aliasee || !isa_and_nonnull<Function>(GA.getAliaseeObject()))
+    return;
+
+  MCSymbol *Entry = getFunctionEntryPointSymbol(&GA);
+  if (GA.hasExternalLinkage())
+    OutStreamer->emitSymbolAttribute(Entry, MCSA_Global);
+  else if (GA.hasWeakLinkage() || GA.hasLinkOnceLinkage())
+    OutStreamer->emitSymbolAttribute(Entry, MCSA_WeakReference);
+  emitVisibility(Entry, GA.getVisibility());
+  OutStreamer->emitAssignment(Entry, MCSymbolRefExpr::create(getFunctionEntryPointSymbol(Aliasee), OutContext));
+}
+
+void PPCWinCOFFAsmPrinter::emitEndOfAsmFile(Module &M) {
+  // The generic code marks the descriptor of an extern_weak function weak.
+  // Direct calls reference its "..name" code entry, which must be weak too.
+  for (const Function &F : M) {
+    if (!F.isDeclaration() || !F.hasExternalWeakLinkage())
+      continue;
+    SmallString<128> Name;
+    getObjFileLowering().getNameWithPrefix(Name, &F, TM);
+    if (MCSymbol *Entry = OutContext.lookupSymbol(Twine("..") + Name))
+      OutStreamer->emitSymbolAttribute(Entry, MCSA_WeakReference);
+  }
+  PPCAsmPrinter::emitEndOfAsmFile(M);
 }
 
 char PPCLinuxAsmPrinter::ID = 0;
