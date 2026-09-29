@@ -3451,6 +3451,9 @@ def : Pat<(PPCcall_nop (i32 mcsym:$dst)),
 def : Pat<(PPCcall_nop (i32 texternalsym:$dst)),
           (BL_NOP texternalsym:$dst)>;
 
+def : Pat<(PPCcall_nop (i32 tglobaladdr:$dst)),
+          (BL_NOP tglobaladdr:$dst)>;
+
 let Predicates = [IsAIX] in {
   def : Pat<(PPCbl_load_toc (i32 texternalsym:$dst)),
             (BL_LWZinto_toc texternalsym:$dst)>;
@@ -3467,6 +3470,9 @@ def : Pat<(PPCcall_nop_rm (i32 mcsym:$dst)),
 
 def : Pat<(PPCcall_nop_rm (i32 texternalsym:$dst)),
           (BL_NOP_RM texternalsym:$dst)>;
+
+def : Pat<(PPCcall_nop_rm (i32 tglobaladdr:$dst)),
+          (BL_NOP_RM tglobaladdr:$dst)>;
 
 
 def : Pat<(PPCtc_return (i32 tglobaladdr:$dst),  imm:$imm),
@@ -3503,6 +3509,14 @@ def : Pat<(add i32:$in, (PPChi tjumptable:$g, 0)),
           (ADDIS $in, tjumptable:$g)>;
 def : Pat<(add i32:$in, (PPChi tblockaddress:$g, 0)),
           (ADDIS $in, tblockaddress:$g)>;
+
+// Windows NT PowerPC addresses __imp_ IAT slots and _tls_index by name.
+def : Pat<(PPChi texternalsym:$in, 0), (LIS texternalsym:$in)>;
+def : Pat<(PPClo texternalsym:$in, 0), (LI texternalsym:$in)>;
+def : Pat<(add i32:$in, (PPChi texternalsym:$g, 0)),
+          (ADDIS $in, texternalsym:$g)>;
+def : Pat<(add i32:$in, (PPClo texternalsym:$g, 0)),
+          (ADDI $in, texternalsym:$g)>;
 
 // Support for thread-local storage.
 def PPC32GOT: PPCEmitTimePseudo<(outs gprc:$rD), (ins), "#PPC32GOT",

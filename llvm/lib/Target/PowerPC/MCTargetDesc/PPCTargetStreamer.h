@@ -30,6 +30,8 @@ public:
   virtual void emitAbiVersion(int AbiVersion){};
   virtual void emitLocalEntry(MCSymbolELF *S, const MCExpr *LocalOffset){};
   virtual void emitDirectiveEndian(bool IsLittleEndian);
+  /// Emit the Windows NT nop that follows a call which may reach import glue.
+  virtual void emitIFGlueNop(const MCSymbol &Callee);
 };
 
 } // end namespace llvm

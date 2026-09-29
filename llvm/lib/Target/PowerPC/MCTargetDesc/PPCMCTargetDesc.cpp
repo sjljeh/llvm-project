@@ -195,6 +195,12 @@ void PPCTargetStreamer::emitDirectiveEndian(bool IsLittleEndian) {
         .setIsLittleEndian(IsLittleEndian);
 }
 
+void PPCTargetStreamer::emitIFGlueNop(const MCSymbol &Callee) {
+  MCContext &Ctx = getContext();
+  const MCExpr *IfGlue = MCSpecifierExpr::create(MCSymbolRefExpr::create(&Callee, Ctx), PPC::S_IFGLUE, Ctx);
+  Streamer.emitValue(MCBinaryExpr::createAdd(IfGlue, MCConstantExpr::create(0x60000000, Ctx), Ctx), 4);
+}
+
 static MCInstrInfo *createPPCMCInstrInfo() {
   MCInstrInfo *X = new MCInstrInfo();
   InitPPCMCInstrInfo(X);
@@ -312,6 +318,12 @@ public:
 
   void emitDirectiveEndian(bool IsLittleEndian) override {
     OS << (IsLittleEndian ? "\t.little_endian\n" : "\t.big_endian\n");
+  }
+
+  void emitIFGlueNop(const MCSymbol &Callee) override {
+    OS << "\t.znop\t";
+    Callee.print(OS, Streamer.getContext().getAsmInfo());
+    OS << '\n';
   }
 };
 

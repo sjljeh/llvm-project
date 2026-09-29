@@ -25,8 +25,11 @@ class SelectionDAG;
 class PPCWin32ABIInfo {
 public:
   static constexpr unsigned WordSize = 4;
-  static constexpr unsigned ReturnSaveOffset = 4;
-  static constexpr unsigned TOCSaveOffset = 8;
+  // Import glue saves the caller's TOC with "stw r2,4(r1)" and the IFGLUE
+  // call-site restore reloads it with "lwz r2,4(r1)", so the callee must keep
+  // the return address out of that header word.
+  static constexpr unsigned TOCSaveOffset = 4;
+  static constexpr unsigned ReturnSaveOffset = 8;
   static constexpr unsigned ParameterAreaOffset = 24;
   static constexpr unsigned MinimumFrameSize = 56;
 

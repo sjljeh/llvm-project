@@ -972,6 +972,22 @@ void PPCAsmPrinter::emitInstruction(const MachineInstr *MI) {
   // Lower multi-instruction pseudo operations.
   switch (MI->getOpcode()) {
   default: break;
+  case PPC::BL_NOP:
+  case PPC::BL_NOP_RM: {
+    if (!Subtarget->isWin32ABI())
+      break;
+    // The nop after a Windows call carries an IFGLUE relocation against the
+    // callee entry point. The linker replaces it with the TOC restore when
+    // the callee resolves to import glue.
+    MCInst TmpInst;
+    LowerPPCMachineInstrToMCInst(MI, TmpInst, *this);
+    TmpInst.setOpcode(PPC::BL);
+    EmitToStreamer(*OutStreamer, TmpInst);
+    const auto *Callee = dyn_cast<MCSymbolRefExpr>(TmpInst.getOperand(0).getExpr());
+    assert(Callee && "expected a symbolic Windows call target");
+    static_cast<PPCTargetStreamer *>(OutStreamer->getTargetStreamer())->emitIFGlueNop(Callee->getSymbol());
+    return;
+  }
   case PPC::SEH_PrologEnd:
     OutStreamer->emitWinCFIEndProlog();
     return;

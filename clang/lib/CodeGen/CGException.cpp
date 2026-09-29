@@ -2132,10 +2132,11 @@ void CodeGenFunction::EmitCapturedLocals(CodeGenFunction &ParentCGF,
         Builder.CreateCall(ReadRegister, {RegNameValue}, "seh.entryfp");
     PPCEntryFP = Builder.CreateIntToPtr(EntryFPInt, Int8PtrTy);
 
-    llvm::Value *TOCAddr =
-        Builder.CreateConstInBoundsGEP1_32(Int8Ty, PPCEntryFP, 8);
-    llvm::Value *TOC =
-        Builder.CreateAlignedLoad(Int32Ty, TOCAddr, getIntAlign());
+    // The incoming r2 is not a TOC. The filter belongs to the parent's image,
+    // so materialize that image's TOC directly. The TOC save word of the
+    // parent's frame header, 4(entry SP), belongs to import glue: it holds the
+    // caller's TOC when the parent was reached from another image.
+    llvm::Value *TOC = Builder.CreatePtrToInt(CGM.CreateRuntimeVariable(Int8Ty, ".toc"), Int32Ty);
     llvm::Function *WriteRegister =
         CGM.getIntrinsic(llvm::Intrinsic::write_register, Int32Ty);
     Builder.CreateCall(WriteRegister, {RegNameValue, TOC});
@@ -2160,8 +2161,8 @@ void CodeGenFunction::EmitCapturedLocals(CodeGenFunction &ParentCGF,
         {Builder.getInt32(1)});
   } else if (PPCEntryFP) {
     // The NT PowerPC dispatcher passes the establisher's incoming stack
-    // pointer in r2. The filter entry restores the parent's TOC from that
-    // frame before evaluating an expression that can call arbitrary code.
+    // pointer in r2. The filter entry has already replaced r2 with its TOC
+    // before evaluating an expression that can call arbitrary code.
     EntryFP = PPCEntryFP;
   } else {
     // Otherwise, for x64 and 32-bit finally functions, the parent FP is the

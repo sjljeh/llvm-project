@@ -36,13 +36,15 @@ int seh_finally(volatile int *p) {
 // IR: %{{.*}} = zext i8 %{{.*}} to i32
 // IR: call void @consume(
 
-// The parent save and table format follow NT4 PowerPC. The unwind path enters
-// a real PPC funclet, which derives the parent frame from r2 and restores the
-// parent TOC before calling the outlined body.
+// The table format follows NT4 PowerPC. The parent leaves the TOC word of its
+// caller's frame header to import glue. The unwind path enters a real PPC
+// funclet, which derives the parent frame from r2 and materializes its image's
+// TOC before calling the outlined body.
 // ASM-LABEL: ..seh_finally:
 // ASM: .seh_handler __C_specific_handler, @unwind, @except
-// ASM: stw 2, 8(1)
+// ASM-NOT: stw 2,
 // ASM: stwu 1, -80(1)
+// ASM: stw 0, 88(1)
 // ASM: mr 31, 1
 // ASM: .seh_endprologue
 // ASM: .Lseh_finally$frame_escape_0 = 68
@@ -53,7 +55,8 @@ int seh_finally(volatile int *p) {
 // ASM-LABEL: "?dtor$
 // ASM: stwu 1, -80(1)
 // ASM: addi 31, 2, -80
-// ASM-NEXT: lwz 2, 8(2)
+// ASM-NEXT: lis 2, .toc@ha
+// ASM-NEXT: addi 2, 2, .toc@l
 // ASM-NEXT: .seh_endprologue
 // ASM: mr 4, 31
 // ASM: bl "..?fin$0@0@seh_finally@@"
