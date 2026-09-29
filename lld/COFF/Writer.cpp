@@ -278,6 +278,8 @@ private:
   OutputSection *findSection(StringRef name);
   void addBaserels();
   void addBaserelBlocks(std::vector<Baserel> &v);
+  bool hasAbsolutePdata() const;
+  void orderAbsolutePdata(OutputSection *sec, std::vector<Baserel> &v);
   void createDynamicRelocs();
 
   uint32_t getSizeOfInitializedData();
@@ -353,6 +355,10 @@ private:
 
   // x86_64 .pdata sections on ARM64EC/ARM64X targets.
   ChunkRange hybridPdata;
+
+  // Sorted order of .pdata entries that hold absolute addresses (new index to
+  // original index), fixed while base relocations are collected.
+  std::vector<uint32_t> pdataOrder;
 
   // CHPE metadata symbol on ARM64C target.
   DefinedRegular *chpeSym = nullptr;
@@ -3060,7 +3066,18 @@ void Writer::sortExceptionTables() {
   case IMAGE_FILE_MACHINE_ALPHA:
   case IMAGE_FILE_MACHINE_ALPHA64:
   case IMAGE_FILE_MACHINE_R4000:
-    sortExceptionTable<EntryRISC>(pdata);
+    if (pdataOrder.empty()) {
+      sortExceptionTable<EntryRISC>(pdata);
+      break;
+    }
+    {
+      // Apply the order the base relocations were laid out for.
+      OutputSection *os = ctx.getOutputSection(pdata.first);
+      auto *entries = reinterpret_cast<EntryRISC *>(buffer->getBufferStart() + os->getFileOff() + pdata.first->getRVA() - os->getRVA());
+      std::vector<EntryRISC> original(entries, entries + pdataOrder.size());
+      for (size_t i = 0, e = pdataOrder.size(); i != e; ++i)
+        entries[i] = original[pdataOrder[i]];
+    }
     break;
   case RISCV64:
     sortRISCV64ExceptionTable(pdata);
@@ -3148,6 +3165,8 @@ void Writer::addBaserels() {
     // Collect all locations for base relocations.
     for (Chunk *c : sec->chunks)
       c->getBaserels(&v);
+    if (hasAbsolutePdata() && pdata.first && llvm::is_contained(sec->chunks, pdata.first))
+      orderAbsolutePdata(sec, v);
     // Add the addresses to .reloc section.
     if (!v.empty())
       addBaserelBlocks(v);
@@ -3155,13 +3174,82 @@ void Writer::addBaserels() {
   }
 }
 
+// PowerPC, Alpha and MIPS function table entries hold absolute addresses, so
+// every nonzero field carries a base relocation. Sorting the table moves the
+// fields; the relocations have to move with them.
+bool Writer::hasAbsolutePdata() const {
+  switch (ctx.config.machine) {
+  case IMAGE_FILE_MACHINE_POWERPC:
+  case IMAGE_FILE_MACHINE_ALPHA:
+  case IMAGE_FILE_MACHINE_ALPHA64:
+  case IMAGE_FILE_MACHINE_R4000:
+    return true;
+  default:
+    return false;
+  }
+}
+
+// Fix the sorted order of the function table from the relocated begin
+// addresses and move the table's base relocations to the sorted positions.
+// sortExceptionTables applies the same order to the written table.
+void Writer::orderAbsolutePdata(OutputSection *sec, std::vector<Baserel> &v) {
+  const uint32_t entrySize = 20;
+  uint32_t begin = pdata.first->getRVA();
+  uint32_t end = pdata.last->getRVA() + pdata.last->getSize();
+  if ((end - begin) % entrySize != 0)
+    return;
+
+  // Begin addresses as sortExceptionTable would read them after relocation.
+  uint32_t count = (end - begin) / entrySize;
+  std::vector<std::pair<uint32_t, uint32_t>> keys(count);
+  for (uint32_t i = 0; i != count; ++i)
+    keys[i] = {0, i};
+  bool inRange = false;
+  for (Chunk *c : sec->chunks) {
+    if (c == pdata.first)
+      inRange = true;
+    if (!inRange)
+      continue;
+    auto *sc = dyn_cast<SectionChunk>(c);
+    if (!sc)
+      return;
+    ArrayRef<uint8_t> contents = sc->getContents();
+    if ((sc->getRVA() - begin) % entrySize != 0 || contents.size() % entrySize != 0)
+      return;
+    uint32_t base = (sc->getRVA() - begin) / entrySize;
+    for (uint32_t off = 0; off + entrySize <= contents.size(); off += entrySize)
+      keys[base + off / entrySize].first = read32le(contents.data() + off);
+    for (const coff_relocation &rel : sc->getRelocs()) {
+      if (rel.VirtualAddress % entrySize != 0 || rel.VirtualAddress + 4 > contents.size())
+        continue;
+      auto *target = dyn_cast_or_null<Defined>(sc->file->getSymbol(rel.SymbolTableIndex));
+      if (!target || isa<DefinedAbsolute>(target))
+        continue;
+      keys[base + rel.VirtualAddress / entrySize].first = uint32_t(ctx.config.imageBase + target->getRVA() + read32le(contents.data() + rel.VirtualAddress));
+    }
+    if (c == pdata.last)
+      break;
+  }
+
+  llvm::stable_sort(keys, [](const auto &a, const auto &b) { return a.first < b.first; });
+  std::vector<uint32_t> position(count);
+  pdataOrder.resize(count);
+  for (uint32_t i = 0; i != count; ++i) {
+    pdataOrder[i] = keys[i].second;
+    position[keys[i].second] = i;
+  }
+  for (Baserel &r : v)
+    if (r.rva >= begin && r.rva < end)
+      r.rva = begin + position[(r.rva - begin) / entrySize] * entrySize + (r.rva - begin) % entrySize;
+}
+
 // Add addresses to .reloc section. Note that addresses are grouped by page.
 void Writer::addBaserelBlocks(std::vector<Baserel> &v) {
   const uint32_t mask = ~uint32_t(pageSize - 1);
-  uint32_t page = v[0].rva & mask;
-  size_t i = 0, j = 1;
   llvm::sort(v,
              [](const Baserel &x, const Baserel &y) { return x.rva < y.rva; });
+  uint32_t page = v[0].rva & mask;
+  size_t i = 0, j = 1;
   for (size_t e = v.size(); j < e; ++j) {
     uint32_t p = v[j].rva & mask;
     if (p == page)

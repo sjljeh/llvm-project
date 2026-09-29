@@ -1,0 +1,114 @@
+# Copyright (c) 2026 Ahmed ARIF
+
+# REQUIRES: ppc
+# RUN: split-file %s %t
+# RUN: llvm-mc -triple=powerpcle-pc-windows -filetype=obj %t/main.s -o %t/main.obj
+# RUN: lld-link /machine:ppc /entry:funca /subsystem:native /nodefaultlib /out:%t.exe %t/main.obj
+# RUN: llvm-objdump -s -j .pdata %t.exe | FileCheck %s --check-prefix=PDATA
+# RUN: llvm-readobj --coff-basereloc %t.exe | FileCheck %s --check-prefix=RELOC
+# RUN: llvm-mc -triple=powerpcle-pc-windows -filetype=obj %t/pages.s -o %t/pages.obj
+# RUN: lld-link /machine:ppc /entry:funca /subsystem:native /nodefaultlib /out:%t.pages.exe %t/pages.obj
+# RUN: llvm-objdump -s -j .pdata %t.pages.exe | FileCheck %s --check-prefix=PAGES-PDATA
+# RUN: llvm-readobj --coff-basereloc %t.pages.exe | FileCheck %s --check-prefix=PAGES --implicit-check-not="Type: {{[^H]}}" --implicit-check-not="Address: 0x3008"
+
+# PowerPC function table entries hold absolute addresses. The table is sorted
+# by begin address after it is written, so its base relocations must follow the
+# sorted entries: funcb's entry comes first in the object but second in the
+# image, and only funcb has an exception handler.
+
+# PDATA:      403000 00104000 04104000 00000000 00000000
+# PDATA-NEXT: 403010 00104000 04104000 08104000 00204000
+# PDATA-NEXT: 403020 00000000 04104000
+
+# RELOC:      Address: 0x3000
+# RELOC:      Address: 0x3004
+# RELOC:      Address: 0x3010
+# RELOC:      Address: 0x3014
+# RELOC:      Address: 0x3018
+# RELOC:      Address: 0x301C
+# RELOC:      Address: 0x3024
+# RELOC-NOT:  Address: 0x3008
+# RELOC-NOT:  Address: 0x300C
+
+# In a table spanning two pages, the first object entry sorts to the second
+# page; the relocation blocks still have to start with the first page.
+
+# PAGES-PDATA: 404060 00000000 44134000 48134000 4c134000
+# PAGES-PDATA-NEXT: 404070 00204000 00000000 48134000
+
+# PAGES:      Address: 0x2000
+# PAGES:      Address: 0x2008
+# PAGES:      Address: 0x3000
+# PAGES:      Address: 0x3004
+# PAGES:      Address: 0x3010
+# PAGES:      Address: 0x4068
+# PAGES:      Address: 0x406C
+# PAGES:      Address: 0x4070
+# PAGES:      Address: 0x4078
+
+#--- main.s
+    .section .text$b,"xr"
+    .globl ..funcb
+    .p2align 2
+    .seh_proc ..funcb
+..funcb:
+    .seh_handler handler, @except
+    .seh_endprologue
+    blr
+    .seh_endproc
+
+    .section .text$a,"xr"
+    .globl ..funca
+    .p2align 2
+    .seh_proc ..funca
+..funca:
+    .seh_endprologue
+    blr
+    .seh_endproc
+
+    .section .rdata,"dr"
+    .globl handler
+    .p2align 2
+handler:
+    .long ..funca, 0
+    .globl funca
+funca:
+    .long ..funca, 0
+
+#--- pages.s
+    .altmacro
+    .macro fn n
+    .globl ..f\n
+    .p2align 2
+    .seh_proc ..f\n
+..f\n:
+    .seh_endprologue
+    blr
+    .seh_endproc
+    .endm
+
+    .section .text$b,"xr"
+    .globl ..funcb
+    .p2align 2
+    .seh_proc ..funcb
+..funcb:
+    .seh_handler handler, @except
+    .seh_endprologue
+    blr
+    .seh_endproc
+
+    .section .text$a,"xr"
+    .set i, 0
+    .rept 210
+    fn %i
+    .set i, i+1
+    .endr
+
+    .section .rdata,"dr"
+    .globl handler
+    .p2align 2
+handler:
+    .long ..f0, 0
+    .globl funca
+funca:
+    .long ..f0, 0
