@@ -966,6 +966,9 @@ set(powerpc_SOURCES ${GENERIC_SOURCES})
 
 set(powerpcspe_SOURCES ${GENERIC_SOURCES})
 
+# Windows NT PowerPC (little-endian, 32-bit PE/COFF).
+set(powerpcle_SOURCES ${GENERIC_SOURCES})
+
 set(powerpc64_SOURCES
   ppc/divtc3.c
   ppc/fixtfdi.c
