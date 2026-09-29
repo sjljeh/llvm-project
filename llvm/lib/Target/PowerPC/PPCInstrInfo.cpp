@@ -3094,6 +3094,8 @@ PPCInstrInfo::getSerializableDirectMachineOperandTargetFlags() const {
       {MO_TPREL_PCREL_FLAG, "ppc-tprel-pcrel"},
       {MO_TLS_PCREL_FLAG, "ppc-tls-pcrel"},
       {MO_GOT_PCREL_FLAG, "ppc-got-pcrel"},
+      {MO_SECREL_LO, "ppc-secrel-lo"},
+      {MO_SECREL_HA, "ppc-secrel-ha"},
   };
   return ArrayRef(TargetFlags);
 }

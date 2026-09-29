@@ -101,6 +101,10 @@ unsigned PPCWinCOFFObjectWriter::getRelocType(
       return COFF::IMAGE_REL_PPC_REFLO;
     case PPC::S_HA:
       return COFF::IMAGE_REL_PPC_REFHI;
+    case PPC::S_SECREL_HA:
+      return COFF::IMAGE_REL_PPC_SECRELHI;
+    case PPC::S_SECREL_LO:
+      return COFF::IMAGE_REL_PPC_SECRELLO;
     case PPC::S_TOC:
       return COFF::IMAGE_REL_PPC_TOCREL16;
     }

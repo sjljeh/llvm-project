@@ -205,6 +205,12 @@ static MCOperand GetSymbolRef(unsigned MIOpcode, const MachineOperand &MO,
     case PPCII::MO_PIC_HA_FLAG:
       Expr = MCSpecifierExpr::create(Expr, PPC::S_HA, Ctx);
       break;
+    case PPCII::MO_SECREL_LO:
+      Expr = MCSpecifierExpr::create(Expr, PPC::S_SECREL_LO, Ctx);
+      break;
+    case PPCII::MO_SECREL_HA:
+      Expr = MCSpecifierExpr::create(Expr, PPC::S_SECREL_HA, Ctx);
+      break;
   }
 
   return MCOperand::createExpr(Expr);

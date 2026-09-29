@@ -3246,7 +3246,37 @@ SDValue PPCTargetLowering::LowerGlobalTLSAddress(SDValue Op,
   if (Subtarget.isAIXABI())
     return LowerGlobalTLSAddressAIX(Op, DAG);
 
+  if (Subtarget.isWin32ABI())
+    return LowerGlobalTLSAddressWindows(Op, DAG);
+
   return LowerGlobalTLSAddressLinux(Op, DAG);
+}
+
+SDValue PPCTargetLowering::LowerGlobalTLSAddressWindows(SDValue Op, SelectionDAG &DAG) const {
+  // Windows NT keeps the TEB in r13. TEB->ThreadLocalStoragePointer at offset
+  // 0x2C holds the per-image TLS blocks, indexed by the loader-assigned
+  // _tls_index. The variable lives at its .tls section offset in that block.
+  GlobalAddressSDNode *GA = cast<GlobalAddressSDNode>(Op);
+  const GlobalValue *GV = GA->getGlobal();
+  SDLoc DL(GA);
+  EVT PtrVT = getPointerTy(DAG.getDataLayout());
+  SDValue Chain = DAG.getEntryNode();
+
+  SDValue TEB = DAG.getRegister(PPC::R13, PtrVT);
+  SDValue TLSArrayAddr = DAG.getNode(ISD::ADD, DL, PtrVT, TEB, DAG.getConstant(0x2C, DL, PtrVT));
+  SDValue TLSArray = DAG.getLoad(PtrVT, DL, Chain, TLSArrayAddr, MachinePointerInfo());
+
+  SDValue IndexHi = DAG.getTargetExternalSymbol("_tls_index", PtrVT, PPCII::MO_HA);
+  SDValue IndexLo = DAG.getTargetExternalSymbol("_tls_index", PtrVT, PPCII::MO_LO);
+  SDValue IndexAddr = LowerLabelRef(IndexHi, IndexLo, false, DAG);
+  SDValue Index = DAG.getLoad(MVT::i32, DL, Chain, IndexAddr, MachinePointerInfo());
+  SDValue Slot = DAG.getNode(ISD::SHL, DL, PtrVT, Index, DAG.getConstant(2, DL, PtrVT));
+  SDValue TLSBlock = DAG.getLoad(PtrVT, DL, Chain, DAG.getNode(ISD::ADD, DL, PtrVT, TLSArray, Slot), MachinePointerInfo());
+
+  SDValue OffsetHi = DAG.getTargetGlobalAddress(GV, DL, PtrVT, GA->getOffset(), PPCII::MO_SECREL_HA);
+  SDValue OffsetLo = DAG.getTargetGlobalAddress(GV, DL, PtrVT, GA->getOffset(), PPCII::MO_SECREL_LO);
+  SDValue Offset = LowerLabelRef(OffsetHi, OffsetLo, false, DAG);
+  return DAG.getNode(ISD::ADD, DL, PtrVT, TLSBlock, Offset);
 }
 
 /// updateForAIXShLibTLSModelOpt - Helper to initialize TLS model opt settings,
