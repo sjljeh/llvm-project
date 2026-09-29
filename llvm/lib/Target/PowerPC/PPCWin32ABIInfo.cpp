@@ -62,13 +62,20 @@ unsigned PPCWin32ABIInfo::ensureMinimumFrameSize(unsigned Size) {
 
 bool PPCWin32ABIInfo::assignArgument(unsigned ValNo, MVT ValVT, MVT LocVT,
                                      CCValAssign::LocInfo LocInfo,
-                                     ISD::ArgFlagsTy, Type *, CCState &State) {
+                                     ISD::ArgFlagsTy ArgFlags, Type *,
+                                     CCState &State) {
   ArrayRef<MCPhysReg> GPRs = getArgumentGPRs();
 
   if (LocVT == MVT::i1) {
     LocVT = MVT::i32;
     LocInfo = CCValAssign::ZExt;
   }
+
+  // An eight-byte value split into words (an __int64 in a GPR pair) starts at
+  // an eight-byte parameter offset, i.e. an odd register. Clang pads named
+  // arguments itself; variadic arguments and libcalls rely on this.
+  if (ArgFlags.isSplit() && ArgFlags.getNonZeroOrigAlign() >= Align(8))
+    State.AllocateStack(0, Align(8));
 
   unsigned Size = getArgumentSlotSize(LocVT);
   unsigned Offset = State.AllocateStack(Size, getArgumentStackAlignment(LocVT));
