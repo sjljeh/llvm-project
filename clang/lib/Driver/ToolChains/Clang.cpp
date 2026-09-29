@@ -3827,9 +3827,9 @@ static void RenderSCPOptions(const ToolChain &TC, const ArgList &Args,
   const llvm::Triple &EffectiveTriple = TC.getEffectiveTriple();
 
   if (EffectiveTriple.isOSWindows() &&
-      EffectiveTriple.getArch() == llvm::Triple::riscv64) {
+      (EffectiveTriple.getArch() == llvm::Triple::riscv64 || EffectiveTriple.getArch() == llvm::Triple::ppcle)) {
     // Windows guard pages require every page of a growing stack to be touched.
-    // RISC-V uses inline probes instead of the __chkstk calling convention.
+    // RISC-V and PowerPC use inline probes instead of a __chkstk helper.
     bool Enable = Args.hasFlag(options::OPT_fstack_clash_protection,
                                options::OPT_fno_stack_clash_protection, true);
     Enable &= Args.hasFlag(options::OPT_mstack_arg_probe,

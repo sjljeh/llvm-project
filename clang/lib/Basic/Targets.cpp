@@ -417,6 +417,8 @@ std::unique_ptr<TargetInfo> AllocateTarget(const llvm::Triple &Triple,
     case llvm::Triple::FreeBSD:
       return std::make_unique<FreeBSDTargetInfo<PPC32TargetInfo>>(Triple, Opts);
     case llvm::Triple::Win32:
+      if (Triple.getEnvironment() == llvm::Triple::GNU)
+        return std::make_unique<MinGWPPC32TargetInfo>(Triple, Opts);
       return std::make_unique<MicrosoftPPC32TargetInfo>(Triple, Opts);
     default:
       return std::make_unique<PPC32TargetInfo>(Triple, Opts);
