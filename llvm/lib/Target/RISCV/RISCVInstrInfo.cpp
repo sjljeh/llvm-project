@@ -29,6 +29,7 @@
 #include "llvm/CodeGen/RegisterScavenging.h"
 #include "llvm/CodeGen/StackMaps.h"
 #include "llvm/IR/DebugInfoMetadata.h"
+#include "llvm/IR/EHPersonalities.h"
 #include "llvm/IR/Module.h"
 #include "llvm/MC/MCDwarf.h"
 #include "llvm/MC/MCInstBuilder.h"
@@ -2109,6 +2110,18 @@ RISCVInstrInfo::optimizeSelect(MachineInstr &MI,
 }
 
 unsigned RISCVInstrInfo::getInstSizeInBytes(const MachineInstr &MI) const {
+  // With asynchronous Windows EH, AsmPrinter pads an EH_LABEL with a nop when
+  // the next instruction may trap. Keep this in sync with the EH_LABEL case
+  // in AsmPrinter::emitFunctionBody.
+  if (MI.getOpcode() == TargetOpcode::EH_LABEL && MI.getParent() &&
+      MI.getParent()->getParent() &&
+      usesAsynchronousEH(MI.getParent()->getParent()->getFunction())) {
+    auto Next = std::next(MI.getIterator());
+    if (Next != MI.getParent()->end() &&
+        (Next->mayLoadOrStore() || Next->mayRaiseFPException()))
+      return STI.hasStdExtZca() ? 2 : 4;
+  }
+
   if (MI.isMetaInstruction())
     return 0;
 
