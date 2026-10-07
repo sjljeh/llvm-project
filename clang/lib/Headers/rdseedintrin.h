@@ -38,7 +38,7 @@
 /// \param __p
 ///    Pointer to memory for storing the 16-bit random number.
 /// \returns 1 if a random number was generated, 0 if not.
-#if defined(_MSC_VER) && __has_builtin(_rdseed16_step)
+#if defined(_WIN32) && __has_builtin(_rdseed16_step)
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -75,7 +75,7 @@ _rdseed16_step(unsigned short *__p)
 /// \param __p
 ///    Pointer to memory for storing the 32-bit random number.
 /// \returns 1 if a random number was generated, 0 if not.
-#if defined(_MSC_VER) && __has_builtin(_rdseed32_step)
+#if defined(_WIN32) && __has_builtin(_rdseed32_step)
 #ifdef __cplusplus
 extern "C" {
 #endif

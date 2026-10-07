@@ -32,7 +32,7 @@
 /// \param __p
 ///    A pointer to a 512-byte memory region. The beginning of this memory
 ///    region should be aligned on a 16-byte boundary.
-#if defined(_MSC_VER) && __has_builtin(_fxsave)
+#if defined(_WIN32) && __has_builtin(_fxsave)
 __FXSR_EXTERN_C void __cdecl _fxsave(void *__p);
 #else
 static __inline__ void __DEFAULT_FN_ATTRS
@@ -54,7 +54,7 @@ _fxsave(void *__p)
 /// \param __p
 ///    A pointer to a 512-byte memory region. The beginning of this memory
 ///    region should be aligned on a 16-byte boundary.
-#if defined(_MSC_VER) && __has_builtin(_fxrstor)
+#if defined(_WIN32) && __has_builtin(_fxrstor)
 __FXSR_EXTERN_C void __cdecl _fxrstor(void const *__p);
 #else
 static __inline__ void __DEFAULT_FN_ATTRS
@@ -75,7 +75,7 @@ _fxrstor(void *__p)
 /// \param __p
 ///    A pointer to a 512-byte memory region. The beginning of this memory
 ///    region should be aligned on a 16-byte boundary.
-#if defined(_MSC_VER) && __has_builtin(_fxsave64)
+#if defined(_WIN32) && __has_builtin(_fxsave64)
 __FXSR_EXTERN_C void __cdecl _fxsave64(void *__p);
 #else
 static __inline__ void __DEFAULT_FN_ATTRS
@@ -97,7 +97,7 @@ _fxsave64(void *__p)
 /// \param __p
 ///    A pointer to a 512-byte memory region. The beginning of this memory
 ///    region should be aligned on a 16-byte boundary.
-#if defined(_MSC_VER) && __has_builtin(_fxrstor64)
+#if defined(_WIN32) && __has_builtin(_fxrstor64)
 __FXSR_EXTERN_C void __cdecl _fxrstor64(void const *__p);
 #else
 static __inline__ void __DEFAULT_FN_ATTRS

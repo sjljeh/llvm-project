@@ -27,7 +27,7 @@
 #define __XSAVE_EXTERN_C
 #endif
 
-#if defined(_MSC_VER) && __has_builtin(_xsave)
+#if defined(_WIN32) && __has_builtin(_xsave)
 __XSAVE_EXTERN_C void __cdecl _xsave(void *__p, unsigned __int64 __m);
 #else
 static __inline__ void __DEFAULT_FN_ATTRS
@@ -36,7 +36,7 @@ _xsave(void *__p, unsigned long long __m) {
 }
 #endif
 
-#if defined(_MSC_VER) && __has_builtin(_xrstor)
+#if defined(_WIN32) && __has_builtin(_xrstor)
 __XSAVE_EXTERN_C void __cdecl _xrstor(void const *__p, unsigned __int64 __m);
 #else
 static __inline__ void __DEFAULT_FN_ATTRS
@@ -60,7 +60,7 @@ void __cdecl _xsetbv(unsigned int, unsigned __int64);
 #endif /* _MSC_VER */
 
 #ifdef __x86_64__
-#if defined(_MSC_VER) && __has_builtin(_xsave64)
+#if defined(_WIN32) && __has_builtin(_xsave64)
 __XSAVE_EXTERN_C void __cdecl _xsave64(void *__p, unsigned __int64 __m);
 #else
 static __inline__ void __DEFAULT_FN_ATTRS
@@ -69,7 +69,7 @@ _xsave64(void *__p, unsigned long long __m) {
 }
 #endif
 
-#if defined(_MSC_VER) && __has_builtin(_xrstor64)
+#if defined(_WIN32) && __has_builtin(_xrstor64)
 __XSAVE_EXTERN_C void __cdecl _xrstor64(void const *__p,
                                         unsigned __int64 __m);
 #else

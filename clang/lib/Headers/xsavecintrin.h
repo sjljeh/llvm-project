@@ -48,7 +48,7 @@
 ///    Pointer to the save area; must be 64-byte aligned.
 /// \param __m
 ///    A 64-bit mask indicating what state should be saved.
-#if defined(_MSC_VER) && __has_builtin(_xsavec)
+#if defined(_WIN32) && __has_builtin(_xsavec)
 __XSAVEC_EXTERN_C void __cdecl _xsavec(void *__p, unsigned __int64 __m);
 #else
 static __inline__ void __DEFAULT_FN_ATTRS
@@ -83,7 +83,7 @@ _xsavec(void *__p, unsigned long long __m) {
 ///    Pointer to the save area; must be 64-byte aligned.
 /// \param __m
 ///    A 64-bit mask indicating what state should be saved.
-#if defined(_MSC_VER) && __has_builtin(_xsavec64)
+#if defined(_WIN32) && __has_builtin(_xsavec64)
 __XSAVEC_EXTERN_C void __cdecl _xsavec64(void *__p, unsigned __int64 __m);
 #else
 static __inline__ void __DEFAULT_FN_ATTRS
