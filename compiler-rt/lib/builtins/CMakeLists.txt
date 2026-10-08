@@ -340,13 +340,19 @@ option(COMPILER_RT_EXCLUDE_LIBC_PROVIDED_ARM_AEABI_BUILTINS
   "Skip the standard C library provided arm aeabi builtins from compiler-rt)"
   Off)
 
+option(COMPILER_RT_EXCLUDE_EMUTLS
+  "Skip the emulated TLS runtime, for targets that never use emulated TLS"
+  Off)
+
 if(NOT FUCHSIA AND NOT COMPILER_RT_BAREMETAL_BUILD AND NOT COMPILER_RT_GPU_BUILD)
   set(GENERIC_SOURCES
     ${GENERIC_SOURCES}
-    emutls.c
     enable_execute_stack.c
     eprintf.c
   )
+  if(NOT COMPILER_RT_EXCLUDE_EMUTLS)
+    list(APPEND GENERIC_SOURCES emutls.c)
+  endif()
 endif()
 
 option(COMPILER_RT_LIBATOMIC_USE_PTHREAD
