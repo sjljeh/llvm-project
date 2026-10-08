@@ -1222,13 +1222,15 @@ static bool isSignedCharDefault(const llvm::Triple &Triple) {
       return true;
     return false;
 
+  case llvm::Triple::ppcle:
+  case llvm::Triple::riscv32:
+  case llvm::Triple::riscv64:
+    return Triple.isOSWindows();
+
   case llvm::Triple::csky:
   case llvm::Triple::hexagon:
   case llvm::Triple::msp430:
-  case llvm::Triple::ppcle:
   case llvm::Triple::ppc64le:
-  case llvm::Triple::riscv32:
-  case llvm::Triple::riscv64:
   case llvm::Triple::riscv32be:
   case llvm::Triple::riscv64be:
   case llvm::Triple::systemz:
