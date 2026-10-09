@@ -551,6 +551,18 @@ public:
                             .Default("601");
     Builder.defineMacro("_M_PPC", PPCArch);
   }
+
+  CallingConvCheckResult checkCallingConvention(CallingConv CC) const override {
+    switch (CC) {
+    case CC_X86StdCall:
+    case CC_X86ThisCall:
+    case CC_X86FastCall:
+    case CC_X86VectorCall:
+      return CCCR_Ignore;
+    default:
+      return WindowsTargetInfo<PPC32TargetInfo>::checkCallingConvention(CC);
+    }
+  }
 };
 
 class LLVM_LIBRARY_VISIBILITY MicrosoftPPC32TargetInfo
