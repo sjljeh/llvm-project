@@ -1508,6 +1508,8 @@ PPCTargetLowering::PPCTargetLowering(const PPCTargetMachine &TM,
   setMinFunctionAlignment(Align(4));
   setMinCmpXchgSizeInBits(Subtarget.hasPartwordAtomics() ? 8 : 32);
 
+  setMaxDivRemBitWidthSupported(Subtarget.isPPC64() ? 128 : 64);
+
   auto CPUDirective = Subtarget.getCPUDirective();
   switch (CPUDirective) {
   default: break;
