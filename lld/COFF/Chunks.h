@@ -586,9 +586,9 @@ static const uint8_t importThunkARM64[] = {
 };
 
 static const uint8_t importThunkRISCV[] = {
-    0x97, 0x02, 0x00, 0x00, // auipc t0, 0
-    0x83, 0xb2, 0x02, 0x00, // ld    t0, 0(t0)   (lw on riscv32)
-    0x67, 0x80, 0x02, 0x00, // jalr  zero, 0(t0)
+    0x17, 0x0e, 0x00, 0x00, // auipc t3, 0
+    0x03, 0x3e, 0x0e, 0x00, // ld    t3, 0(t3)   (lw on riscv32)
+    0x67, 0x00, 0x0e, 0x00, // jalr  zero, 0(t3)
 };
 
 // Windows NT PowerPC import glue. Callers branch to "..name" and follow the

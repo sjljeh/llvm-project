@@ -1967,7 +1967,7 @@ void ImportThunkChunkRISCV::writeTo(uint8_t *buf) const {
   memcpy(buf, importThunkRISCV, sizeof(importThunkRISCV));
   // The 32-bit thunk loads the IAT slot with LW instead of LD.
   if (machine == RISCV32)
-    write32le(buf + 4, 0x0002a283);
+    write32le(buf + 4, 0x000e2e03);
   int64_t offset = int64_t(impSymbol->getRVA()) - int64_t(rva);
   applyRISCVPCRelPair(buf, offset, "import thunk for " + impSymbol->getName());
 }
