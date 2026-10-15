@@ -407,6 +407,21 @@ static const uint8_t tailMergeARM64[] = {
     0x00, 0x02, 0x1f, 0xd6, // br      x16
 };
 
+// See
+// https://learn.microsoft.com/en-us/cpp/build/arm64-exception-handling#xdata-records
+static const uint8_t tailMergeUnwindInfoARM64[] = {
+    0x1d, 0x00, 0x40, 0x30, // FunctionLength=29, EpilogCount=1, CodeWords=6
+    0x12, 0x00, 0x00, 0x03, // Epilog at instruction 18, codes at index 12
+    0xe3, 0xe3, 0xe3, 0xe3, // nop x4 (stp q6..q0)
+    0xe3, 0xe3, 0xe3, 0xe3, // nop x4 (str x8, stp x6..x2)
+    0xe3, 0xe1, 0x9b, 0xe4, // nop (stp x0, x1), set_fp, save_fplr_x #224, end
+    0xe3, 0xe3, 0xe3, 0xe3, // nop x4 (ldp q6..q0)
+    0xe3, 0xe3, 0xe3, 0xe3, // nop x4 (ldr x8, ldp x6..x2)
+    0xe3, 0x9b, 0xe4, 0xe3, // nop (ldp x0, x1), save_fplr_x #224, end, padding
+};
+static_assert(sizeof(tailMergeARM64) == 29 * 4,
+              "tailMergeUnwindInfoARM64 describes 29 instructions");
+
 // A chunk for the delay import thunk.
 class ThunkChunkX64 : public NonSectionCodeChunk {
 public:
@@ -624,6 +639,38 @@ public:
 
   Chunk *desc = nullptr;
   Defined *helper = nullptr;
+};
+
+class TailMergePDataChunkARM64 : public NonSectionChunk {
+public:
+  TailMergePDataChunkARM64(Chunk *tm, Chunk *unwind) : tm(tm), unwind(unwind) {
+    // See
+    // https://learn.microsoft.com/en-us/cpp/build/arm64-exception-handling#pdata-records
+    setAlignment(4);
+  }
+
+  size_t getSize() const override { return 2 * sizeof(uint32_t); }
+  MachineTypes getMachine() const override { return ARM64; }
+
+  void writeTo(uint8_t *buf) const override {
+    write32le(buf + 0, tm->getRVA());     // TailMergeChunk start RVA
+    write32le(buf + 4, unwind->getRVA()); // UnwindInfo RVA
+  }
+
+  Chunk *tm = nullptr;
+  Chunk *unwind = nullptr;
+};
+
+class TailMergeUnwindInfoARM64 : public NonSectionChunk {
+public:
+  TailMergeUnwindInfoARM64() { setAlignment(4); }
+
+  size_t getSize() const override { return sizeof(tailMergeUnwindInfoARM64); }
+  MachineTypes getMachine() const override { return ARM64; }
+
+  void writeTo(uint8_t *buf) const override {
+    memcpy(buf, tailMergeUnwindInfoARM64, sizeof(tailMergeUnwindInfoARM64));
+  }
 };
 
 class ThunkChunkRISCV64 : public NonSectionCodeChunk {
@@ -1283,6 +1330,10 @@ Chunk *DelayLoadContents::newTailMergePDataChunk(SymbolTable &symtab,
     if (!symtab.tailMergeUnwindInfoChunk)
       symtab.tailMergeUnwindInfoChunk = make<TailMergeUnwindInfoX64>();
     return make<TailMergePDataChunkX64>(tm, symtab.tailMergeUnwindInfoChunk);
+  case ARM64:
+    if (!symtab.tailMergeUnwindInfoChunk)
+      symtab.tailMergeUnwindInfoChunk = make<TailMergeUnwindInfoARM64>();
+    return make<TailMergePDataChunkARM64>(tm, symtab.tailMergeUnwindInfoChunk);
     // FIXME: Add support for other architectures.
   default:
     return nullptr; // Just don't generate unwind info.

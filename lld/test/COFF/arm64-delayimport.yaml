@@ -4,6 +4,7 @@
 # RUN: lld-link /entry:main /subsystem:console /out:%t.exe %t.obj %p/Inputs/library-arm64.lib /alternatename:__delayLoadHelper2=main /delayload:library.dll
 # RUN: llvm-objdump --no-print-imm-hex -d %t.exe | FileCheck %s --check-prefix DISASM
 # RUN: llvm-readobj --coff-imports %t.exe | FileCheck %s -check-prefix IMPORTS
+# RUN: llvm-readobj --unwind %t.exe | FileCheck %s -check-prefix UNWIND
 
 # DISASM:  140001014:      d0000011        adrp    x17, 0x140003000
 # DISASM:  140001018:      91002231        add     x17, x17, #8
@@ -21,7 +22,7 @@
 # DISASM:  140001048:      ad061fe6        stp     q6, q7, [sp, #192]
 # DISASM:  14000104c:      aa1103e1        mov     x1, x17
 # DISASM:  140001050:      b0000000        adrp    x0, 0x140002000
-# DISASM:  140001054:      91000000        add     x0, x0, #0
+# DISASM:  140001054:      91008000        add     x0, x0, #32
 # DISASM:  140001058:      90000002        adrp    x2, 0x140001000 <.text>
 # DISASM:  14000105c:      91000042        add     x2, x2, #0
 # DISASM:  140001060:      d63f0040        blr     x2
@@ -46,7 +47,7 @@
 # IMPORTS:   Attributes: 0x1
 # IMPORTS:   ModuleHandle: 0x3000
 # IMPORTS:   ImportAddressTable: 0x3008
-# IMPORTS:   ImportNameTable: 0x2040
+# IMPORTS:   ImportNameTable: 0x2060
 # IMPORTS:   BoundDelayImportTable: 0x0
 # IMPORTS:   UnloadDelayImportTable: 0x0
 # IMPORTS:   Import {
@@ -54,6 +55,54 @@
 # IMPORTS:     Address: 0x140001014
 # IMPORTS:   }
 # IMPORTS: }
+
+# UNWIND:      UnwindInformation [
+# UNWIND-NEXT:   RuntimeFunction {
+# UNWIND-NEXT:     Function: 0x140001020
+# UNWIND-NEXT:     ExceptionRecord: 0x140002000
+# UNWIND-NEXT:     ExceptionData {
+# UNWIND-NEXT:       FunctionLength: 116
+# UNWIND-NEXT:       Version: 0
+# UNWIND-NEXT:       ExceptionData: No
+# UNWIND-NEXT:       EpiloguePacked: No
+# UNWIND-NEXT:       EpilogueScopes: 1
+# UNWIND-NEXT:       ByteCodeLength: 24
+# UNWIND-NEXT:       Prologue [
+# UNWIND-NEXT:         0xe3                ; nop
+# UNWIND-NEXT:         0xe3                ; nop
+# UNWIND-NEXT:         0xe3                ; nop
+# UNWIND-NEXT:         0xe3                ; nop
+# UNWIND-NEXT:         0xe3                ; nop
+# UNWIND-NEXT:         0xe3                ; nop
+# UNWIND-NEXT:         0xe3                ; nop
+# UNWIND-NEXT:         0xe3                ; nop
+# UNWIND-NEXT:         0xe3                ; nop
+# UNWIND-NEXT:         0xe1                ; mov fp, sp
+# UNWIND-NEXT:         0x9b                ; stp x29, x30, [sp, #-224]!
+# UNWIND-NEXT:         0xe4                ; end
+# UNWIND-NEXT:       ]
+# UNWIND-NEXT:       EpilogueScopes [
+# UNWIND-NEXT:         EpilogueScope {
+# UNWIND-NEXT:           StartOffset: 18
+# UNWIND-NEXT:           EpilogueStartIndex: 12
+# UNWIND-NEXT:           Opcodes [
+# UNWIND-NEXT:             0xe3                ; nop
+# UNWIND-NEXT:             0xe3                ; nop
+# UNWIND-NEXT:             0xe3                ; nop
+# UNWIND-NEXT:             0xe3                ; nop
+# UNWIND-NEXT:             0xe3                ; nop
+# UNWIND-NEXT:             0xe3                ; nop
+# UNWIND-NEXT:             0xe3                ; nop
+# UNWIND-NEXT:             0xe3                ; nop
+# UNWIND-NEXT:             0xe3                ; nop
+# UNWIND-NEXT:             0x9b                ; ldp x29, x30, [sp], #224
+# UNWIND-NEXT:             0xe4                ; end
+# UNWIND-NEXT:           ]
+# UNWIND-NEXT:         }
+# UNWIND-NEXT:       ]
+# UNWIND-NEXT:     }
+# UNWIND-NEXT:   }
+# UNWIND-NEXT: ]
 
 --- !COFF
 header:

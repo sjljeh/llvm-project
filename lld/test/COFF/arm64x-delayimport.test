@@ -21,7 +21,7 @@ IMPORTS-NEXT:   Name: test.dll
 IMPORTS-NEXT:   Attributes: 0x1
 IMPORTS-NEXT:   ModuleHandle: 0x6080
 IMPORTS-NEXT:   ImportAddressTable: 0x6088
-IMPORTS-NEXT:   ImportNameTable: 0x4388
+IMPORTS-NEXT:   ImportNameTable: 0x43A8
 IMPORTS-NEXT:   BoundDelayImportTable: 0x0
 IMPORTS-NEXT:   UnloadDelayImportTable: 0x0
 IMPORTS-NEXT:   Import {
@@ -35,7 +35,7 @@ IMPORTS-NEXT:     Name: test.dll
 IMPORTS-NEXT:     Attributes: 0x1
 IMPORTS-NEXT:     ModuleHandle: 0x6080
 IMPORTS-NEXT:     ImportAddressTable: 0x6098
-IMPORTS-NEXT:     ImportNameTable: 0x4398
+IMPORTS-NEXT:     ImportNameTable: 0x43B8
 IMPORTS-NEXT:     BoundDelayImportTable: 0x0
 IMPORTS-NEXT:     UnloadDelayImportTable: 0x0
 IMPORTS-NEXT:     Import {
@@ -74,7 +74,7 @@ DISASM-NEXT: 180001044: ad0517e4     stp     q4, q5, [sp, #0xa0]
 DISASM-NEXT: 180001048: ad061fe6     stp     q6, q7, [sp, #0xc0]
 DISASM-NEXT: 18000104c: aa1103e1     mov     x1, x17
 DISASM-NEXT: 180001050: f0000000     adrp    x0, 0x180004000
-DISASM-NEXT: 180001054: 910d2000     add     x0, x0, #0x348
+DISASM-NEXT: 180001054: 910da000     add     x0, x0, #0x368
 DISASM-NEXT: 180001058: 90000002     adrp    x2, 0x180001000 <.text>
 DISASM-NEXT: 18000105c: 91000042     add     x2, x2, #0x0
 DISASM-NEXT: 180001060: d63f0040     blr     x2
@@ -119,7 +119,7 @@ DISASM-NEXT: 180003030: 66 0f 7f 4c 24 30            movdqa  %xmm1, 0x30(%rsp)
 DISASM-NEXT: 180003036: 66 0f 7f 54 24 40            movdqa  %xmm2, 0x40(%rsp)
 DISASM-NEXT: 18000303c: 66 0f 7f 5c 24 50            movdqa  %xmm3, 0x50(%rsp)
 DISASM-NEXT: 180003042: 48 8b d0                     movq    %rax, %rdx
-DISASM-NEXT: 180003045: 48 8d 0d fc 12 00 00         leaq    0x12fc(%rip), %rcx      # 0x180004348
+DISASM-NEXT: 180003045: 48 8d 0d 1c 13 00 00         leaq    0x131c(%rip), %rcx      # 0x180004368
 DISASM-NEXT: 18000304c: e8 b7 ef ff ff               callq   0x180002008 <.text+0x1008>
 DISASM-NEXT: 180003051: 66 0f 6f 44 24 20            movdqa  0x20(%rsp), %xmm0
 DISASM-NEXT: 180003057: 66 0f 6f 4c 24 30            movdqa  0x30(%rsp), %xmm1
@@ -152,7 +152,7 @@ NATIVE-IMPORTS-NEXT:   Name: test.dll
 NATIVE-IMPORTS-NEXT:   Attributes: 0x1
 NATIVE-IMPORTS-NEXT:   ModuleHandle: 0x5080
 NATIVE-IMPORTS-NEXT:   ImportAddressTable: 0x5088
-NATIVE-IMPORTS-NEXT:   ImportNameTable: 0x3370
+NATIVE-IMPORTS-NEXT:   ImportNameTable: 0x3390
 NATIVE-IMPORTS-NEXT:   BoundDelayImportTable: 0x0
 NATIVE-IMPORTS-NEXT:   UnloadDelayImportTable: 0x0
 NATIVE-IMPORTS-NEXT:   Import {
@@ -169,14 +169,14 @@ NATIVE-IMPORTS-NEXT:     Name: test.dll
 NATIVE-IMPORTS-NEXT:     Attributes: 0x1
 NATIVE-IMPORTS-NEXT:     ModuleHandle: 0x5080
 NATIVE-IMPORTS-NEXT:     ImportAddressTable: 0x5098
-NATIVE-IMPORTS-NEXT:     ImportNameTable: 0x3380
+NATIVE-IMPORTS-NEXT:     ImportNameTable: 0x33A0
 NATIVE-IMPORTS-NEXT:     BoundDelayImportTable: 0x0
 NATIVE-IMPORTS-NEXT:     UnloadDelayImportTable: 0x0
 NATIVE-IMPORTS-NEXT:   }
 NATIVE-IMPORTS-NEXT: }
 
 RUN: llvm-readobj --hex-dump=.testa out-native.dll | FileCheck --check-prefix=NATIVE-TESTSECA %s
-NATIVE-TESTSECA: 0x180007000 88500000 08100000
+NATIVE-TESTSECA: 0x180008000 88500000 08100000
 
 RUN: llvm-objdump -d out-native.dll | FileCheck --check-prefix=NATIVE-DISASM %s
 NATIVE-DISASM:      0000000180001000 <.text>:
@@ -201,7 +201,7 @@ NATIVE-DISASM-NEXT: 180001044: ad0517e4     stp     q4, q5, [sp, #0xa0]
 NATIVE-DISASM-NEXT: 180001048: ad061fe6     stp     q6, q7, [sp, #0xc0]
 NATIVE-DISASM-NEXT: 18000104c: aa1103e1     mov     x1, x17
 NATIVE-DISASM-NEXT: 180001050: d0000000     adrp    x0, 0x180003000
-NATIVE-DISASM-NEXT: 180001054: 910cc000     add     x0, x0, #0x330
+NATIVE-DISASM-NEXT: 180001054: 910d4000     add     x0, x0, #0x350
 NATIVE-DISASM-NEXT: 180001058: 90000002     adrp    x2, 0x180001000 <.text>
 NATIVE-DISASM-NEXT: 18000105c: 91000042     add     x2, x2, #0x0
 NATIVE-DISASM-NEXT: 180001060: d63f0040     blr     x2
