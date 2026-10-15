@@ -30170,7 +30170,26 @@ bool RISCVTargetLowering::isIntDivCheap(EVT VT, AttributeList Attr) const {
 }
 
 void RISCVTargetLowering::finalizeLowering(MachineFunction &MF) const {
-  MF.getFrameInfo().computeMaxCallFrameSize(MF);
+  MachineFrameInfo &MFI = MF.getFrameInfo();
+
+  if (Subtarget.hasVInstructions()) {
+    auto *RVFI = MF.getInfo<RISCVMachineFunctionInfo>();
+    const MachineRegisterInfo &MRI = MF.getRegInfo();
+    for (unsigned I = 0, E = MRI.getNumVirtRegs();
+         I != E && !RVFI->usesVectorRegisters(); ++I) {
+      Register Reg = Register::index2VirtReg(I);
+      const TargetRegisterClass *RC = MRI.getRegClassOrNull(Reg);
+      if (RC && RISCVRegisterInfo::isRVVRegClass(RC) &&
+          !MRI.reg_nodbg_empty(Reg))
+        RVFI->setUsesVectorRegisters(true);
+    }
+    for (int FI = MFI.getObjectIndexBegin(), E = MFI.getObjectIndexEnd();
+         FI != E && !RVFI->usesVectorRegisters(); ++FI)
+      if (MFI.getStackID(FI) == TargetStackID::ScalableVector)
+        RVFI->setUsesVectorRegisters(true);
+  }
+
+  MFI.computeMaxCallFrameSize(MF);
   TargetLoweringBase::finalizeLowering(MF);
 }
 

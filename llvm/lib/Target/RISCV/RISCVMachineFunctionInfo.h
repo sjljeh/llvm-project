@@ -66,6 +66,9 @@ private:
   uint64_t RVVPadding = 0;
   /// Size of stack frame to save callee saved registers
   unsigned CalleeSavedStackSize = 0;
+  /// True when instruction selection produced vector registers or scalable
+  /// stack objects, so register allocation may create RVV stack state.
+  bool UsesVectorRegisters = false;
 
   /// Incoming indirect argument pointers saved as virtual registers, keyed by
   /// formal parameter index. Used for musttail forwarding of indirect args.
@@ -141,6 +144,9 @@ public:
            VarArgsSaveSize == 0 && !MF.getFrameInfo().hasTailCall() &&
            !MF.getFunction().hasFnAttribute("interrupt");
   }
+
+  bool usesVectorRegisters() const { return UsesVectorRegisters; }
+  void setUsesVectorRegisters(bool Value) { UsesVectorRegisters = Value; }
 
   uint64_t getRVVStackSize() const { return RVVStackSize; }
   void setRVVStackSize(uint64_t Size) { RVVStackSize = Size; }
