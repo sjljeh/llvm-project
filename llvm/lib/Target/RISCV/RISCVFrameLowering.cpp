@@ -537,9 +537,6 @@ bool RISCVFrameLowering::hasBP(const MachineFunction &MF) const {
   const MachineFrameInfo &MFI = MF.getFrameInfo();
   const TargetRegisterInfo *TRI = STI.getRegisterInfo();
 
-  if (MF.hasEHFunclets() && MFI.hasVarSizedObjects())
-    return true;
-
   // If we do not reserve stack space for outgoing arguments in prologue,
   // we will adjust the stack pointer before call instruction. After the
   // adjustment, we can not use SP to access the stack objects for the
@@ -1127,8 +1124,9 @@ void RISCVFrameLowering::emitPrologue(MachineFunction &MF,
 
   if (NeedsRVUW) {
     MF.setHasWinCFI(true);
-    if (MF.hasEHFunclets() && RI->hasStackRealignment(MF))
-      report_fatal_error("RISC-V64 SEH funclets require an aligned frame");
+    if (MF.hasEHFunclets() &&
+        (RI->hasStackRealignment(MF) || !hasReservedCallFrame(MF)))
+      report_fatal_error("RISC-V64 SEH funclets require a fixed, aligned frame");
     if (STI.enableLinkerRelax())
       MF.getFunction().getContext().diagnose(DiagnosticInfoUnsupported{ MF.getFunction(), "RISC-V64 RVUW version 1 requires linker relaxation to be " "disabled"});
     else if (RVVStackSize || !RVVCSI.empty())
@@ -1381,11 +1379,6 @@ void RISCVFrameLowering::emitPrologue(MachineFunction &MF,
             .addImm(0)
             .setMIFlag(MachineInstr::FrameSetup);
       }
-    } else if (hasBP(MF)) {
-      BuildMI(MBB, MBBI, DL, STI.getInstrInfo()->get(RISCV::ADDI), BPReg)
-          .addReg(SPReg)
-          .addImm(0)
-          .setMIFlag(MachineInstr::FrameSetup);
     }
   }
 
@@ -1474,11 +1467,8 @@ void RISCVFrameLowering::emitEpilogue(MachineFunction &MF,
   uint64_t FPOffset = RealStackSize - RVFI->getVarArgsSaveSize();
   uint64_t RVVStackSize = RVFI->getRVVStackSize();
 
-  bool IsFuncletReturn = MBB.getFirstTerminator() != MBB.end() &&
-                         MBB.getFirstTerminator()->isEHScopeReturn();
-  bool RestoreSPFromFP = !IsFuncletReturn &&
-                         (RI->hasStackRealignment(MF) ||
-                          MFI.hasVarSizedObjects() || !hasReservedCallFrame(MF));
+  bool RestoreSPFromFP = RI->hasStackRealignment(MF) ||
+                         MFI.hasVarSizedObjects() || !hasReservedCallFrame(MF);
   if (RVVStackSize) {
     // If RestoreSPFromFP the stack pointer will be restored using the frame
     // pointer value.
@@ -1828,9 +1818,10 @@ RISCVFrameLowering::getFrameIndexReference(const MachineFunction &MF, int FI,
     // Parent locals are shared by all funclets. Register-allocation spill
     // slots belong to the currently executing frame instead. In particular,
     // never choose an SP-relative compressed access for an escaped local.
-    assert(!RI->hasStackRealignment(MF) && "unsupported realigned SEH frame");
+    assert(!RI->hasStackRealignment(MF) && hasReservedCallFrame(MF) &&
+           "unsupported variable SEH frame");
     if (MFI.isSpillSlotObjectIndex(FI)) {
-      FrameReg = hasBP(MF) ? RISCVABI::getBPReg() : MCRegister(SPReg);
+      FrameReg = SPReg;
       return Offset + StackOffset::getFixed(getStackSizeWithRVVPadding(MF));
     }
     FrameReg = FPReg;
