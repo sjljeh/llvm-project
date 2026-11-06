@@ -13,8 +13,8 @@
 # RUN: llvm-readobj --sections %t.exe | FileCheck -check-prefix=NODEBUG %s
 
 # CHECK: Name: .text
-# CHECK: Name: .reloc
 # CHECK: Name: .rmeta
+# CHECK: Name: .reloc
 # CHECK: Name: .debug_abbrev
 # CHECK: Name: .debug_info
 # CHECK: Name: .debug_line
@@ -22,8 +22,8 @@
 # CHECK: Name: .debug_pubtypes
 
 # NODEBUG: Name: .text
-# NODEBUG: Name: .reloc
 # NODEBUG: Name: .rmeta
+# NODEBUG: Name: .reloc
 # NODEBUG-NOT: Name: .debug_abbrev
 # NODEBUG-NOT: Name: .debug_info
 # NODEBUG-NOT: Name: .debug_line
