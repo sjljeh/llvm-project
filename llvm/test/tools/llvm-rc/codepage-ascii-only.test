@@ -1,0 +1,20 @@
+; Like rc.exe, accept any 16-bit code page on the command line. llvm-rc only
+; implements conversions for code pages 0, 1252 and 65001, so scripts that use
+; other code pages are accepted as long as their code-page-dependent text is
+; ASCII, which is identical in every ASCII-compatible code page.
+
+; RUN: llvm-rc -no-preprocess /C 932 /FO %t.res -- %p/Inputs/codepage-ascii-only.rc
+; RUN: llvm-readobj %t.res | FileCheck %s --check-prefix=ASCII
+
+; ASCII:      Resource type (int): STRINGTABLE (ID 6)
+; ASCII-NEXT: Resource name (int): 1
+; ASCII:      Data: (
+; ASCII-NEXT:   0000: 00000500 61007300 63006900 69000000  |....a.s.c.i.i...|
+
+; Non-ASCII text cannot be converted from an unimplemented code page.
+; RUN: not llvm-rc -no-preprocess /C 932 /FO %t.cp1252.res -- %p/Inputs/cp1252.rc 2>&1 | FileCheck %s --check-prefix=NONASCII
+; NONASCII: can't be interpreted in the current codepage
+
+; Values that are not code page numbers are still rejected.
+; RUN: not llvm-rc -no-preprocess /C 70000 /FO %t.invalid.res -- %p/Inputs/codepage-ascii-only.rc 2>&1 | FileCheck %s --check-prefix=INVALID
+; INVALID: Invalid code page: 70000
