@@ -31,9 +31,9 @@
 # RUN:   /section:.foo,!s %t.obj
 # RUN: llvm-readobj --sections %t.exe | FileCheck -check-prefix=NOT-S %s
 
-# RUN: not lld-link /out:%t.exe /entry:main /subsystem:console /force \
+# RUN: env LLD_IN_TEST=1 not lld-link /out:%t.exe /entry:main /subsystem:console /force \
 # RUN:   /section:.foo,!!r %t.obj 2>&1 | FileCheck -check-prefix=INVALID %s
-# RUN: not lld-link /out:%t.exe /entry:main /subsystem:console /force \
+# RUN: env LLD_IN_TEST=1 not lld-link /out:%t.exe /entry:main /subsystem:console /force \
 # RUN:   /section:.foo,r! %t.obj 2>&1 | FileCheck -check-prefix=INVALID %s
 
 # R:      Characteristics [
@@ -53,8 +53,8 @@
 
 # S:      Characteristics [
 # S-NEXT:   IMAGE_SCN_CNT_INITIALIZED_DATA
-# S-NEXT:   IMAGE_SCN_MEM_SHARED
 # S-NEXT:   IMAGE_SCN_MEM_READ
+# S-NEXT:   IMAGE_SCN_MEM_SHARED
 # S-NEXT:   IMAGE_SCN_MEM_WRITE
 # S-NEXT: ]
 
