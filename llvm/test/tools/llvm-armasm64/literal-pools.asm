@@ -45,12 +45,12 @@ end_pool_code
 ; OBJ-NEXT: Type: IMAGE_REL_ARM64_ADDR64
 ; OBJ-NEXT: Symbol: external
 ; OBJ: Name: immediates
+; OBJ: Name: after_pool
+; OBJ: Value: 56
 ; OBJ: Name: literals
 ; OBJ: Value: 0
 ; OBJ: Section: .text
 ; OBJ: StorageClass: External
-; OBJ: Name: after_pool
-; OBJ: Value: 56
 
 ; CONTENTS: Contents of section .text:
 ; CONTENTS-NEXT: 0000 80468252 61010018 48010018 824682d2

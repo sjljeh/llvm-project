@@ -1,0 +1,104 @@
+# armasm writes the symbols after the section symbols, and CodeView symbol
+# records, in the order of its symbol hash table: 503 buckets of a PJW/ELF hash
+# of the name. Within a bucket the name the source mentioned last comes first;
+# a name enters the table where the source first mentions it, as a reference,
+# EXPORT, IMPORT or definition. In the symbol table the names of COMDAT areas
+# come before all others. All orders checked against Microsoft armasm64.
+#
+# Buckets: saco 100; saxr, sayb, sbhr, sbib, scwy 439; comdat_func_end 50,
+# comdat_func_xdata 276, comdat_func 360, comdat_func_pdata 438.
+# RUN: rm -rf %t && split-file %s %t && cd %t
+# RUN: llvm-armasm64 -g defined.asm defined.obj
+# RUN: llvm-readobj --symbols defined.obj | FileCheck %s --check-prefix=DEFINED
+# RUN: llvm-readobj --codeview defined.obj | FileCheck %s --check-prefix=DEFINED-CV
+# RUN: llvm-armasm64 forward.asm forward.obj
+# RUN: llvm-readobj --symbols forward.obj | FileCheck %s --check-prefix=FORWARD
+# RUN: llvm-armasm64 mentions.asm mentions.obj
+# RUN: llvm-readobj --symbols mentions.obj | FileCheck %s --check-prefix=MENTIONS
+# RUN: llvm-armasm64 comdat.asm comdat.obj
+# RUN: llvm-readobj --symbols comdat.obj | FileCheck %s --check-prefix=COMDAT
+# RUN: llvm-armasm comdat32.asm comdat32.obj
+# RUN: llvm-readobj --symbols comdat32.obj | FileCheck %s --check-prefix=COMDAT
+
+# DEFINED:      Name: .debug$T
+# DEFINED:      Name: saco
+# DEFINED:      Name: sbhr
+# DEFINED:      Name: sayb
+# DEFINED:      Name: saxr
+# DEFINED-CV:      DisplayName: saco
+# DEFINED-CV:      DisplayName: sbhr
+# DEFINED-CV:      DisplayName: sayb
+# DEFINED-CV:      DisplayName: saxr
+
+# FORWARD:      Name: .debug$S
+# FORWARD:      Name: sayb
+# FORWARD:      Name: saxr
+# FORWARD:      Name: sbhr
+
+# MENTIONS:      Name: .debug$S
+# MENTIONS:      Name: scwy
+# MENTIONS:      Name: saxr
+# MENTIONS:      Name: sbib
+# MENTIONS:      Name: sayb
+
+# COMDAT:      Name: .debug$S
+# COMDAT:      Name: comdat_func_xdata
+# COMDAT:      Name: comdat_func
+# COMDAT:      Name: comdat_func_pdata
+# COMDAT:      Name: comdat_func_end
+
+#--- defined.asm
+        AREA |.text|, CODE, READONLY
+saxr    nop
+sayb    nop
+sbhr    nop
+saco    ret
+        END
+
+#--- forward.asm
+        AREA |.text|, CODE, READONLY
+        b sbhr
+saxr    nop
+sayb    nop
+sbhr    ret
+        END
+
+#--- mentions.asm
+        AREA |.text|, CODE, READONLY
+        EXPORT sayb
+        IMPORT sbib
+saxr    nop
+sayb    bl sbib
+        IMPORT scwy
+        bl scwy
+        END
+
+#--- comdat.asm
+        AREA |.text|{|comdat_func|}, CODE, READONLY, ALIGN=4
+        EXPORT comdat_func
+comdat_func PROC
+        ret
+comdat_func_end
+        ENDP
+        AREA |.pdata|{|comdat_func_pdata|}, ALIGN=2, READONLY, ASSOC=|.text|{|comdat_func|}
+comdat_func_pdata
+        DCD comdat_func
+        AREA |.xdata|{|comdat_func_xdata|}, ALIGN=2, READONLY, ASSOC=|.text|{|comdat_func|}
+comdat_func_xdata
+        DCD comdat_func_end - comdat_func
+        END
+
+#--- comdat32.asm
+        AREA |.text|{|comdat_func|}, CODE, READONLY, ALIGN=4
+        EXPORT comdat_func
+comdat_func PROC
+        bx lr
+comdat_func_end
+        ENDP
+        AREA |.pdata|{|comdat_func_pdata|}, ALIGN=2, READONLY, ASSOC=|.text|{|comdat_func|}
+comdat_func_pdata
+        DCD comdat_func
+        AREA |.xdata|{|comdat_func_xdata|}, ALIGN=2, READONLY, ASSOC=|.text|{|comdat_func|}
+comdat_func_xdata
+        DCD comdat_func_end - comdat_func
+        END

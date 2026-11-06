@@ -7,12 +7,12 @@
 # RUN: not llvm-armasm64 %t/info-operands.asm %t.obj 2>&1 | FileCheck %s --check-prefix=INFO-OPERANDS
 # RUN: not llvm-armasm64 -ignore invalid %t/empty.asm %t.obj 2>&1 | FileCheck %s --check-prefix=IGNORE
 
-# ASSERT: assert.asm:1: A2170: assertion failed
-# INFO-ERROR: info-error.asm:1: A2170: assertion failed
-# ASSERT-TYPE: assert-type.asm:1: A2067: illegal expression type; expected bool
-# INFO-CONDITION-TYPE: info-condition-type.asm:1: A2061: illegal expression type; expected absolute numeric
-# INFO-MESSAGE-TYPE: info-message-type.asm:1: A2068: illegal expression type; expected string
-# INFO-OPERANDS: info-operands.asm:1: A2003: improper line syntax
+# ASSERT: assert.asm(1) : error A2170: assertion failed
+# INFO-ERROR: info-error.asm(1) : error A2170: assertion failed
+# ASSERT-TYPE: assert-type.asm(1) : error A2067: illegal expression type; expected bool
+# INFO-CONDITION-TYPE: info-condition-type.asm(1) : error A2061: illegal expression type; expected absolute numeric
+# INFO-MESSAGE-TYPE: info-message-type.asm(1) : error A2068: illegal expression type; expected string
+# INFO-OPERANDS: info-operands.asm(1) : error A2003: improper line syntax
 # IGNORE: error: A2182: warning value expected
 
 #--- assert.asm

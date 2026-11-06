@@ -10,6 +10,7 @@
 #include "ARMFeatures.h"
 #include "MCTargetDesc/ARMAddressingModes.h"
 #include "MCTargetDesc/ARMBaseInfo.h"
+#include "MCTargetDesc/ARMFixupKinds.h"
 #include "MCTargetDesc/ARMInstPrinter.h"
 #include "MCTargetDesc/ARMMCAsmInfo.h"
 #include "MCTargetDesc/ARMMCTargetDesc.h"
@@ -31,6 +32,7 @@
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCInstrDesc.h"
 #include "llvm/MC/MCInstrInfo.h"
+#include "llvm/MC/MCParser/ARMASMParser.h"
 #include "llvm/MC/MCParser/AsmLexer.h"
 #include "llvm/MC/MCParser/MCAsmParser.h"
 #include "llvm/MC/MCParser/MCAsmParserExtension.h"
@@ -39,6 +41,7 @@
 #include "llvm/MC/MCParser/MCTargetAsmParser.h"
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCSection.h"
+#include "llvm/MC/MCObjectStreamer.h"
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/MCSymbol.h"
@@ -250,9 +253,21 @@ class ARMAsmParser : public MCTargetAsmParser {
   bool NextSymbolIsThumb;
 
   bool useImplicitITThumb() const {
+    // armasm always generates IT blocks for conditional Thumb instructions.
     return ImplicitItMode == ImplicitItModeTy::Always ||
-           ImplicitItMode == ImplicitItModeTy::ThumbOnly;
+           ImplicitItMode == ImplicitItModeTy::ThumbOnly ||
+           getParser().isParsingARMASM();
   }
+
+  /// armasm gives each conditional instruction its own IT instruction, as
+  /// ARMv8 recommends, unless -oldit asks for pre-ARMv8 IT blocks.
+  bool useSingleInstructionITBlocks() const {
+    const ARMASMParserOptions *Options = getParser().getARMASMOptions();
+    return Options && !Options->LegacyITBlocks;
+  }
+
+  bool parseARMASMMov32(SMLoc NameLoc);
+  bool parseARMASMAdrl(SMLoc NameLoc);
 
   bool useImplicitITARM() const {
     return ImplicitItMode == ImplicitItModeTy::Always ||
@@ -757,6 +772,8 @@ public:
 
   bool hasMVE() const { return getSTI().hasFeature(ARM::HasMVEIntegerOps); }
 
+  bool isParsingARMASM() const { return getParser().isParsingARMASM(); }
+
   // Return the low-subreg of a given Q register.
   MCRegister getDRegFromQReg(MCRegister QReg) const {
     return MRI->getSubReg(QReg, ARM::dsub_0);
@@ -1108,6 +1125,10 @@ public:
   bool isSignedOffset() const {
     if (!isImm()) return false;
     if (isa<MCSymbolRefExpr>(Imm.Val)) return true;
+    // armasm chooses a branch encoding by the distance to any relocatable
+    // target, such as label+2; relaxation widens the branch when needed.
+    if (Parser->isParsingARMASM() && !isa<MCConstantExpr>(Imm.Val))
+      return true;
     if (const MCConstantExpr *CE = dyn_cast<MCConstantExpr>(Imm.Val)) {
       int64_t Val = CE->getValue();
       int64_t Align = 1LL << scale;
@@ -4235,6 +4256,16 @@ MCRegister ARMAsmParser::tryParseRegister(bool AllowOutOfBoundReg) {
     return MCRegister();
 
   std::string lowerCase = Tok.getString().lower();
+  // ARMASM register aliases (RN, SN, DN, QN) shadow register names.
+  if (getParser().isParsingARMASM()) {
+    StringRef Name = Tok.getString();
+    if (Name.size() >= 2 && Name.front() == '|' && Name.back() == '|')
+      Name = Name.drop_front().drop_back();
+    char Class;
+    unsigned Number;
+    if (getParser().lookUpARMASMRegisterAlias(Name, Class, Number))
+      lowerCase = (Twine(Class) + Twine(Number)).str();
+  }
   MCRegister Reg = MatchRegisterName(lowerCase);
   if (!Reg) {
     Reg = StringSwitch<MCRegister>(lowerCase)
@@ -6325,6 +6356,21 @@ bool ARMAsmParser::parseOperand(OperandVector &Operands, StringRef Mnemonic) {
   if (ResTy.isFailure())
     return true;
 
+  // An ARMASM branch target may be a numeric local label (%f1). ({PC} is a
+  // register list to armasm here, as to this parser.)
+  if (getParser().isParsingARMASM() &&
+      (Mnemonic == "b" || Mnemonic == "bl" || Mnemonic == "blx" ||
+       Mnemonic == "cbz" || Mnemonic == "cbnz") &&
+      getLexer().is(AsmToken::Percent)) {
+    S = Parser.getTok().getLoc();
+    const MCExpr *Expr;
+    if (getParser().parseExpression(Expr))
+      return true;
+    E = SMLoc::getFromPointer(Parser.getTok().getLoc().getPointer() - 1);
+    Operands.push_back(ARMOperand::CreateImm(Expr, S, E, *this));
+    return false;
+  }
+
   switch (getLexer().getKind()) {
   default:
     Error(Parser.getTok().getLoc(), "unexpected token in operand");
@@ -6464,6 +6510,118 @@ bool ARMAsmParser::parseOperand(OperandVector &Operands, StringRef Mnemonic) {
     return false;
   }
   }
+}
+
+/// ARMASM's MOV32 pseudo-instruction: MOVW of the low half followed by MOVT
+/// of the high half, with a MOV32T relocation for symbolic values.
+bool ARMAsmParser::parseARMASMMov32(SMLoc NameLoc) {
+  MCContext &Ctx = getContext();
+  if (!isThumbTwo())
+    return Error(NameLoc, "MOV32 requires Thumb-2");
+  SMLoc RegLoc = getParser().getTok().getLoc();
+  MCRegister Reg = tryParseRegister();
+  if (!Reg || !MRI->getRegClass(ARM::rGPRRegClassID).contains(Reg))
+    return Error(RegLoc, "general-purpose register expected");
+  if (getParser().parseComma())
+    return true;
+  if (getLexer().is(AsmToken::Hash))
+    getParser().Lex();
+  const MCExpr *Value;
+  if (getParser().parseExpression(Value))
+    return true;
+  if (getLexer().isNot(AsmToken::EndOfStatement))
+    return Error(getLexer().getLoc(), "unexpected token in argument list");
+
+  MCOperand Low;
+  MCOperand High;
+  if (const auto *Constant = dyn_cast<MCConstantExpr>(Value)) {
+    uint64_t Imm = static_cast<uint32_t>(Constant->getValue());
+    Low = MCOperand::createImm(Imm & 0xffff);
+    High = MCOperand::createImm(Imm >> 16);
+  } else {
+    Low = MCOperand::createExpr(
+        MCSpecifierExpr::create(Value, ARM::S_LO16, Ctx));
+    High = MCOperand::createExpr(
+        MCSpecifierExpr::create(Value, ARM::S_HI16, Ctx));
+  }
+
+  MCStreamer &Out = getParser().getStreamer();
+  flushPendingInstructions(Out);
+  MCInst Movw;
+  Movw.setOpcode(ARM::t2MOVi16);
+  Movw.addOperand(MCOperand::createReg(Reg));
+  Movw.addOperand(Low);
+  Movw.addOperand(MCOperand::createImm(ARMCC::AL));
+  Movw.addOperand(MCOperand::createReg(MCRegister()));
+  Movw.setLoc(NameLoc);
+  Out.emitInstruction(Movw, getSTI());
+  MCInst Movt;
+  Movt.setOpcode(ARM::t2MOVTi16);
+  Movt.addOperand(MCOperand::createReg(Reg));
+  Movt.addOperand(MCOperand::createReg(Reg));
+  Movt.addOperand(High);
+  Movt.addOperand(MCOperand::createImm(ARMCC::AL));
+  Movt.addOperand(MCOperand::createReg(MCRegister()));
+  Movt.setLoc(NameLoc);
+  Out.emitInstruction(Movt, getSTI());
+  return false;
+}
+
+/// ARMASM's ADRL pseudo-instruction, which armasm assembles as ADR.W of the
+/// label followed by ADD.W (or SUB.W) of the rest of the offset. In an object
+/// file one fixup covers both instructions and splits the offset; the target
+/// must be in the same section.
+bool ARMAsmParser::parseARMASMAdrl(SMLoc NameLoc) {
+  if (!isThumbTwo())
+    return Error(NameLoc, "ADRL requires Thumb-2");
+  SMLoc RegLoc = getParser().getTok().getLoc();
+  MCRegister Reg = tryParseRegister();
+  if (!Reg || !MRI->getRegClass(ARM::rGPRRegClassID).contains(Reg))
+    return Error(RegLoc, "general-purpose register expected");
+  if (getParser().parseComma())
+    return true;
+  const MCExpr *Target;
+  if (getParser().parseExpression(Target))
+    return true;
+  if (getLexer().isNot(AsmToken::EndOfStatement))
+    return Error(getLexer().getLoc(), "unexpected token in argument list");
+
+  MCStreamer &Out = getParser().getStreamer();
+  flushPendingInstructions(Out);
+  // Keep both instructions in one fragment so that the fixup can patch them.
+  MCObjectStreamer *ObjOut =
+      Out.isObj() ? static_cast<MCObjectStreamer *>(&Out) : nullptr;
+  if (ObjOut)
+    ObjOut->ensureHeadroom(8);
+  MCInst Adr;
+  Adr.setOpcode(ARM::t2ADR);
+  Adr.addOperand(MCOperand::createReg(Reg));
+  Adr.addOperand(ObjOut ? MCOperand::createImm(0)
+                        : MCOperand::createExpr(Target));
+  Adr.addOperand(MCOperand::createImm(ARMCC::AL));
+  Adr.addOperand(MCOperand::createReg(MCRegister()));
+  Adr.setLoc(NameLoc);
+  MCInst Add;
+  Add.setOpcode(ARM::t2ADDri);
+  Add.addOperand(MCOperand::createReg(Reg));
+  Add.addOperand(MCOperand::createReg(Reg));
+  Add.addOperand(MCOperand::createImm(0));
+  Add.addOperand(MCOperand::createImm(ARMCC::AL));
+  Add.addOperand(MCOperand::createReg(MCRegister()));
+  Add.addOperand(MCOperand::createReg(MCRegister()));
+  Add.setLoc(NameLoc);
+  MCFragment *Fragment = ObjOut ? ObjOut->getCurrentFragment() : nullptr;
+  size_t Offset = ObjOut ? ObjOut->getCurFragSize() : 0;
+  Out.emitInstruction(Adr, getSTI());
+  Out.emitInstruction(Add, getSTI());
+  if (ObjOut) {
+    if (ObjOut->getCurrentFragment() != Fragment ||
+        ObjOut->getCurFragSize() != Offset + 8)
+      return Error(NameLoc, "unable to emit ADRL");
+    Fragment->addFixup(MCFixup::create(
+        Offset, Target, MCFixupKind(ARM::fixup_t2_adrl_pcrel), /*PCRel=*/true));
+  }
+  return false;
 }
 
 bool ARMAsmParser::parseImmExpr(int64_t &Out) {
@@ -7102,6 +7260,17 @@ bool ARMAsmParser::parseInstruction(ParseInstructionInfo &Info, StringRef Name,
     parseDirectiveReq(Name, NameLoc);
     // We always return 'error' for this, as we're done with this
     // statement and don't need to match the 'instruction."
+    return true;
+  }
+
+  // ARMASM's MOV32 pseudo-instruction is emitted here; like .req, report
+  // 'error' so that no instruction is matched for the statement.
+  if (getParser().isParsingARMASM() && Name.equals_insensitive("mov32")) {
+    parseARMASMMov32(NameLoc);
+    return true;
+  }
+  if (getParser().isParsingARMASM() && Name.equals_insensitive("adrl")) {
+    parseARMASMAdrl(NameLoc);
     return true;
   }
 
@@ -11487,7 +11656,11 @@ bool ARMAsmParser::matchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
     Inst.setLoc(IDLoc);
     if (PendConditionalInstruction) {
       PendingConditionalInsts.push_back(Inst);
-      if (isITBlockFull() || isITBlockTerminator(Inst))
+      bool SingleIT = useSingleInstructionITBlocks();
+      if (SingleIT && !isV8EligibleForIT(&Inst))
+        Warning(IDLoc, "A4509: This form of conditional instruction is "
+                       "deprecated");
+      if (SingleIT || isITBlockFull() || isITBlockTerminator(Inst))
         flushPendingInstructions(Out);
     } else {
       Out.emitInstruction(Inst, getSTI());

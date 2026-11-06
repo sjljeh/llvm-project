@@ -14,20 +14,26 @@ later   nop
         ENDP
         END
 
-; CHECK:      Name: _lc001_000007_
-; CHECK-NEXT: Value: 4
-; CHECK-NEXT: Section: .text
-; CHECK-NEXT: BaseType: Null
-; CHECK-NEXT: ComplexType: Null
-; CHECK-NEXT: StorageClass: Label
 ; CHECK:      Name: named
 ; CHECK-NEXT: Value: 0
 ; CHECK-NEXT: Section: .text
 ; CHECK-NEXT: BaseType: Null
 ; CHECK-NEXT: ComplexType: Null
 ; CHECK-NEXT: StorageClass: Static
+; CHECK:      Name: later
+; CHECK-NEXT: Value: 16
+; CHECK-NEXT: Section: .text
+; CHECK-NEXT: BaseType: Null
+; CHECK-NEXT: ComplexType: Null
+; CHECK-NEXT: StorageClass: Label
 ; CHECK:      Name: proc
 ; CHECK-NEXT: Value: 12
+; CHECK-NEXT: Section: .text
+; CHECK-NEXT: BaseType: Null
+; CHECK-NEXT: ComplexType: Null
+; CHECK-NEXT: StorageClass: Label
+; CHECK:      Name: _lc001_000007_
+; CHECK-NEXT: Value: 4
 ; CHECK-NEXT: Section: .text
 ; CHECK-NEXT: BaseType: Null
 ; CHECK-NEXT: ComplexType: Null
@@ -37,10 +43,4 @@ later   nop
 ; CHECK-NEXT: Section: .text
 ; CHECK-NEXT: BaseType: Null
 ; CHECK-NEXT: ComplexType: Function
-; CHECK-NEXT: StorageClass: Label
-; CHECK:      Name: later
-; CHECK-NEXT: Value: 16
-; CHECK-NEXT: Section: .text
-; CHECK-NEXT: BaseType: Null
-; CHECK-NEXT: ComplexType: Null
 ; CHECK-NEXT: StorageClass: Label

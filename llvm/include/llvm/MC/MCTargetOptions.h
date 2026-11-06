@@ -156,6 +156,10 @@ public:
   /// the textual name of the assembly language that we will use for this
   /// target, e.g. masm.
   LLVM_ABI StringRef getAssemblyLanguage() const;
+
+  /// Whether object emission should match Microsoft armasm/armasm64 output
+  /// byte-for-byte where the two differ from LLVM's defaults.
+  LLVM_ABI bool isARMASMCompatible() const;
 };
 
 } // end namespace llvm

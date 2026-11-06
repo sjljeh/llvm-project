@@ -8,14 +8,14 @@
 # RUN: not llvm-armasm64 %t/unmatched-wend.asm %t.obj 2>&1 | FileCheck %s --check-prefix=UNMATCHED-WEND
 # RUN: not llvm-armasm64 %t/missing-wend.asm %t.obj 2>&1 | FileCheck %s --check-prefix=MISSING-WEND
 
-# STRING: string.asm:1: condition requires a numeric or logical expression
-# ELIF-EXPRESSION: elif-expression.asm:3: division by zero
-# UNMATCHED-ELSE: unmatched-else.asm:1: ELSE directive without a matching IF
-# DUPLICATE-ELSE: duplicate-else.asm:3: multiple ELSE directives in one IF structure
-# UNMATCHED-ENDIF: unmatched-endif.asm:1: ENDIF directive without a matching IF
-# MISSING-ENDIF: missing-endif.asm:3: unexpected END before ENDIF directive
-# UNMATCHED-WEND: unmatched-wend.asm:1: WEND directive without a matching WHILE
-# MISSING-WEND: missing-wend.asm:4: unexpected end of file; missing WEND directive
+# STRING: string.asm(1) : error: condition requires a numeric or logical expression
+# ELIF-EXPRESSION: elif-expression.asm(3) : error: division by zero
+# UNMATCHED-ELSE: unmatched-else.asm(1) : error: ELSE directive without a matching IF
+# DUPLICATE-ELSE: duplicate-else.asm(3) : error: multiple ELSE directives in one IF structure
+# UNMATCHED-ENDIF: unmatched-endif.asm(1) : error: ENDIF directive without a matching IF
+# MISSING-ENDIF: missing-endif.asm(3) : error: unexpected END before ENDIF directive
+# UNMATCHED-WEND: unmatched-wend.asm(1) : error: WEND directive without a matching WHILE
+# MISSING-WEND: missing-wend.asm(4) : error: unexpected end of file; missing WEND directive
 
 #--- string.asm
         IF "text"

@@ -26,8 +26,8 @@ encoded
         DCI 0xd65f03c0
         END
 
-; WARNING: data-expressions.asm:25: A2034: unknown opcode: DCI.W; accepted as an LLVM extension
-; WARNING-NEXT: data-expressions.asm:26: A2034: unknown opcode: DCI; accepted as an LLVM extension
+; WARNING: data-expressions.asm(25) : warning A2034: unknown opcode: DCI.W; accepted as an LLVM extension
+; WARNING: data-expressions.asm(26) : warning A2034: unknown opcode: DCI; accepted as an LLVM extension
 ; NO-WARNING-NOT: A2034
 
 ; OBJ: Name: .data
@@ -41,14 +41,14 @@ encoded
 ; OBJ: Offset: 0x1C
 ; OBJ-NEXT: Type: IMAGE_REL_ARM64_ADDR64
 ; OBJ-NEXT: Symbol: external
-; OBJ: Name: int_data
-; OBJ: Value: 0
-; OBJ: Name: float_data
-; OBJ: Value: 60
 ; OBJ: Name: strings
 ; OBJ: Value: 112
 ; OBJ: Name: encoded
 ; OBJ: Value: 0
+; OBJ: Name: int_data
+; OBJ: Value: 0
+; OBJ: Name: float_data
+; OBJ: Value: 60
 
 ; CONTENTS: Contents of section .data:
 ; CONTENTS-NEXT: 0000 80ff4142 057f0080 ffffca00 5a003412

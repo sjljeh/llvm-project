@@ -72,6 +72,7 @@ class AsmLexer {
   unsigned DefaultRadix = 10;
   bool LexHLASMIntegers = false;
   bool LexHLASMStrings = false;
+  bool LexARMASM = false;
   AsmCommentConsumer *CommentConsumer = nullptr;
 
   LLVM_ABI AsmToken LexToken();
@@ -191,6 +192,12 @@ public:
   /// setting this option to true, will disable lexing for character and string
   /// literals.
   void setLexHLASMStrings(bool V) { LexHLASMStrings = V; }
+
+  /// Set whether to lex ARMASM-flavour syntax: ';' line comments, |quoted|
+  /// identifiers (returned with their bars), &FF hexadecimal integers and
+  /// n_ddd integers in base n (2-9).
+  void setLexARMASM(bool V) { LexARMASM = V; }
+  bool isLexingARMASM() const { return LexARMASM; }
 
   /// Set buffer to be lexed.
   /// `Buf` must be NULL-terminated. NULL terminator must reside at `Buf.end()`.

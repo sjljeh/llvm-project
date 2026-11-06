@@ -32,8 +32,8 @@ TEXT    SETS "variable"
         DCB 1
         END
 
-; WARN-DAG: warning: {{.*}}diagnostics.asm:{{[0-9]+}}: A4058: plain warning
-; WARN-DAG: warning: {{.*}}diagnostics.asm:{{[0-9]+}}: A4058: variable warning
-; WARN-DAG: warning: {{.*}}diagnostics.asm:{{[0-9]+}}: A4058: macro warning
+; WARN-DAG: {{.*}}diagnostics.asm({{[0-9]+}}) : warning A4058: plain warning
+; WARN-DAG: {{.*}}diagnostics.asm({{[0-9]+}}) : warning A4058: variable warning
+; WARN-DAG: {{.*}}diagnostics.asm({{[0-9]+}}) : warning A4058: macro warning
 ; CONTENTS: Contents of section .data:
 ; CONTENTS-NEXT: 0000 01

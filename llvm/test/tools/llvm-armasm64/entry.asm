@@ -6,5 +6,5 @@
         ret
         END
 
-; WARNING: warning: {{.*}}entry.asm:5: A4038: unimplemented directive entry
+; WARNING: {{.*}}entry.asm(5) : warning A4038: unimplemented directive entry
 ; CODE:      ret

@@ -1,0 +1,42 @@
+# Storage classes of labels, and a source with nothing but END, checked
+# against Microsoft armasm64.
+# RUN: rm -rf %t && split-file %s %t && cd %t
+# RUN: llvm-armasm64 data-labels.asm data-labels.obj
+# RUN: llvm-readobj --symbols data-labels.obj | FileCheck %s --check-prefix=DATA
+# RUN: llvm-armasm64 end-only.asm end-only.obj
+# RUN: llvm-readobj --sections --symbols end-only.obj | FileCheck %s --check-prefix=END
+
+## A label on an instruction is a Label even in a data area; data labels and
+## bare labels in data areas are Static. (Symbols follow armasm's hash order.)
+# DATA:      Name: code
+# DATA-NEXT: Value: 4
+# DATA:      StorageClass: Label
+# DATA:      Name: bare
+# DATA-NEXT: Value: 8
+# DATA:      StorageClass: Static
+# DATA:      Name: word
+# DATA-NEXT: Value: 0
+# DATA:      StorageClass: Static
+
+## The object has only .debug$S, and the usual leading symbols.
+# END:      Sections [
+# END:        Number: 1
+# END-NEXT:   Name: .debug$S
+# END-NOT:    Number: 2
+# END:      Symbols [
+# END:        Name: @comp.id
+# END:        Name: @feat.00
+# END:        Name: .file
+# END:        FileName: {{.*}}end-only.asm
+# END:        Name: .debug$S
+
+#--- data-labels.asm
+        AREA |.data|, DATA, READWRITE
+word    DCD 1
+code    nop
+bare
+        DCD 2
+        END
+
+#--- end-only.asm
+        END

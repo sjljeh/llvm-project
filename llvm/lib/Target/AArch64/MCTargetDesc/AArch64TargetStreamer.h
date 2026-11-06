@@ -41,7 +41,12 @@ public:
 
   /// Callback used to implement the .ltorg directive.
   /// Emit contents of constant pool for the current section.
-  void emitCurrentConstantPool();
+  void emitCurrentConstantPool() override;
+  void emitCurrentConstantPoolAtSectionEnd() override;
+  bool hasCurrentConstantPool() override;
+
+  /// Lay out ldr= constant pools the way armasm64 does.
+  void setARMASMConstantPoolLayout();
 
   /// Callback used to implement the .note.gnu.property section.
   void emitNoteSection(unsigned Flags, uint64_t PAuthABIPlatform = -1,
