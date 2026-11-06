@@ -8,6 +8,7 @@
 
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
@@ -345,60 +346,90 @@ static void emitListingLineMarker(raw_ostream &OS, unsigned Line) {
   OS << "# armasm64_listing " << Line << '\n';
 }
 
-static void printDiagnostic(const SMDiagnostic &Diagnostic,
-                            const SourceMgr &SrcMgr, raw_ostream &OS) {
-  if (!Diagnostic.getLoc().isValid()) {
-    Diagnostic.print(nullptr, OS);
-    return;
+/// Maps diagnostics in the translated buffer back to the original source
+/// using the `# <line> "<file>"` markers emitted during translation. The
+/// marker table for each buffer is built once, on the first diagnostic that
+/// needs it, so reporting many diagnostics stays linear in the buffer size.
+class DiagnosticPrinter {
+  struct LineMarker {
+    unsigned PhysicalLine;
+    unsigned SourceLine;
+    std::string Filename;
+  };
+
+  DenseMap<unsigned, SmallVector<LineMarker, 0>> MarkersByBuffer;
+
+  const SmallVectorImpl<LineMarker> &getMarkers(const SourceMgr &SrcMgr,
+                                                unsigned Buffer) {
+    auto [It, Inserted] = MarkersByBuffer.try_emplace(Buffer);
+    if (!Inserted)
+      return It->second;
+
+    SmallVectorImpl<LineMarker> &Markers = It->second;
+    unsigned PhysicalLine = 0;
+    StringRef Remaining = SrcMgr.getMemoryBuffer(Buffer)->getBuffer();
+    while (!Remaining.empty()) {
+      ++PhysicalLine;
+      auto [Line, Rest] = Remaining.split('\n');
+      Remaining = Rest;
+      StringRef Tail = Line.trim();
+      if (!Tail.consume_front("#"))
+        continue;
+      StringRef SourceLine = takeToken(Tail);
+      unsigned ParsedSourceLine;
+      if (SourceLine.getAsInteger(10, ParsedSourceLine))
+        continue;
+      Tail = Tail.trim();
+      if (!Tail.consume_front("\""))
+        continue;
+      size_t EndQuote = Tail.find('"');
+      if (EndQuote == StringRef::npos)
+        continue;
+      Markers.push_back(
+          {PhysicalLine, ParsedSourceLine, Tail.take_front(EndQuote).str()});
+    }
+    return Markers;
   }
 
-  SrcMgr.printIncludeStackForDiagnostic(Diagnostic.getLoc(), OS);
-  unsigned Buffer = SrcMgr.FindBufferContainingLoc(Diagnostic.getLoc());
-  if (!Buffer) {
-    Diagnostic.print(nullptr, OS);
-    return;
-  }
+public:
+  void print(const SMDiagnostic &Diagnostic, const SourceMgr &SrcMgr,
+             raw_ostream &OS) {
+    if (!Diagnostic.getLoc().isValid()) {
+      Diagnostic.print(nullptr, OS);
+      return;
+    }
 
-  unsigned DiagnosticLine = SrcMgr.FindLineNumber(Diagnostic.getLoc(), Buffer);
-  unsigned PhysicalLine = 0;
-  unsigned MarkerPhysicalLine = 0;
-  unsigned MarkerSourceLine = 0;
-  std::string MarkerFilename;
-  StringRef Remaining = SrcMgr.getMemoryBuffer(Buffer)->getBuffer();
-  while (!Remaining.empty() && PhysicalLine != DiagnosticLine) {
-    ++PhysicalLine;
-    auto [Line, Rest] = Remaining.split('\n');
-    Remaining = Rest;
-    StringRef Tail = Line.trim();
-    if (!Tail.consume_front("#"))
-      continue;
-    StringRef SourceLine = takeToken(Tail);
-    unsigned ParsedSourceLine;
-    if (SourceLine.getAsInteger(10, ParsedSourceLine))
-      continue;
-    Tail = Tail.trim();
-    if (!Tail.consume_front("\""))
-      continue;
-    size_t EndQuote = Tail.find('"');
-    if (EndQuote == StringRef::npos)
-      continue;
-    MarkerPhysicalLine = PhysicalLine;
-    MarkerSourceLine = ParsedSourceLine;
-    MarkerFilename = Tail.take_front(EndQuote).str();
-  }
+    SrcMgr.printIncludeStackForDiagnostic(Diagnostic.getLoc(), OS);
+    unsigned Buffer = SrcMgr.FindBufferContainingLoc(Diagnostic.getLoc());
+    if (!Buffer) {
+      Diagnostic.print(nullptr, OS);
+      return;
+    }
 
-  if (!MarkerPhysicalLine) {
-    Diagnostic.print(nullptr, OS);
-    return;
-  }
+    unsigned DiagnosticLine =
+        SrcMgr.FindLineNumber(Diagnostic.getLoc(), Buffer);
+    const SmallVectorImpl<LineMarker> &Markers = getMarkers(SrcMgr, Buffer);
+    // Find the last marker at or before the diagnostic's line.
+    auto Next = llvm::upper_bound(
+        Markers, DiagnosticLine, [](unsigned Line, const LineMarker &Marker) {
+          return Line < Marker.PhysicalLine;
+        });
+    if (Next == Markers.begin()) {
+      Diagnostic.print(nullptr, OS);
+      return;
+    }
+    const LineMarker &Marker = *std::prev(Next);
 
-  int SourceLine = MarkerSourceLine + DiagnosticLine - MarkerPhysicalLine - 1;
-  SMDiagnostic Remapped(SrcMgr, Diagnostic.getLoc(), MarkerFilename, SourceLine,
-                        Diagnostic.getColumnNo(), Diagnostic.getKind(),
-                        Diagnostic.getMessage(), Diagnostic.getLineContents(),
-                        Diagnostic.getRanges(), Diagnostic.getFixIts());
-  Remapped.print(nullptr, OS);
-}
+    int SourceLine =
+        Marker.SourceLine + DiagnosticLine - Marker.PhysicalLine - 1;
+    SMDiagnostic Remapped(SrcMgr, Diagnostic.getLoc(), Marker.Filename,
+                          SourceLine, Diagnostic.getColumnNo(),
+                          Diagnostic.getKind(), Diagnostic.getMessage(),
+                          Diagnostic.getLineContents(), Diagnostic.getRanges(),
+                          Diagnostic.getFixIts());
+    Remapped.print(nullptr, OS);
+  }
+};
 
 static void splitOperands(StringRef Text,
                           SmallVectorImpl<StringRef> &Operands) {
@@ -476,6 +507,29 @@ struct VariableValue {
 using VariableMap = StringMap<VariableValue>;
 using RegisterRelativeMap = StringMap<VariableValue>;
 
+/// A read-only view of the variables visible at a point in the source: the
+/// innermost macro's local variables, if any, shadowing the global ones. This
+/// avoids materializing a merged copy of every variable for each line.
+class VariableLookup {
+  const VariableMap &Globals;
+  const VariableMap *Locals;
+
+public:
+  VariableLookup(const VariableMap &Globals, const VariableMap *Locals = nullptr)
+      : Globals(Globals), Locals(Locals) {}
+
+  const VariableValue *find(StringRef Name) const {
+    if (Locals)
+      if (auto It = Locals->find(Name); It != Locals->end())
+        return &It->second;
+    if (auto It = Globals.find(Name); It != Globals.end())
+      return &It->second;
+    return nullptr;
+  }
+
+  bool contains(StringRef Name) const { return find(Name); }
+};
+
 static constexpr uint64_t ARMAsmVersion = 145136248;
 
 static std::optional<VariableValue>
@@ -545,7 +599,7 @@ class VariableExpressionParser {
   };
 
   StringRef Text;
-  const VariableMap &Variables;
+  VariableLookup Variables;
   const StringMap<uint64_t> &Constants;
   const StringSet<> *DefinedSymbols;
   const RegisterRelativeMap *RegisterRelativeValues;
@@ -787,8 +841,8 @@ class VariableExpressionParser {
     StringRef Name;
     if (!parseIdentifier(Name))
       return false;
-    if (auto It = Variables.find(Name); It != Variables.end()) {
-      Result = It->second;
+    if (const VariableValue *Variable = Variables.find(Name)) {
+      Result = *Variable;
       return true;
     }
     if (auto It = Constants.find(Name); It != Constants.end()) {
@@ -1214,7 +1268,7 @@ class VariableExpressionParser {
 
 public:
   VariableExpressionParser(
-      StringRef Text, const VariableMap &Variables,
+      StringRef Text, VariableLookup Variables,
       const StringMap<uint64_t> &Constants, bool NoEscape,
       const StringSet<> *DefinedSymbols = nullptr,
       const RegisterRelativeMap *RegisterRelativeValues = nullptr,
@@ -1291,7 +1345,7 @@ static std::string formatSubstitution(const VariableValue &Variable) {
 }
 
 static std::string substituteVariables(StringRef Line,
-                                       const VariableMap &Variables) {
+                                       VariableLookup Variables) {
   std::string Substituted;
   raw_string_ostream OS(Substituted);
   bool InString = false;
@@ -1335,13 +1389,15 @@ static std::string substituteVariables(StringRef Line,
              (isAlnum(Line[NameEnd]) || Line[NameEnd] == '_'))
         ++NameEnd;
     }
-    auto It = Variables.find(Line.slice(NameStart, NameEnd));
-    if (NameEnd == NameStart || It == Variables.end()) {
+    const VariableValue *Variable =
+        NameEnd == NameStart ? nullptr
+                             : Variables.find(Line.slice(NameStart, NameEnd));
+    if (!Variable) {
       OS << C;
       ++I;
       continue;
     }
-    OS << formatSubstitution(It->second);
+    OS << formatSubstitution(*Variable);
     I = NameEnd;
     if (I != Line.size() && Line[I] == '.')
       ++I;
@@ -1350,7 +1406,7 @@ static std::string substituteVariables(StringRef Line,
 }
 
 static std::string rewriteVariables(StringRef Text,
-                                    const VariableMap &Variables, bool NoEscape,
+                                    VariableLookup Variables, bool NoEscape,
                                     StringRef PCSymbol = {},
                                     bool *UsesPC = nullptr,
                                     const VariableMap *BuiltinVariables = nullptr) {
@@ -1409,9 +1465,8 @@ static std::string rewriteVariables(StringRef Text,
       size_t End = Text.find('|', I + 1);
       if (End != StringRef::npos) {
         StringRef Name = Text.slice(I + 1, End);
-        auto It = Variables.find(Name);
-        if (It != Variables.end())
-          EmitVariable(It->second);
+        if (const VariableValue *Variable = Variables.find(Name))
+          EmitVariable(*Variable);
         else
           OS << Text.slice(I, End + 1);
         I = End + 1;
@@ -1426,11 +1481,10 @@ static std::string rewriteVariables(StringRef Text,
     while (End != Text.size() && (isAlnum(Text[End]) || Text[End] == '_'))
       ++End;
     StringRef Name = Text.slice(I, End);
-    auto It = Variables.find(Name);
-    if (It == Variables.end())
-      OS << Name;
+    if (const VariableValue *Variable = Variables.find(Name))
+      EmitVariable(*Variable);
     else
-      EmitVariable(It->second);
+      OS << Name;
     I = End;
   }
   return Rewritten;
@@ -1468,7 +1522,7 @@ static Error assignVariable(StringRef Name, StringRef Directive,
                             StringRef Expression, bool ImplicitDeclaration,
                             VariableMap &Variables,
                              const StringMap<uint64_t> &Constants, bool NoEscape,
-                             const VariableMap *ExpressionVariables = nullptr,
+                             const VariableLookup *ExpressionVariables = nullptr,
                              const StringSet<> *DefinedSymbols = nullptr,
                              const VariableMap *BuiltinVariables = nullptr) {
   VariableKind Kind =
@@ -1492,7 +1546,8 @@ static Error assignVariable(StringRef Name, StringRef Directive,
             variableKindName(It->second.Kind) + " variable '" + Name + "'");
 
   VariableExpressionParser Parser(
-      Expression, ExpressionVariables ? *ExpressionVariables : Variables,
+      Expression,
+      ExpressionVariables ? *ExpressionVariables : VariableLookup(Variables),
       Constants, NoEscape, DefinedSymbols,
       /*RegisterRelativeValues=*/nullptr, /*SymbolSizes=*/nullptr,
       BuiltinVariables);
@@ -1751,11 +1806,14 @@ static bool containsIdentifier(StringRef Text, StringRef Name) {
 class DeferredText {
   SmallVector<std::string, 16> Values;
 
+  static constexpr StringLiteral MarkerPrefix = "armasm64.deferred.";
+
   static std::string marker(unsigned Index) {
     // NUL delimiters keep markers distinct from normal assembly source; they
     // are resolved before the translated buffer reaches the MC parser.
     std::string Marker(1, '\0');
-    Marker += "armasm64.deferred." + utostr(Index);
+    Marker += MarkerPrefix;
+    Marker += utostr(Index);
     Marker.push_back('\0');
     return Marker;
   }
@@ -1778,14 +1836,36 @@ public:
     });
   }
 
+  /// Replace every marker in \p Output with its deferred value in a single
+  /// linear pass over the buffer.
   void resolve(std::string &Output) const {
-    for (auto [Index, Value] : llvm::enumerate(Values)) {
-      std::string Marker = marker(Index);
-      size_t Offset = Output.find(Marker);
-      if (Offset == std::string::npos)
-        llvm_unreachable("missing deferred text marker");
-      Output.replace(Offset, Marker.size(), Value);
+    std::string Resolved;
+    Resolved.reserve(Output.size());
+    StringRef Remaining = Output;
+    unsigned NumResolved = 0;
+    while (true) {
+      size_t Start = Remaining.find('\0');
+      if (Start == StringRef::npos)
+        break;
+      Resolved.append(Remaining.data(), Start);
+      Remaining = Remaining.drop_front(Start + 1);
+      size_t End = Remaining.find('\0');
+      unsigned Index;
+      StringRef Body = Remaining.take_front(End);
+      if (End == StringRef::npos || !Body.consume_front(MarkerPrefix) ||
+          Body.getAsInteger(10, Index) || Index >= Values.size()) {
+        // Not one of our markers; keep the NUL byte as-is.
+        Resolved.push_back('\0');
+        continue;
+      }
+      Resolved += Values[Index];
+      Remaining = Remaining.drop_front(End + 1);
+      ++NumResolved;
     }
+    Resolved.append(Remaining.data(), Remaining.size());
+    if (NumResolved != Values.size())
+      llvm_unreachable("missing deferred text marker");
+    Output = std::move(Resolved);
   }
 };
 
@@ -2721,24 +2801,20 @@ class AssemblyControlExpander {
     return sourceError(Line.Filename, Line.Line, Message);
   }
 
-  VariableMap effectiveVariables() const {
-    VariableMap Effective = Variables;
-    if (LocalVariables)
-      for (const auto &Variable : *LocalVariables)
-        Effective[Variable.getKey()] = Variable.getValue();
-    return Effective;
+  VariableLookup effectiveVariables() const {
+    return VariableLookup(Variables, LocalVariables);
   }
 
   std::string prepareLine(const AssemblySourceLine &Line) const {
     std::string Expanded =
         MacroParameters ? substituteMacroParameters(Line.Text, *MacroParameters)
                         : Line.Text;
-    VariableMap Effective = effectiveVariables();
+    VariableLookup Effective = effectiveVariables();
     return substituteVariables(Expanded, Effective);
   }
 
   Expected<VariableValue> evaluateExpression(StringRef Expression) {
-    VariableMap Effective = effectiveVariables();
+    VariableLookup Effective = effectiveVariables();
     VariableExpressionParser Parser(Expression, Effective, Constants, NoEscape,
                                     &DefinedSymbols,
                                     /*RegisterRelativeValues=*/nullptr,
@@ -2899,7 +2975,7 @@ class AssemblyControlExpander {
                               StringRef Expression) {
     bool IsLocal = LocalVariables && LocalVariables->contains(Name);
     VariableMap &Target = IsLocal ? *LocalVariables : Variables;
-    VariableMap Effective = effectiveVariables();
+    VariableLookup Effective = effectiveVariables();
     return assignVariable(Name, Directive, Expression,
                           /*ImplicitDeclaration=*/false, Target, Constants,
                           NoEscape, &Effective, &DefinedSymbols,
@@ -3308,7 +3384,7 @@ class AssemblyControlExpander {
       } else if (isEquDirective(Second)) {
         StringRef Name = unquoteIdentifier(First);
         DefinedSymbols.insert(Name);
-        VariableMap Effective = effectiveVariables();
+        VariableLookup Effective = effectiveVariables();
         VariableExpressionParser Parser(AfterFirst, Effective, Constants,
                                         NoEscape, &DefinedSymbols,
                                         /*RegisterRelativeValues=*/nullptr,
@@ -5335,11 +5411,14 @@ static int assembleInput(StringRef ProgName, StringRef InputFilename,
     return 1;
   }
 
+  // Declared before the context so it outlives every diagnostic it reports.
+  DiagnosticPrinter DiagPrinter;
   MCContext Ctx(TheTriple, *MAI, *MRI, *STI, &SrcMgr);
-  Ctx.setDiagnosticHandler([&DiagOS](const SMDiagnostic &Diagnostic, bool,
-                                     const SourceMgr &SrcMgr,
-                                     std::vector<const MDNode *> &) {
-    printDiagnostic(Diagnostic, SrcMgr, DiagOS);
+  Ctx.setDiagnosticHandler([&DiagOS, &DiagPrinter](
+                               const SMDiagnostic &Diagnostic, bool,
+                               const SourceMgr &SrcMgr,
+                               std::vector<const MDNode *> &) {
+    DiagPrinter.print(Diagnostic, SrcMgr, DiagOS);
   });
   std::unique_ptr<MCObjectFileInfo> MOFI(
       TheTarget->createMCObjectFileInfo(Ctx, /*PIC=*/false,
