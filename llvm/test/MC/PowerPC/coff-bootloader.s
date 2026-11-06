@@ -10,7 +10,7 @@
 # OBJ:      Format: COFF-PowerPC
 # OBJ:      Machine: IMAGE_FILE_MACHINE_POWERPC (0x1F0)
 # OBJ:      Name: .text
-# OBJ:      RawDataSize: 260
+# OBJ:      RawDataSize: 0x104
 # OBJ:      IMAGE_SCN_ALIGN_32BYTES
 # OBJ:      Name: .rdata
 # OBJ:      RelocationCount: 2

@@ -7,7 +7,7 @@
 # IBM PowerPC assembler 1.0.
 
 # CHECK:      Name: .text
-# CHECK:      RawDataSize: 20
+# CHECK:      RawDataSize: 0x14
 # CHECK-NOT:  Name: .struct
 # CHECK:      Hex dump of section '.text':
 # CHECK-NEXT: 0x00000000 04006038 08008038 1000a038 f0ff2194

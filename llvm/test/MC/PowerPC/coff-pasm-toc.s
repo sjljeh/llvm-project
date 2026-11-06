@@ -7,7 +7,7 @@
 # agree with IBM PowerPC assembler 1.0.
 
 # CHECK:      Name: .ydata
-# CHECK:      RawDataSize: 4
+# CHECK:      RawDataSize: 0x4
 # CHECK:      IMAGE_SCN_ALIGN_8BYTES
 # CHECK:      IMAGE_SCN_CNT_INITIALIZED_DATA
 # CHECK:      IMAGE_SCN_MEM_READ

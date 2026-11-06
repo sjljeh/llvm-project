@@ -24,12 +24,12 @@
 # and zero fill, but does not increase the external COFF section alignment.
 
 # COFF-LABEL: Name: .text
-# COFF:       RawDataSize: 65
+# COFF:       RawDataSize: 0x41
 # COFF:       RelocationCount: 1
 # COFF:       Characteristics [ (0x60400020)
 # COFF-NEXT:    IMAGE_SCN_ALIGN_8BYTES
 # COFF-LABEL: Name: NOALIGN
-# COFF:       RawDataSize: 8
+# COFF:       RawDataSize: 0x8
 # COFF:       Characteristics [ (0xE0000020)
 # COFF-NOT:     IMAGE_SCN_ALIGN_
 # COFF:       Section (1) .text {
@@ -44,7 +44,7 @@
 # COFF-NEXT:  0x00000000 01000000 00000060
 
 # ROUND-LABEL: Name: .text
-# ROUND:       RawDataSize: 65
+# ROUND:       RawDataSize: 0x41
 # ROUND:       RelocationCount: 1
 # ROUND:       Characteristics [ (0x60400020)
 # ROUND-NEXT:    IMAGE_SCN_ALIGN_8BYTES

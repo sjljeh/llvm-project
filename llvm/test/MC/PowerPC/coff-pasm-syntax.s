@@ -9,27 +9,27 @@
 # IBM PowerPC assembler 1.0 from the Microsoft Windows CE toolchain.
 
 # CHECK:      Name: .text
-# CHECK:      RawDataSize: 16
+# CHECK:      RawDataSize: 0x10
 # CHECK:      Name: .rdata
-# CHECK:      RawDataSize: 8
+# CHECK:      RawDataSize: 0x8
 # CHECK:      IMAGE_SCN_ALIGN_8BYTES
 # CHECK:      IMAGE_SCN_CNT_INITIALIZED_DATA
 # CHECK:      IMAGE_SCN_MEM_READ
 # CHECK-NOT:  IMAGE_SCN_MEM_WRITE
 # CHECK:      Name: .pdata
-# CHECK:      RawDataSize: 20
+# CHECK:      RawDataSize: 0x14
 # CHECK:      IMAGE_SCN_ALIGN_4BYTES
 # CHECK:      IMAGE_SCN_CNT_INITIALIZED_DATA
 # CHECK:      IMAGE_SCN_MEM_READ
 # CHECK-NOT:  IMAGE_SCN_MEM_WRITE
 # CHECK:      Name: .reldata
-# CHECK:      RawDataSize: 4
+# CHECK:      RawDataSize: 0x4
 # CHECK:      IMAGE_SCN_ALIGN_8BYTES
 # CHECK:      IMAGE_SCN_CNT_INITIALIZED_DATA
 # CHECK:      IMAGE_SCN_MEM_READ
 # CHECK:      IMAGE_SCN_MEM_WRITE
 # CHECK:      Name: .debug$S
-# CHECK:      RawDataSize: 22
+# CHECK:      RawDataSize: 0x16
 # CHECK:      IMAGE_SCN_ALIGN_1BYTES
 # CHECK:      IMAGE_SCN_CNT_INITIALIZED_DATA
 # CHECK:      IMAGE_SCN_MEM_DISCARDABLE

@@ -27,7 +27,7 @@ escaped DCB "a""b", "$$", "c\n"
         END
 
 ; OBJ: Name: .data
-; OBJ: RawDataSize: 78
+; OBJ: RawDataSize: 0x4E
 ; OBJ: RelocationCount: 4
 ; OBJ: Offset: 0x30
 ; OBJ-NEXT: Type: IMAGE_REL_ARM64_ADDR64

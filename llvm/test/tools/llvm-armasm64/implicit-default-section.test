@@ -7,7 +7,7 @@
 # RUN: llvm-objdump -s %t.instruction.obj | FileCheck %s --check-prefix=INSTRUCTION
 
 # DATA:      Name: __DefaultSection
-# DATA:      RawDataSize: 1
+# DATA:      RawDataSize: 0x1
 # DATA:      IMAGE_SCN_ALIGN_8BYTES
 # DATA:      IMAGE_SCN_CNT_INITIALIZED_DATA
 # DATA:      IMAGE_SCN_MEM_READ

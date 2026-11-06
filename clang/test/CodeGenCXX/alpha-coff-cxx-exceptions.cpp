@@ -38,9 +38,9 @@ int alpha_try_catch() {
 // ASM: .seh_endproc
 
 // OBJ: Name: .xdata
-// OBJ: RawDataSize: 104
+// OBJ: RawDataSize: 0x68
 // OBJ: Name: .pdata
-// OBJ: RawDataSize: 40
+// OBJ: RawDataSize: 0x28
 // OBJ: IMAGE_REL_ALPHA_REFHI $ehgcr_0_3
 // OBJ-NEXT: IMAGE_REL_ALPHA_PAIR
 // OBJ-NEXT: IMAGE_REL_ALPHA_REFLO $ehgcr_0_3

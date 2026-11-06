@@ -61,9 +61,9 @@ void g() {
 // catch-funclet record. Only the parent record has a handler and HandlerData.
 // OBJ: Format: COFF-PowerPC
 // OBJ: Name: .xdata
-// OBJ: RawDataSize: 112
+// OBJ: RawDataSize: 0x70
 // OBJ: Name: .pdata
-// OBJ: RawDataSize: 40
+// OBJ: RawDataSize: 0x28
 // OBJ: RelocationCount: 8
 // OBJ: Section {{.*}} .xdata {
 // OBJ: IMAGE_REL_PPC_ADDR32 $stateUnwindMap$?g@@YAXXZ

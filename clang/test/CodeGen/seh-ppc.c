@@ -83,9 +83,9 @@ int seh_filter(volatile int *p, int selector) {
 
 // OBJ: Format: COFF-PowerPC
 // OBJ: Name: .xdata
-// OBJ: RawDataSize: 20
+// OBJ: RawDataSize: 0x14
 // OBJ: Name: .pdata
-// OBJ: RawDataSize: 40
+// OBJ: RawDataSize: 0x28
 // OBJ: Section {{.*}} .xdata {
 // OBJ: 0xC IMAGE_REL_PPC_ADDR32 ..?filt$0@0@seh_filter@@
 // OBJ: Section {{.*}} .pdata {

@@ -36,14 +36,14 @@ local_proc ENDP
         END
 
 ; CHECK:      Name: .text
-; CHECK:      RawDataSize: 12
+; CHECK:      RawDataSize: 0xC
 ; CHECK:      Name: .pdata
-; CHECK:      RawDataSize: 8
+; CHECK:      RawDataSize: 0x8
 ; CHECK:      RelocationCount: 2
 ; CHECK:      IMAGE_SCN_MEM_READ
 ; CHECK-NOT:  IMAGE_SCN_MEM_WRITE
 ; CHECK:      Name: .xdata
-; CHECK:      RawDataSize: 8
+; CHECK:      RawDataSize: 0x8
 ; CHECK:      Relocations [
 ; CHECK:        Section (3) .pdata {
 ; CHECK-NEXT:     0x0 IMAGE_REL_ARM64_ADDR32NB probe

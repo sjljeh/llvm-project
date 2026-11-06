@@ -31,10 +31,10 @@ encoded
 ; NO-WARNING-NOT: A2034
 
 ; OBJ: Name: .data
-; OBJ: RawDataSize: 117
+; OBJ: RawDataSize: 0x75
 ; OBJ: RelocationCount: 2
 ; OBJ: Name: .text
-; OBJ: RawDataSize: 8
+; OBJ: RawDataSize: 0x8
 ; OBJ: Offset: 0x18
 ; OBJ-NEXT: Type: IMAGE_REL_ARM64_ADDR64
 ; OBJ-NEXT: Symbol: external
