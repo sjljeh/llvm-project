@@ -356,10 +356,9 @@ void WinCOFFWriter::defineSection(const MCSectionCOFF &MCSec) {
   Section->Header.Characteristics = MCSec.getCharacteristics();
   if (!MCSec.shouldOmitAlignment() || MCSec.getAlign() > Align(1))
     Section->Header.Characteristics |= getAlignment(MCSec);
-  StringRef AssemblyLanguage =
-      getContext().getTargetOptions().getAssemblyLanguage();
-  if ((AssemblyLanguage.equals_insensitive("armasm64") ||
-       AssemblyLanguage.equals_insensitive("masm")) &&
+  const MCTargetOptions &TargetOptions = getContext().getTargetOptions();
+  if ((TargetOptions.isARMASMCompatible() ||
+       TargetOptions.getAssemblyLanguage().equals_insensitive("masm")) &&
       MCSec.getName().starts_with(".debug$")) {
     Section->Header.Characteristics &= ~COFF::IMAGE_SCN_ALIGN_MASK;
     Section->Header.Characteristics |= COFF::IMAGE_SCN_ALIGN_1BYTES;
@@ -652,8 +651,7 @@ void WinCOFFWriter::writeSection(const COFFSection &Sec) {
     COFFSymbol::AuxiliarySymbols &AuxSyms = Sec.Symbol->Aux;
     assert(AuxSyms.size() == 1 && AuxSyms[0].AuxType == ATSectionDefinition);
     AuxSymbol &SecDef = AuxSyms[0];
-    if (!getContext().getTargetOptions().getAssemblyLanguage().equals_insensitive(
-            "armasm64"))
+    if (!getContext().getTargetOptions().isARMASMCompatible())
       SecDef.Aux.SectionDefinition.CheckSum = CRC;
   } else if (isUninitializedData(Sec)) {
     // Error if fixups or non-zero bytes are present.
@@ -767,8 +765,7 @@ void WinCOFFWriter::assignSectionNumbers() {
   auto Assign = [&](COFFSection &Section) {
     Section.Number = I;
     Section.Symbol->Data.SectionNumber = I;
-    if (!getContext().getTargetOptions().getAssemblyLanguage().equals_insensitive(
-            "armasm64"))
+    if (!getContext().getTargetOptions().isARMASMCompatible())
       Section.Symbol->Aux[0].Aux.SectionDefinition.Number = I;
     ++I;
   };

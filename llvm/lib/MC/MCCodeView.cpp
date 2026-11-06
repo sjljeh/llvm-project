@@ -135,10 +135,8 @@ void CodeViewContext::recordCVLoc(MCContext &Ctx, const MCSymbol *Label,
 }
 
 std::pair<StringRef, unsigned> CodeViewContext::addToStringTable(StringRef S) {
-  // ARMASM64 starts its CodeView string table with the first source path.
-  if (StringTable.empty() &&
-      MCCtx->getTargetOptions().getAssemblyLanguage().equals_insensitive(
-          "armasm64"))
+  // ARMASM starts its CodeView string table with the first source path.
+  if (StringTable.empty() && MCCtx->getTargetOptions().isARMASMCompatible())
     StrTab.clear();
   auto Insertion =
       StringTable.insert(std::make_pair(S, unsigned(StrTab.size())));

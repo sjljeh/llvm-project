@@ -196,6 +196,11 @@ public:
 
   virtual bool isParsingMasm() const { return false; }
 
+  /// Whether this parser accepts the ARM/Microsoft ARMASM dialect (as used by
+  /// armasm and armasm64). Target parsers use this to enable dialect-specific
+  /// instruction syntax and pseudo-instructions.
+  virtual bool isParsingARMASM() const { return false; }
+
   virtual void setMasmIdentifierCaseSensitive(bool) {}
 
   virtual void setMasmDotName(bool) {}
@@ -369,6 +374,11 @@ LLVM_ABI MCAsmParser *createMCAsmParser(SourceMgr &, MCContext &, MCStreamer &,
 LLVM_ABI MCAsmParser *createMCMasmParser(SourceMgr &, MCContext &, MCStreamer &,
                                          const MCAsmInfo &, struct tm,
                                          unsigned CB = 0);
+
+/// Create an MCAsmParser instance for parsing ARMASM-style assembly, the
+/// dialect accepted by Microsoft armasm and armasm64.
+LLVM_ABI MCAsmParser *createMCARMASMParser(SourceMgr &, MCContext &,
+                                           MCStreamer &, const MCAsmInfo &);
 
 } // end namespace llvm
 
