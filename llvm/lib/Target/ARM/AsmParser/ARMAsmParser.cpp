@@ -10,6 +10,7 @@
 #include "ARMFeatures.h"
 #include "MCTargetDesc/ARMAddressingModes.h"
 #include "MCTargetDesc/ARMBaseInfo.h"
+#include "MCTargetDesc/ARMFixupKinds.h"
 #include "MCTargetDesc/ARMInstPrinter.h"
 #include "MCTargetDesc/ARMMCAsmInfo.h"
 #include "MCTargetDesc/ARMMCTargetDesc.h"
@@ -40,6 +41,7 @@
 #include "llvm/MC/MCParser/MCTargetAsmParser.h"
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCSection.h"
+#include "llvm/MC/MCObjectStreamer.h"
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/MCSymbol.h"
@@ -265,6 +267,7 @@ class ARMAsmParser : public MCTargetAsmParser {
   }
 
   bool parseARMASMMov32(SMLoc NameLoc);
+  bool parseARMASMAdrl(SMLoc NameLoc);
 
   bool useImplicitITARM() const {
     return ImplicitItMode == ImplicitItModeTy::Always ||
@@ -6543,6 +6546,63 @@ bool ARMAsmParser::parseARMASMMov32(SMLoc NameLoc) {
   return false;
 }
 
+/// ARMASM's ADRL pseudo-instruction, which armasm assembles as ADR.W of the
+/// label followed by ADD.W (or SUB.W) of the rest of the offset. In an object
+/// file one fixup covers both instructions and splits the offset; the target
+/// must be in the same section.
+bool ARMAsmParser::parseARMASMAdrl(SMLoc NameLoc) {
+  if (!isThumbTwo())
+    return Error(NameLoc, "ADRL requires Thumb-2");
+  SMLoc RegLoc = getParser().getTok().getLoc();
+  MCRegister Reg = tryParseRegister();
+  if (!Reg || !MRI->getRegClass(ARM::rGPRRegClassID).contains(Reg))
+    return Error(RegLoc, "general-purpose register expected");
+  if (getParser().parseComma())
+    return true;
+  const MCExpr *Target;
+  if (getParser().parseExpression(Target))
+    return true;
+  if (getLexer().isNot(AsmToken::EndOfStatement))
+    return Error(getLexer().getLoc(), "unexpected token in argument list");
+
+  MCStreamer &Out = getParser().getStreamer();
+  flushPendingInstructions(Out);
+  // Keep both instructions in one fragment so that the fixup can patch them.
+  MCObjectStreamer *ObjOut =
+      Out.isObj() ? static_cast<MCObjectStreamer *>(&Out) : nullptr;
+  if (ObjOut)
+    ObjOut->ensureHeadroom(8);
+  MCInst Adr;
+  Adr.setOpcode(ARM::t2ADR);
+  Adr.addOperand(MCOperand::createReg(Reg));
+  Adr.addOperand(ObjOut ? MCOperand::createImm(0)
+                        : MCOperand::createExpr(Target));
+  Adr.addOperand(MCOperand::createImm(ARMCC::AL));
+  Adr.addOperand(MCOperand::createReg(MCRegister()));
+  Adr.setLoc(NameLoc);
+  MCInst Add;
+  Add.setOpcode(ARM::t2ADDri);
+  Add.addOperand(MCOperand::createReg(Reg));
+  Add.addOperand(MCOperand::createReg(Reg));
+  Add.addOperand(MCOperand::createImm(0));
+  Add.addOperand(MCOperand::createImm(ARMCC::AL));
+  Add.addOperand(MCOperand::createReg(MCRegister()));
+  Add.addOperand(MCOperand::createReg(MCRegister()));
+  Add.setLoc(NameLoc);
+  MCFragment *Fragment = ObjOut ? ObjOut->getCurrentFragment() : nullptr;
+  size_t Offset = ObjOut ? ObjOut->getCurFragSize() : 0;
+  Out.emitInstruction(Adr, getSTI());
+  Out.emitInstruction(Add, getSTI());
+  if (ObjOut) {
+    if (ObjOut->getCurrentFragment() != Fragment ||
+        ObjOut->getCurFragSize() != Offset + 8)
+      return Error(NameLoc, "unable to emit ADRL");
+    Fragment->addFixup(MCFixup::create(
+        Offset, Target, MCFixupKind(ARM::fixup_t2_adrl_pcrel), /*PCRel=*/true));
+  }
+  return false;
+}
+
 bool ARMAsmParser::parseImmExpr(int64_t &Out) {
   const MCExpr *Expr = nullptr;
   SMLoc L = getParser().getTok().getLoc();
@@ -7186,6 +7246,10 @@ bool ARMAsmParser::parseInstruction(ParseInstructionInfo &Info, StringRef Name,
   // 'error' so that no instruction is matched for the statement.
   if (getParser().isParsingARMASM() && Name.equals_insensitive("mov32")) {
     parseARMASMMov32(NameLoc);
+    return true;
+  }
+  if (getParser().isParsingARMASM() && Name.equals_insensitive("adrl")) {
+    parseARMASMAdrl(NameLoc);
     return true;
   }
 

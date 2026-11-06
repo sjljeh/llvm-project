@@ -689,6 +689,9 @@ void WinCOFFWriter::createFileSymbols() {
     const std::string &Name = It.first;
     unsigned SymbolSize = UseBigObj ? COFF::Symbol32Size : COFF::Symbol16Size;
     unsigned Count = (Name.size() + SymbolSize - 1) / SymbolSize;
+    // armasm and armasm64 always leave room for a terminating NUL.
+    if (getContext().getTargetOptions().isARMASMCompatible())
+      Count = Name.size() / SymbolSize + 1;
 
     COFFSymbol *File = createSymbol(".file");
     File->Data.SectionNumber = COFF::IMAGE_SYM_DEBUG;
@@ -769,6 +772,14 @@ void WinCOFFWriter::assignSectionNumbers() {
       Section.Symbol->Aux[0].Aux.SectionDefinition.Number = I;
     ++I;
   };
+
+  // armasm and armasm64 number sections in the order the source defines
+  // them.
+  if (getContext().getTargetOptions().isARMASMCompatible()) {
+    for (const std::unique_ptr<COFFSection> &Section : Sections)
+      Assign(*Section);
+    return;
+  }
 
   // Although it is not explicitly requested by the Microsoft COFF spec,
   // we should avoid emitting forward associative section references,
@@ -1129,6 +1140,25 @@ uint64_t WinCOFFWriter::writeObject() {
   setWeakDefaultNames();
   if (Mode != DwoOnly)
     createFileSymbols();
+
+  // armasm and armasm64 start the symbol table with @comp.id and @feat.00,
+  // then the .file symbol, then one symbol per section.
+  if (getContext().getTargetOptions().isARMASMCompatible()) {
+    auto Rank = [](const std::unique_ptr<COFFSymbol> &Symbol) {
+      if (Symbol->Name == "@comp.id")
+        return 0;
+      if (Symbol->Name == "@feat.00")
+        return 1;
+      if (Symbol->Data.StorageClass == COFF::IMAGE_SYM_CLASS_FILE)
+        return 2;
+      if (Symbol->Section && Symbol->Section->Symbol == Symbol.get())
+        return 3;
+      return 4;
+    };
+    llvm::stable_sort(Symbols, [&](const auto &A, const auto &B) {
+      return Rank(A) < Rank(B);
+    });
+  }
 
   for (auto &Symbol : Symbols) {
     // Update section number & offset for symbols that have them.

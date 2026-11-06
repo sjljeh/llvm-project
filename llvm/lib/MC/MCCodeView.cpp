@@ -205,7 +205,10 @@ void CodeViewContext::emitFileChecksums(MCObjectStreamer &OS) {
     OS.emitAssignment(File.ChecksumTableOffset,
                       MCConstantExpr::create(CurrentOffset, Ctx));
     CurrentOffset += 4; // String table offset.
-    if (!File.ChecksumKind) {
+    // A checksum of no kind may still carry bytes (armasm writes 32 zero
+    // bytes for files it cannot read).
+    bool HasChecksum = File.ChecksumKind || !File.Checksum.empty();
+    if (!HasChecksum) {
       CurrentOffset +=
           4; // One byte each for checksum size and kind, then align to 4 bytes.
     } else {
@@ -216,7 +219,7 @@ void CodeViewContext::emitFileChecksums(MCObjectStreamer &OS) {
 
     OS.emitInt32(File.StringTableOffset);
 
-    if (!File.ChecksumKind) {
+    if (!HasChecksum) {
       // There is no checksum.  Therefore zero the next two fields and align
       // back to 4 bytes.
       OS.emitInt32(0);

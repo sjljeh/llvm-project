@@ -42,6 +42,8 @@ public:
   /// Callback used to implement the .ltorg directive.
   /// Emit contents of constant pool for the current section.
   void emitCurrentConstantPool() override;
+  void emitCurrentConstantPoolAtSectionEnd() override;
+  bool hasCurrentConstantPool() override;
 
   /// Lay out ldr= constant pools the way armasm64 does.
   void setARMASMConstantPoolLayout();

@@ -35,6 +35,7 @@
 #include "llvm/BinaryFormat/COFF.h"
 #include "llvm/Config/llvm-config.h"
 #include "llvm/DebugInfo/CodeView/CodeView.h"
+#include "llvm/DebugInfo/CodeView/TypeIndex.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCCodeView.h"
 #include "llvm/MC/MCContext.h"
@@ -145,8 +146,6 @@ public:
   bool contains(StringRef Name) const { return find(Name); }
 };
 
-constexpr uint64_t ARMAsmVersion = 145136248;
-
 std::optional<VariableValue>
 getBuiltinVariable(StringRef Name, const VariableMap *Context = nullptr) {
   if (Context)
@@ -161,8 +160,6 @@ getBuiltinVariable(StringRef Name, const VariableMap *Context = nullptr) {
     return VariableValue::string("not specified");
   if (Name.equals_insensitive("CPU"))
     return VariableValue::string("\"-arch 4t\"");
-  if (Name.equals_insensitive("ARMASM_VERSION"))
-    return VariableValue::arithmetic(ARMAsmVersion);
   if (Name.equals_insensitive("CODESIZE") ||
       Name.equals_insensitive("CONFIG"))
     return VariableValue::arithmetic(32);
@@ -1479,6 +1476,25 @@ struct DataDirective {
   unsigned alignment() const { return std::min(size(), 4U); }
 };
 
+/// The CodeView basic type armasm records for data defined by \p Data.
+unsigned getCodeViewDataType(const DataDirective &Data) {
+  switch (Data.Kind) {
+  case DataDirectiveKind::Byte:
+    return static_cast<unsigned>(codeview::SimpleTypeKind::UnsignedCharacter);
+  case DataDirectiveKind::Word:
+    return static_cast<unsigned>(codeview::SimpleTypeKind::UInt16);
+  case DataDirectiveKind::Long:
+    return static_cast<unsigned>(codeview::SimpleTypeKind::UInt32);
+  case DataDirectiveKind::Quad:
+    return static_cast<unsigned>(codeview::SimpleTypeKind::UInt64);
+  case DataDirectiveKind::Single:
+    return static_cast<unsigned>(codeview::SimpleTypeKind::Float32);
+  case DataDirectiveKind::Double:
+    return static_cast<unsigned>(codeview::SimpleTypeKind::Float64);
+  }
+  llvm_unreachable("unknown data directive kind");
+}
+
 std::optional<DataDirective> getDataDirective(StringRef Token) {
   if (Token.equals_insensitive("DCB") || Token == "=")
     return DataDirective{DataDirectiveKind::Byte};
@@ -1841,12 +1857,15 @@ public:
   /// The default AREA alignment, as a power of two.
   unsigned getDefaultAreaAlignment() const { return Is64Bit ? 3 : 2; }
 
-  /// The @comp.id value recorded by the Microsoft assembler this matches.
-  uint64_t getCompId() const { return Is64Bit ? 17010072 : 17009053; }
-
-  /// armasm64 flushes ldr= literal pools when the area changes; armasm
-  /// keeps one pool per area until the end of the source.
-  bool flushesLiteralPoolsAtAreaEnd() const { return Is64Bit; }
+  /// The Microsoft assembler build this matches: armasm64 14.52.36815 and
+  /// armasm 14.44.35229 (the last release with 32-bit ARM tools). It is
+  /// reported by {ARMASM_VERSION} and recorded in @comp.id.
+  uint64_t getToolBuild() const { return Is64Bit ? 36815 : 35229; }
+  uint64_t getARMASMVersion() const {
+    return Is64Bit ? 1452'00000 + getToolBuild() : 1444'00000 + getToolBuild();
+  }
+  /// @comp.id: product identifier 0x0103 (MASM) and the build number.
+  uint64_t getCompId() const { return (0x0103 << 16) | getToolBuild(); }
 
   /// Whether data directives in code areas pad to their alignment with NOP
   /// instructions (armasm64) or with zeros (armasm).
@@ -1914,12 +1933,8 @@ class ARMASMParser final : public MCAsmParser, private ExpressionContext {
     std::string AttributeSignature;
     MCSymbol *BaseSymbol = nullptr;
     MCSection *Section = nullptr;
-  };
-
-  struct DebugFile {
-    std::string Filename;
-    std::string Checksum;
-    unsigned Number;
+    std::optional<unsigned> DebugCodeSection;
+    bool IsPData = false;
   };
 
   struct DebugCodeSection {
@@ -1928,14 +1943,22 @@ class ARMASMParser final : public MCAsmParser, private ExpressionContext {
     MCSymbol *EndSymbol;
     unsigned FunctionId;
     bool HasLines = false;
+    unsigned LastFile = 0;
+    unsigned LastLine = 0;
   };
 
   struct DebugSymbol {
+    enum KindTy { Procedure, Label, Data };
     std::string Name;
     MCSymbol *Symbol;
     MCSymbol *EndSymbol;
-    bool IsProcedure;
+    KindTy Kind;
     bool IsExternal;
+    /// The CodeView type of a data symbol.
+    unsigned Type = 0;
+    /// A symbol at the start of the symbol's area: armasm gives the section
+    /// index of labels and data relative to the section symbol.
+    MCSymbol *SectionSymbol = nullptr;
   };
 
   struct PendingWeakExternal {
@@ -1997,6 +2020,8 @@ class ARMASMParser final : public MCAsmParser, private ExpressionContext {
     StringMap<VariableValue> RegisterRelativeValues;
     StringMap<uint64_t> SymbolSizes;
     StringMap<AreaDefinition> Areas;
+    /// Areas in the order the source defines them.
+    SmallVector<AreaDefinition *, 8> AreaOrder;
     SmallVector<PendingWeakExternal, 4> PendingWeakExternals;
     StringSet<> ReferencedNames;
 
@@ -2004,6 +2029,7 @@ class ARMASMParser final : public MCAsmParser, private ExpressionContext {
     std::string CurrentAreaName;
     bool CurrentAreaIsCode = false;
     bool CurrentAreaIsNoInit = false;
+    bool CurrentAreaIsPData = false;
     bool CurrentAreaUsesCodeAlignment = false;
     uint64_t CurrentAreaAlignment = 8;
     MCSymbol *CurrentAreaBaseSymbol = nullptr;
@@ -2014,6 +2040,18 @@ class ARMASMParser final : public MCAsmParser, private ExpressionContext {
     DenseSet<unsigned> DefinedNumericLabels;
     unsigned PCSymbolCount = 0;
     MCSymbol *CurrentPCSymbol = nullptr;
+
+    // A #line directive: lines after PhysicalLine of PhysicalFile are
+    // attributed to Filename, starting at Line.
+    struct LineDirective {
+      std::string PhysicalFile;
+      unsigned PhysicalLine;
+      std::string Filename;
+      unsigned Line;
+    };
+    std::optional<LineDirective> ActiveLineDirective;
+    /// Debug file numbers, assigned as files first get line entries.
+    StringMap<unsigned> DebugFileNumbers;
 
     // Statement context.
     bool FirstWasDefined = false;
@@ -2031,9 +2069,9 @@ class ARMASMParser final : public MCAsmParser, private ExpressionContext {
     SmallVector<DebugSymbol, 16> DebugSymbols;
     StringSet<> DebugSymbolNames;
     std::optional<unsigned> ActiveDebugProcedure;
-    // Pass 1 records the files that contribute statements, in order.
-    SmallVector<std::string, 4> StatementFiles;
-    StringSet<> StatementFileSet;
+    bool SawDebugSymbol = false;
+    // Every source file read, and files named by #line, for CodeView.
+    StringSet<> DebugFileSet;
   };
 
   ARMASMParserOptions Opts;
@@ -2046,9 +2084,8 @@ class ARMASMParser final : public MCAsmParser, private ExpressionContext {
   StringMap<StorageMapField> FinalStorageMapFields;
   StringMap<uint64_t> CollectedSizes;
   StringMap<ExportType> CollectedExports;
+  SmallVector<std::string, 4> DebugFileOrder;
 
-  SmallVector<DebugFile, 4> DebugFiles;
-  StringMap<unsigned> DebugFileNumbers;
 
   /// Buffers loaded by GET/INCLUDE, reused by pass 2.
   StringMap<unsigned> IncludedBuffers;
@@ -2208,17 +2245,18 @@ class ARMASMParser final : public MCAsmParser, private ExpressionContext {
     auto Constant = S.ConstantSymbols.find(Name);
     MCSymbol *Symbol = Ctx.getOrCreateSymbol(
         Constant == S.ConstantSymbols.end() ? Name : Constant->second);
-    return MCSymbolRefExpr::create(Symbol, Ctx);
+    // The statement's location lets fixup errors at layout name the line.
+    return MCSymbolRefExpr::create(Symbol, Ctx, S.CurrentLoc);
   }
 
   const MCExpr *getLocationExpr(bool IsPC) override {
     if (!emitting())
       return nullptr;
     if (IsPC && S.CurrentPCSymbol)
-      return MCSymbolRefExpr::create(S.CurrentPCSymbol, Ctx);
+      return MCSymbolRefExpr::create(S.CurrentPCSymbol, Ctx, S.CurrentLoc);
     MCSymbol *Here = Ctx.createTempSymbol();
     Out.emitLabel(Here);
-    return MCSymbolRefExpr::create(Here, Ctx);
+    return MCSymbolRefExpr::create(Here, Ctx, S.CurrentLoc);
   }
 
   const MCExpr *getNumericLabelExpr(char Direction, unsigned Number,
@@ -2232,7 +2270,7 @@ class ARMASMParser final : public MCAsmParser, private ExpressionContext {
       Direction = S.DefinedNumericLabels.contains(Number) ? 'b' : 'f';
     MCSymbol *Symbol = Ctx.getDirectionalLocalSymbol(
         S.NumericLabelScope * 100 + Number, Direction == 'b');
-    return MCSymbolRefExpr::create(Symbol, Ctx);
+    return MCSymbolRefExpr::create(Symbol, Ctx, S.CurrentLoc);
   }
 
   VariableLookup effectiveVariables() const {
@@ -2529,6 +2567,8 @@ class ARMASMParser final : public MCAsmParser, private ExpressionContext {
                      bool *ExitedMacro = nullptr) {
     const MemoryBuffer *Buffer = SrcMgr.getMemoryBuffer(BufferID);
     StringRef Filename = Buffer->getBufferIdentifier();
+    S.DebugFileSet.insert(
+        normalizeDebugPath(sys::path::convert_to_slash(Filename)));
     SmallVector<SourceLine, 0> Lines;
     splitLines(Buffer->getBuffer(), Filename, Lines);
     bool MacroExit = false;
@@ -2963,9 +3003,13 @@ class ARMASMParser final : public MCAsmParser, private ExpressionContext {
   }
 
   void flushPending(bool ReplaceWithZero = false);
+  void emitLiteralPool(bool AtAreaEnd = false);
+  void emitAllLiteralPools();
   void ensureDefaultSection();
   void emitDebugLocation();
-  void recordDebugLabel(StringRef Name, MCSymbol *Symbol);
+  unsigned getDebugFileNumber(StringRef Path);
+  void recordDebugSymbol(StringRef Name, MCSymbol *Symbol,
+                         DebugSymbol::KindTy Kind, unsigned Type = 0);
   void emitNumericLabel(const NumericLocalLabel &Label);
   void emitPCLabel();
   void emitDataValue(const MCExpr *Expr, unsigned Size, bool IsSymbolic,
@@ -3012,7 +3056,6 @@ class ARMASMParser final : public MCAsmParser, private ExpressionContext {
 
   void beginFile();
   bool finishFile();
-  void collectDebugFiles(StringRef MainFilename);
   void emitDebugInformation();
 
 public:
@@ -3343,10 +3386,15 @@ bool ARMASMParser::processStatement(const SourceLine &Line, StringRef Text) {
   S.CurrentFilename = sys::path::convert_to_slash(Line.Filename);
   S.CurrentLine = Line.Line;
   S.CurrentLoc = Line.getLoc();
+  // Files named by #line directives appear in debug information.
+  StringRef Statement = stripComment(Text).trim();
+  if (takeToken(Statement).equals_insensitive("#line")) {
+    takeToken(Statement);
+    StringRef File = Statement.trim();
+    if (File.consume_front("\"") && File.consume_back("\""))
+      S.DebugFileSet.insert(File);
+  }
   if (!emitting()) {
-    std::string File = normalizeDebugPath(S.CurrentFilename);
-    if (S.StatementFileSet.insert(File).second)
-      S.StatementFiles.push_back(File);
     collectStatement(Line, Text);
     return false;
   }
@@ -3472,6 +3520,41 @@ void ARMASMParser::flushPending(bool ReplaceWithZero) {
   }
 }
 
+/// Emit the current area's ldr= literal pool, with a line-table entry for
+/// the statement that places it, as armasm does. END places pools at the end
+/// of their areas, where armasm aligns them differently.
+void ARMASMParser::emitLiteralPool(bool AtAreaEnd) {
+  MCTargetStreamer *TS = Out.getTargetStreamer();
+  if (!TS || !Out.getCurrentFragment() || !TS->hasCurrentConstantPool())
+    return;
+  emitDebugLocation();
+  if (AtAreaEnd)
+    TS->emitCurrentConstantPoolAtSectionEnd();
+  else
+    TS->emitCurrentConstantPool();
+}
+
+/// Emit the pending literal pool of every area at the end of its area.
+void ARMASMParser::emitAllLiteralPools() {
+  MCTargetStreamer *TS = Out.getTargetStreamer();
+  // Without a current section nothing has been emitted, so no pool waits.
+  if (!TS || !Out.getCurrentFragment())
+    return;
+  MCSection *Current = Out.getCurrentSectionOnly();
+  std::optional<unsigned> CurrentDebugSection = S.CurrentDebugCodeSection;
+  bool CurrentIsCode = S.CurrentAreaIsCode;
+  for (AreaDefinition *Area : S.AreaOrder) {
+    Out.switchSection(Area->Section);
+    S.CurrentDebugCodeSection = Area->DebugCodeSection;
+    S.CurrentAreaIsCode = Area->IsCode;
+    emitLiteralPool(/*AtAreaEnd=*/true);
+  }
+  if (Current)
+    Out.switchSection(Current);
+  S.CurrentDebugCodeSection = CurrentDebugSection;
+  S.CurrentAreaIsCode = CurrentIsCode;
+}
+
 void ARMASMParser::emitAlignment(Align Alignment, std::optional<int64_t> Fill) {
   MCSection *Section = Out.getCurrentSectionOnly();
   if (MAI.useCodeAlign(*Section) && !Fill)
@@ -3496,34 +3579,91 @@ void ARMASMParser::ensureDefaultSection() {
   Definition.Section =
       Ctx.getCOFFSection("__DefaultSection", Definition.Characteristics);
   Definition.BaseSymbol = Ctx.createTempSymbol();
+  S.AreaOrder.push_back(&Definition);
   S.CurrentAreaBaseSymbol = Definition.BaseSymbol;
   Out.switchSection(Definition.Section);
   emitAlignment(Align(8));
   Out.emitLabel(Definition.BaseSymbol);
 }
 
+/// The CodeView file number of \p Path, assigning the next number (and
+/// emitting its checksum) the first time a file is used. armasm numbers files
+/// in the order they first appear in line tables.
+unsigned ARMASMParser::getDebugFileNumber(StringRef Path) {
+  auto [It, Inserted] =
+      S.DebugFileNumbers.try_emplace(Path, S.DebugFileNumbers.size() + 1);
+  if (!Inserted)
+    return It->second;
+  ErrorOr<std::unique_ptr<MemoryBuffer>> Buffer =
+      MemoryBuffer::getFile(Path, /*IsText=*/false);
+  SmallVector<uint8_t, 32> Checksum;
+  unsigned Kind = 0;
+  if (Buffer) {
+    StringRef Contents = (*Buffer)->getBuffer();
+    ArrayRef<uint8_t> Bytes(reinterpret_cast<const uint8_t *>(Contents.data()),
+                            Contents.size());
+    if (Opts.DebugUseSHA1) {
+      std::array<uint8_t, 20> Hash = SHA1::hash(Bytes);
+      Checksum.assign(Hash.begin(), Hash.end());
+      Kind = static_cast<unsigned>(codeview::FileChecksumKind::SHA1);
+    } else {
+      std::array<uint8_t, 32> Hash = SHA256::hash(Bytes);
+      Checksum.assign(Hash.begin(), Hash.end());
+      Kind = static_cast<unsigned>(codeview::FileChecksumKind::SHA256);
+    }
+  } else if (Path != "<stdin>") {
+    // Files named only by #line: an all-zero checksum of no kind.
+    Checksum.assign(32, 0);
+  }
+  void *Memory = Ctx.allocate(Checksum.size(), 1);
+  memcpy(Memory, Checksum.data(), Checksum.size());
+  Out.emitCVFileDirective(
+      It->second, Path,
+      ArrayRef(static_cast<const uint8_t *>(Memory), Checksum.size()), Kind);
+  return It->second;
+}
+
 void ARMASMParser::emitDebugLocation() {
   if (!Opts.DebugInfo || !S.CurrentAreaIsCode || !S.CurrentDebugCodeSection)
     return;
-  auto File = DebugFileNumbers.find(normalizeDebugPath(S.CurrentFilename));
-  if (File == DebugFileNumbers.end())
-    return;
+  // Code from a macro expansion belongs to the outermost invocation.
+  std::string Filename = S.CurrentFilename;
+  unsigned LineNumber = S.CurrentLine;
+  if (!S.MacroInvocations.empty()) {
+    Filename = sys::path::convert_to_slash(S.MacroInvocations.front().Filename);
+    LineNumber = S.MacroInvocations.front().Line;
+  }
+  std::string Path = normalizeDebugPath(Filename);
+  if (const auto &Directive = S.ActiveLineDirective)
+    if (Directive->PhysicalFile == Filename &&
+        LineNumber > Directive->PhysicalLine) {
+      LineNumber = Directive->Line + (LineNumber - Directive->PhysicalLine - 1);
+      Path = Directive->Filename;
+    }
+  unsigned File = getDebugFileNumber(Path);
   DebugCodeSection &Section = S.DebugCodeSections[*S.CurrentDebugCodeSection];
-  Out.emitCVLocDirective(Section.FunctionId, File->second, S.CurrentLine,
+  if (Section.HasLines && Section.LastFile == File &&
+      Section.LastLine == LineNumber)
+    return;
+  Section.LastFile = File;
+  Section.LastLine = LineNumber;
+  Out.emitCVLocDirective(Section.FunctionId, File, LineNumber,
                          /*Column=*/0, /*PrologueEnd=*/false,
                          /*IsStmt=*/true, StringRef(), S.CurrentLoc);
   Section.HasLines = true;
 }
 
-void ARMASMParser::recordDebugLabel(StringRef Name, MCSymbol *) {
-  if (!Opts.DebugInfo || !S.CurrentAreaIsCode ||
+/// Record a label for CodeView: S_LABEL32 for code labels, and S_LDATA32 or
+/// S_GDATA32, typed by the defining directive, for data.
+void ARMASMParser::recordDebugSymbol(StringRef Name, MCSymbol *Symbol,
+                                     DebugSymbol::KindTy Kind, unsigned Type) {
+  S.SawDebugSymbol = true;
+  // armasm records nothing for the exception data in PDATA areas.
+  if (!Opts.DebugInfo || S.CurrentAreaIsPData ||
       !S.DebugSymbolNames.insert(Name).second)
     return;
-  MCSymbol *Label = Ctx.createTempSymbol();
-  Out.emitLabel(Label);
-  S.DebugSymbols.push_back({Name.str(), Label, nullptr,
-                            /*IsProcedure=*/false,
-                            /*IsExternal=*/isExported(Name)});
+  S.DebugSymbols.push_back({Name.str(), Symbol, nullptr, Kind,
+                            isExported(Name), Type, S.CurrentAreaBaseSymbol});
 }
 
 void ARMASMParser::emitNumericLabel(const NumericLocalLabel &Label) {
@@ -3534,6 +3674,9 @@ void ARMASMParser::emitNumericLabel(const NumericLocalLabel &Label) {
   MCSymbol *Symbol = getSymbol(SymbolName);
   defineCOFFSymbol(Symbol, COFF::IMAGE_SYM_CLASS_LABEL);
   emitLabel(Symbol, S.CurrentLoc);
+  recordDebugSymbol(SymbolName, Symbol,
+                    S.CurrentAreaIsCode ? DebugSymbol::Label
+                                        : DebugSymbol::Data);
   Out.emitLabel(Ctx.createDirectionalLocalSymbol(S.NumericLabelScope * 100 +
                                                  Label.Number),
                 S.CurrentLoc);
@@ -3544,6 +3687,8 @@ void ARMASMParser::emitPCLabel() {
   defineCOFFSymbol(Symbol, COFF::IMAGE_SYM_CLASS_LABEL);
   emitLabel(Symbol, S.CurrentLoc);
   S.CurrentPCSymbol = Symbol;
+  if (S.CurrentAreaIsCode)
+    recordDebugSymbol(Symbol->getName(), Symbol, DebugSymbol::Label);
 }
 
 void ARMASMParser::emitDataValue(const MCExpr *Expr, unsigned Size,
@@ -3623,9 +3768,20 @@ bool ARMASMParser::emitStatement(const SourceLine &Line, StringRef Text) {
   bool FirstWasDefined = S.FirstWasDefined;
   S.FirstWasDefined = false;
 
-  // C preprocessor line markers in preprocessed source carry no meaning.
-  if (First.equals_insensitive("#line"))
+  // #line N "file" attributes the following lines to another source in
+  // debug information, as armasm does.
+  if (First.equals_insensitive("#line")) {
+    StringRef Operands = Tail;
+    StringRef Number = takeToken(Operands);
+    unsigned NewLine;
+    StringRef File = Operands.trim();
+    if (Number.getAsInteger(10, NewLine) || !File.consume_front("\"") ||
+        !File.consume_back("\""))
+      return fatal(Line, "A2003: improper line syntax");
+    S.ActiveLineDirective = PassState::LineDirective{
+        S.CurrentFilename, S.CurrentLine, File.str(), NewLine};
     return false;
+  }
 
   bool IsRelocDirective = First.equals_insensitive("RELOC");
   if (!First.empty() && !IsRelocDirective) {
@@ -3680,8 +3836,7 @@ bool ARMASMParser::emitStatement(const SourceLine &Line, StringRef Text) {
   if (First.equals_insensitive("LTORG")) {
     if (!Tail.empty())
       return fatal(Line, "A2003: improper line syntax");
-    if (MCTargetStreamer *TS = Out.getTargetStreamer())
-      TS->emitCurrentConstantPool();
+    emitLiteralPool();
     return false;
   }
   if (First.equals_insensitive("KEEP")) {
@@ -3695,10 +3850,10 @@ bool ARMASMParser::emitStatement(const SourceLine &Line, StringRef Text) {
     if (S.ActiveProcedureArea)
       return fatal(Line, "A2057: missing ENDP directive in section " +
                              *S.ActiveProcedureArea);
-    if (Traits.flushesLiteralPoolsAtAreaEnd())
-      if (MCTargetStreamer *TS = Out.getTargetStreamer())
-        if (Out.getCurrentFragment())
-          TS->emitCurrentConstantPool();
+    // armasm attributes the pools it places at END to the following line.
+    ++S.CurrentLine;
+    emitAllLiteralPools();
+    --S.CurrentLine;
     return false;
   }
 
@@ -3763,7 +3918,7 @@ bool ARMASMParser::defineCodeLabel(const SourceLine &Line, StringRef NameToken,
       defineCOFFSymbol(Symbol, COFF::IMAGE_SYM_CLASS_LABEL);
   }
   emitLabel(Symbol, Line.getLoc());
-  recordDebugLabel(Name, Symbol);
+  recordDebugSymbol(Name, Symbol, DebugSymbol::Label);
   S.SymbolSizes[Name] = Size;
   return false;
 }
@@ -3796,10 +3951,10 @@ bool ARMASMParser::handleProcedureStart(const SourceLine &Line,
   S.ActiveDebugProcedure.reset();
   if (Opts.DebugInfo && S.CurrentAreaIsCode &&
       S.DebugSymbolNames.insert(Name).second) {
+    S.SawDebugSymbol = true;
     S.ActiveDebugProcedure = S.DebugSymbols.size();
     S.DebugSymbols.push_back({Name.str(), Symbol, Ctx.createTempSymbol(),
-                              /*IsProcedure=*/true,
-                              /*IsExternal=*/isExported(Name)});
+                              DebugSymbol::Procedure, isExported(Name)});
   }
   return false;
 }
@@ -3921,10 +4076,6 @@ bool ARMASMParser::handleIncludeBinary(const SourceLine &Line,
 }
 
 bool ARMASMParser::handleArea(const SourceLine &Line, StringRef Tail) {
-  if (Traits.flushesLiteralPoolsAtAreaEnd())
-    if (MCTargetStreamer *TS = Out.getTargetStreamer())
-      if (Out.getCurrentFragment())
-        TS->emitCurrentConstantPool();
   SmallVector<StringRef, 8> Attributes;
   splitOperands(Tail, Attributes);
   if (Attributes.front().empty())
@@ -4026,6 +4177,9 @@ bool ARMASMParser::handleArea(const SourceLine &Line, StringRef Tail) {
     Definition.UsesCodeAlignment = UsesCodeAlignment;
     Definition.IsCode = IsCode;
     Definition.IsNoInit = IsNoInit;
+    // armasm keeps exception data out of CodeView, whether the area is marked
+    // PDATA or merely named .pdata.
+    Definition.IsPData = IsPData || Area->Name == ".pdata";
     Definition.Characteristics =
         getCOFFCharacteristics(Area->Name, Flags, !Traits.is64Bit());
     if (Selection)
@@ -4037,11 +4191,13 @@ bool ARMASMParser::handleArea(const SourceLine &Line, StringRef Tail) {
         Ctx.getCOFFSection(Area->Name, Definition.Characteristics,
                            Definition.ComdatSymbol, Definition.Selection);
     Definition.BaseSymbol = Ctx.createTempSymbol();
+    S.AreaOrder.push_back(&Definition);
   } else if (Definition.AttributeSignature != AttributeSignature) {
     statementWarning(Line, 4043, "redefinition of section flags ignored");
   }
   S.CurrentAreaIsCode = Definition.IsCode;
   S.CurrentAreaIsNoInit = Definition.IsNoInit;
+  S.CurrentAreaIsPData = Definition.IsPData;
   S.CurrentAreaName = Area->Name.str();
   S.CurrentAreaAlignment = Definition.Alignment;
   S.CurrentAreaUsesCodeAlignment = Definition.UsesCodeAlignment;
@@ -4064,6 +4220,7 @@ bool ARMASMParser::handleArea(const SourceLine &Line, StringRef Tail) {
                                      Ctx.createTempSymbol(), Index});
       S.DebugCodeSectionIndices[AreaKey] = Index;
       S.CurrentDebugCodeSection = Index;
+      Definition.DebugCodeSection = Index;
       Out.emitCVFuncIdDirective(Index);
     } else {
       S.CurrentDebugCodeSection = Existing->second;
@@ -4131,6 +4288,11 @@ bool ARMASMParser::handleAlign(const SourceLine &Line, StringRef Tail) {
       return fatal(Line, "A2226: The given alignment pad doesn't evenly "
                          "divide the number of padding bytes");
   }
+  // armasm attributes padding to the ALIGN line; no padding, no line.
+  int64_t PaddingSize;
+  if (!Padding->evaluateAsAbsolute(PaddingSize, Out.getAssemblerPtr()) ||
+      PaddingSize != 0)
+    emitDebugLocation();
   Out.emitFill(*MCBinaryExpr::createDiv(
                    Padding, MCConstantExpr::create(FillSize, Ctx), Ctx),
                FillSize, Fill, Line.getLoc());
@@ -4294,6 +4456,20 @@ bool ARMASMParser::handleAlias(const SourceLine &Line, StringRef Tail) {
     defineCOFFSymbol(AliasSymbol, COFF::IMAGE_SYM_CLASS_STATIC);
   Out.emitAssignment(AliasSymbol,
                      MCSymbolRefExpr::create(getSymbol(Original), Ctx));
+  // An alias gets the same debug record as the symbol it names.
+  if (Opts.DebugInfo && !S.DebugSymbolNames.contains(Alias)) {
+    auto It = llvm::find_if(S.DebugSymbols, [&](const DebugSymbol &Symbol) {
+      return Symbol.Name == Original;
+    });
+    if (It != S.DebugSymbols.end() && It->Kind != DebugSymbol::Procedure) {
+      DebugSymbol Copy = *It;
+      Copy.Name = Alias.str();
+      Copy.Symbol = AliasSymbol;
+      Copy.IsExternal = isExported(Alias);
+      S.DebugSymbolNames.insert(Alias);
+      S.DebugSymbols.push_back(std::move(Copy));
+    }
+  }
   return false;
 }
 
@@ -4515,7 +4691,7 @@ bool ARMASMParser::handleStorage(
       if (!isExported(Name))
         defineCOFFSymbol(Symbol, COFF::IMAGE_SYM_CLASS_STATIC);
       emitLabel(Symbol, Line.getLoc());
-      recordDebugLabel(Name, Symbol);
+      recordDebugSymbol(Name, Symbol, DebugSymbol::Data);
       S.SymbolSizes[Name] = Count;
     } else {
       emitNumericLabel(*NumericLabel);
@@ -4545,6 +4721,8 @@ bool ARMASMParser::handleData(
     statementWarning(Line, 2034,
                      "unknown opcode: " + Directive +
                          "; accepted as an LLVM extension");
+  // armasm attributes the alignment padding to the data's line.
+  emitDebugLocation();
   if (!Data->Unaligned && Data->alignment() != 1)
     emitAlignment(Align(Data->alignment()),
                   Traits.padsDataWithCode() ? std::nullopt
@@ -4562,7 +4740,8 @@ bool ARMASMParser::handleData(
       if (!isExported(Name))
         defineCOFFSymbol(Symbol, COFF::IMAGE_SYM_CLASS_STATIC);
       emitLabel(Symbol, Line.getLoc());
-      recordDebugLabel(Name, Symbol);
+      recordDebugSymbol(Name, Symbol, DebugSymbol::Data,
+                        getCodeViewDataType(*Data));
       DataLabel = Name.str();
     } else {
       emitNumericLabel(*NumericLabel);
@@ -4570,7 +4749,6 @@ bool ARMASMParser::handleData(
   }
   if (UsesPC)
     emitPCLabel();
-  emitDebugLocation();
 
   SmallVector<StringRef, 8> Operands;
   splitOperands(Values, Operands);
@@ -4725,8 +4903,10 @@ bool ARMASMParser::handleInstructionLine(
       S.DefinedObjectSymbols.insert(Name);
       MCSymbol *Symbol = getSymbol(Name);
       if (!isExported(Name)) {
-        int StorageClass = S.CurrentAreaIsCode ? COFF::IMAGE_SYM_CLASS_LABEL
-                                               : COFF::IMAGE_SYM_CLASS_STATIC;
+        // Labels on instructions, and bare labels in code, are code labels.
+        int StorageClass = !Second.empty() || S.CurrentAreaIsCode
+                               ? COFF::IMAGE_SYM_CLASS_LABEL
+                               : COFF::IMAGE_SYM_CLASS_STATIC;
         if (S.CurrentAreaIsCode && S.AtProcedureStart)
           defineCOFFSymbol(Symbol, StorageClass,
                            COFF::IMAGE_SYM_DTYPE_FUNCTION
@@ -4735,7 +4915,11 @@ bool ARMASMParser::handleInstructionLine(
           defineCOFFSymbol(Symbol, StorageClass);
       }
       emitLabel(Symbol, Line.getLoc());
-      recordDebugLabel(Name, Symbol);
+      // A label on its own line names data in data areas.
+      recordDebugSymbol(Name, Symbol,
+                        Second.empty() && !S.CurrentAreaIsCode
+                            ? DebugSymbol::Data
+                            : DebugSymbol::Label);
     } else {
       emitNumericLabel(*NumericLabel);
     }
@@ -4765,42 +4949,17 @@ bool ARMASMParser::handleInstructionLine(
 
 namespace {
 
-void ARMASMParser::collectDebugFiles(StringRef MainFilename) {
-  SmallVector<std::string, 4> Filenames(S.StatementFiles.begin(),
-                                        S.StatementFiles.end());
-  std::string MainPath =
-      normalizeDebugPath(sys::path::convert_to_slash(MainFilename));
-  llvm::erase(Filenames, MainPath);
-  Filenames.push_back(MainPath);
-
-  DebugFiles.clear();
-  DebugFileNumbers.clear();
-  for (auto [Index, Filename] : llvm::enumerate(Filenames)) {
-    unsigned Number = Index + 1;
-    ErrorOr<std::unique_ptr<MemoryBuffer>> Buffer =
-        MemoryBuffer::getFile(Filename, /*IsText=*/false);
-    std::string Checksum;
-    if (Buffer) {
-      StringRef Contents = (*Buffer)->getBuffer();
-      ArrayRef<uint8_t> Bytes(
-          reinterpret_cast<const uint8_t *>(Contents.data()), Contents.size());
-      if (Opts.DebugUseSHA1) {
-        std::array<uint8_t, 20> Hash = SHA1::hash(Bytes);
-        Checksum.assign(Hash.begin(), Hash.end());
-      } else {
-        std::array<uint8_t, 32> Hash = SHA256::hash(Bytes);
-        Checksum.assign(Hash.begin(), Hash.end());
-      }
-    } else if (Filename != "<stdin>") {
-      report(nullptr, SMLoc(), SourceMgr::DK_Error,
-             "can't open file: " + Filename);
-    }
-    DebugFiles.push_back({Filename, std::move(Checksum), Number});
-    DebugFileNumbers[Filename] = Number;
-  }
-}
-
 void ARMASMParser::beginFile() {
+  // armasm records the absolute path of the source in a .file symbol.
+  SmallString<256> Source(
+      SrcMgr.getMemoryBuffer(SrcMgr.getMainFileID())->getBufferIdentifier());
+  if (Source != "<stdin>") {
+    sys::fs::make_absolute(Source);
+    sys::path::native(Source);
+    sys::path::remove_dots(Source, /*remove_dot_dot=*/true);
+  }
+  Out.emitFileDirective(Source);
+
   MCSymbol *CompId = getSymbol("@comp.id");
   defineCOFFSymbol(CompId, COFF::IMAGE_SYM_CLASS_STATIC);
   Out.emitAssignment(CompId, MCConstantExpr::create(Traits.getCompId(), Ctx));
@@ -4808,27 +4967,19 @@ void ARMASMParser::beginFile() {
   defineCOFFSymbol(Features, COFF::IMAGE_SYM_CLASS_STATIC);
   Out.emitAssignment(Features, MCConstantExpr::create(16, Ctx));
 
-  for (const DebugFile &File : DebugFiles) {
-    unsigned Kind = 0;
-    ArrayRef<uint8_t> Checksum;
-    if (!File.Checksum.empty()) {
-      Kind = static_cast<unsigned>(Opts.DebugUseSHA1
-                                       ? codeview::FileChecksumKind::SHA1
-                                       : codeview::FileChecksumKind::SHA256);
-      void *Memory = Ctx.allocate(File.Checksum.size(), 1);
-      memcpy(Memory, File.Checksum.data(), File.Checksum.size());
-      Checksum = ArrayRef(static_cast<const uint8_t *>(Memory),
-                          File.Checksum.size());
-    }
-    Out.emitCVFileDirective(File.Number, File.Filename, Checksum, Kind);
-  }
+  if (Opts.DebugInfo)
+    for (const std::string &File : DebugFileOrder)
+      getDebugFileNumber(File);
 }
 
 void ARMASMParser::emitDebugInformation() {
-  for (const DebugCodeSection &Section : S.DebugCodeSections) {
-    Out.switchSection(Section.Section);
-    Out.emitLabel(Section.EndSymbol);
-  }
+  // armasm always writes .debug$S with S_OBJNAME and S_COMPILE3; without -g
+  // the compile record carries the NoDbgInfo flag and nothing else follows.
+  if (Opts.DebugInfo)
+    for (const DebugCodeSection &Section : S.DebugCodeSections) {
+      Out.switchSection(Section.Section);
+      Out.emitLabel(Section.EndSymbol);
+    }
 
   auto Difference = [&](MCSymbol *End, MCSymbol *Begin) {
     return MCBinaryExpr::createSub(MCSymbolRefExpr::create(End, Ctx),
@@ -4838,6 +4989,28 @@ void ARMASMParser::emitDebugInformation() {
     Out.emitBytes(Value);
     Out.emitBytes(StringRef("\0", 1));
   };
+  auto BeginSubsection = [&](codeview::DebugSubsectionKind Kind) {
+    MCSymbol *Begin = Ctx.createTempSymbol();
+    MCSymbol *End = Ctx.createTempSymbol();
+    Out.emitIntValue(static_cast<unsigned>(Kind), 4);
+    Out.emitValue(Difference(End, Begin), 4);
+    Out.emitLabel(Begin);
+    return End;
+  };
+  // Symbol records are zero-padded to four bytes; the record length includes
+  // the padding.
+  auto BeginRecord = [&](codeview::SymbolKind Kind) {
+    MCSymbol *Begin = Ctx.createTempSymbol();
+    MCSymbol *End = Ctx.createTempSymbol();
+    Out.emitValue(Difference(End, Begin), 2);
+    Out.emitLabel(Begin);
+    Out.emitIntValue(static_cast<unsigned>(Kind), 2);
+    return End;
+  };
+  auto EndRecord = [&](MCSymbol *End) {
+    Out.emitValueToAlignment(Align(4), 0, 1, 0);
+    Out.emitLabel(End);
+  };
 
   MCSection *Symbols = Ctx.getCOFFSection(
       ".debug$S", getCOFFCharacteristics(".debug$S", "dr", false));
@@ -4845,27 +5018,16 @@ void ARMASMParser::emitDebugInformation() {
   emitAlignment(Align(4));
   Out.emitIntValue(COFF::DEBUG_SECTION_MAGIC, 4);
 
-  // The S_OBJNAME and S_COMPILE3 records.
-  MCSymbol *CompilerBegin = Ctx.createTempSymbol();
-  MCSymbol *CompilerEnd = Ctx.createTempSymbol();
-  MCSymbol *ObjectBegin = Ctx.createTempSymbol();
-  MCSymbol *ObjectEnd = Ctx.createTempSymbol();
-  MCSymbol *CompileBegin = Ctx.createTempSymbol();
-  MCSymbol *CompileEnd = Ctx.createTempSymbol();
-  Out.emitIntValue(static_cast<unsigned>(codeview::DebugSubsectionKind::Symbols),
-                   4);
-  Out.emitValue(Difference(CompilerEnd, CompilerBegin), 4);
-  Out.emitLabel(CompilerBegin);
-  Out.emitValue(Difference(ObjectEnd, ObjectBegin), 2);
-  Out.emitLabel(ObjectBegin);
-  Out.emitIntValue(static_cast<unsigned>(codeview::SymbolKind::S_OBJNAME), 2);
+  MCSymbol *CompilerEnd = BeginSubsection(codeview::DebugSubsectionKind::Symbols);
+  MCSymbol *ObjectEnd = BeginRecord(codeview::SymbolKind::S_OBJNAME);
   Out.emitIntValue(0, 4);
   EmitString(Opts.DebugObjectFilename);
-  Out.emitLabel(ObjectEnd);
-  Out.emitValue(Difference(CompileEnd, CompileBegin), 2);
-  Out.emitLabel(CompileBegin);
-  Out.emitIntValue(static_cast<unsigned>(codeview::SymbolKind::S_COMPILE3), 2);
-  Out.emitIntValue(static_cast<unsigned>(codeview::SourceLanguage::Masm), 4);
+  EndRecord(ObjectEnd);
+  MCSymbol *CompileEnd = BeginRecord(codeview::SymbolKind::S_COMPILE3);
+  unsigned Flags = static_cast<unsigned>(codeview::SourceLanguage::Masm);
+  if (!Opts.DebugInfo)
+    Flags |= static_cast<unsigned>(codeview::CompileSym3Flags::NoDbgInfo);
+  Out.emitIntValue(Flags, 4);
   Out.emitIntValue(Traits.getCodeViewMachine(), 2);
   for (unsigned I = 0; I != 4; ++I)
     Out.emitIntValue(0, 2);
@@ -4875,9 +5037,11 @@ void ARMASMParser::emitDebugInformation() {
   Out.emitIntValue(0, 2);
   EmitString(Traits.is64Bit() ? "LLVM ARMASM64 Assembler " LLVM_VERSION_STRING
                               : "LLVM ARMASM Assembler " LLVM_VERSION_STRING);
-  Out.emitLabel(CompileEnd);
+  EndRecord(CompileEnd);
   Out.emitLabel(CompilerEnd);
-  emitAlignment(Align(4));
+
+  if (!Opts.DebugInfo)
+    return;
 
   if (!Opts.DebugSourceLink.empty()) {
     // The record armasm64 emits for a Source Link file, referring to the
@@ -4898,52 +5062,62 @@ void ARMASMParser::emitDebugInformation() {
       Out.emitCVLinetableDirective(Section.FunctionId, Section.StartSymbol,
                                    Section.EndSymbol);
 
-  for (const DebugSymbol &Symbol : S.DebugSymbols) {
-    MCSymbol *SubsectionBegin = Ctx.createTempSymbol();
-    MCSymbol *SubsectionEnd = Ctx.createTempSymbol();
-    MCSymbol *RecordBegin = Ctx.createTempSymbol();
-    MCSymbol *RecordEnd = Ctx.createTempSymbol();
-    Out.emitIntValue(
-        static_cast<unsigned>(codeview::DebugSubsectionKind::Symbols), 4);
-    Out.emitValue(Difference(SubsectionEnd, SubsectionBegin), 4);
-    Out.emitLabel(SubsectionBegin);
-    Out.emitValue(Difference(RecordEnd, RecordBegin), 2);
-    Out.emitLabel(RecordBegin);
-    if (Symbol.IsProcedure) {
-      Out.emitIntValue(static_cast<unsigned>(
-                           Symbol.IsExternal ? codeview::SymbolKind::S_GPROC32
-                                             : codeview::SymbolKind::S_LPROC32),
-                       2);
-      Out.emitIntValue(0, 4);
-      Out.emitIntValue(0, 4);
-      Out.emitIntValue(0, 4);
-      Out.emitValue(Difference(Symbol.EndSymbol, Symbol.Symbol), 4);
-      Out.emitIntValue(0, 4);
-      Out.emitValue(Difference(Symbol.EndSymbol, Symbol.Symbol), 4);
-      Out.emitIntValue(0x1001, 4);
-      Out.emitCOFFSecRel32(Symbol.Symbol, 0);
-      Out.emitCOFFSectionIndex(Symbol.Symbol);
-      Out.emitIntValue(0, 1);
-      EmitString(Symbol.Name);
-    } else {
-      Out.emitIntValue(static_cast<unsigned>(codeview::SymbolKind::S_LABEL32),
-                       2);
-      Out.emitCOFFSecRel32(Symbol.Symbol, 0);
-      Out.emitCOFFSectionIndex(Symbol.Symbol);
-      Out.emitIntValue(0, 1);
-      EmitString(Symbol.Name);
+  // All labels, data and procedures share one symbols subsection, which is
+  // present (possibly empty) when the source defines any label.
+  if (S.SawDebugSymbol) {
+    MCSymbol *SymbolsEnd =
+        BeginSubsection(codeview::DebugSubsectionKind::Symbols);
+    for (const DebugSymbol &Symbol : S.DebugSymbols) {
+      switch (Symbol.Kind) {
+      case DebugSymbol::Procedure: {
+        MCSymbol *End = BeginRecord(Symbol.IsExternal
+                                        ? codeview::SymbolKind::S_GPROC32
+                                        : codeview::SymbolKind::S_LPROC32);
+        Out.emitIntValue(0, 4); // Parent
+        Out.emitIntValue(0, 4); // End
+        Out.emitIntValue(0, 4); // Next
+        Out.emitValue(Difference(Symbol.EndSymbol, Symbol.Symbol), 4);
+        Out.emitIntValue(0, 4); // DbgStart
+        Out.emitValue(Difference(Symbol.EndSymbol, Symbol.Symbol), 4);
+        Out.emitIntValue(0x1001, 4); // LF_PROCEDURE in .debug$T
+        Out.emitCOFFSecRel32(Symbol.Symbol, 0);
+        Out.emitCOFFSectionIndex(Symbol.Symbol);
+        Out.emitIntValue(0, 1);
+        EmitString(Symbol.Name);
+        EndRecord(End);
+        MCSymbol *ScopeEnd = BeginRecord(codeview::SymbolKind::S_END);
+        EndRecord(ScopeEnd);
+        break;
+      }
+      case DebugSymbol::Label: {
+        MCSymbol *End = BeginRecord(codeview::SymbolKind::S_LABEL32);
+        Out.emitCOFFSecRel32(Symbol.Symbol, 0);
+        Out.emitCOFFSectionIndex(Symbol.SectionSymbol ? Symbol.SectionSymbol
+                                                      : Symbol.Symbol);
+        Out.emitIntValue(0, 1);
+        EmitString(Symbol.Name);
+        EndRecord(End);
+        break;
+      }
+      case DebugSymbol::Data: {
+        MCSymbol *End = BeginRecord(Symbol.IsExternal
+                                        ? codeview::SymbolKind::S_GDATA32
+                                        : codeview::SymbolKind::S_LDATA32);
+        Out.emitIntValue(Symbol.Type, 4);
+        Out.emitCOFFSecRel32(Symbol.Symbol, 0);
+        Out.emitCOFFSectionIndex(Symbol.SectionSymbol ? Symbol.SectionSymbol
+                                                      : Symbol.Symbol);
+        EmitString(Symbol.Name);
+        EndRecord(End);
+        break;
+      }
+      }
     }
-    Out.emitLabel(RecordEnd);
-    if (Symbol.IsProcedure) {
-      Out.emitIntValue(2, 2);
-      Out.emitIntValue(static_cast<unsigned>(codeview::SymbolKind::S_END), 2);
-    }
-    Out.emitLabel(SubsectionEnd);
-    emitAlignment(Align(4));
+    Out.emitLabel(SymbolsEnd);
   }
 
   // .debug$T: an LF_ARGLIST and LF_PROCEDURE for the procedures, and the
-  // Source Link LF_BUILDINFO string.
+  // Source Link LF_STRING_ID.
   MCSection *Types = Ctx.getCOFFSection(
       ".debug$T", getCOFFCharacteristics(".debug$T", "dr", false));
   Out.switchSection(Types);
@@ -4973,10 +5147,7 @@ void ARMASMParser::emitDebugInformation() {
 
 bool ARMASMParser::finishFile() {
   flushPending();
-  if (Traits.flushesLiteralPoolsAtAreaEnd())
-    if (MCTargetStreamer *TS = Out.getTargetStreamer())
-      if (Out.getCurrentFragment())
-        TS->emitCurrentConstantPool();
+  emitAllLiteralPools();
 
   if (S.ActiveProcedureArea)
     return fatalFile(S.CurrentFilename, S.CurrentLine,
@@ -4990,8 +5161,7 @@ bool ARMASMParser::finishFile() {
                        Export.second.second.second,
                        "A2023: undefined symbol: " + Export.first());
 
-  if (Opts.DebugInfo)
-    emitDebugInformation();
+  emitDebugInformation();
 
   for (const PendingWeakExternal &Weak : S.PendingWeakExternals) {
     if (Weak.Conditional && !S.ReferencedNames.contains(Weak.Name))
@@ -5006,8 +5176,6 @@ bool ARMASMParser::finishFile() {
 
 bool ARMASMParser::Run(bool, bool NoFinalize) {
   unsigned MainBuffer = SrcMgr.getMainFileID();
-  StringRef MainFilename =
-      SrcMgr.getMemoryBuffer(MainBuffer)->getBufferIdentifier();
 
   auto InitializePass = [&](unsigned PassNumber) {
     Pass = PassNumber;
@@ -5018,6 +5186,8 @@ bool ARMASMParser::Run(bool, bool NoFinalize) {
     S.BuiltinVariables["INPUTFILE"] = VariableValue::string("");
     S.BuiltinVariables["LINENUM"] = VariableValue::arithmetic(0);
     S.BuiltinVariables["VAR"] = VariableValue::arithmetic(0);
+    S.BuiltinVariables["ARMASM_VERSION"] =
+        VariableValue::arithmetic(Traits.getARMASMVersion());
     for (StringRef Predefine : Opts.Predefines)
       if (llvm::Error Err = executePredefine(Predefine)) {
         report(nullptr, SMLoc(), SourceMgr::DK_Error,
@@ -5033,9 +5203,11 @@ bool ARMASMParser::Run(bool, bool NoFinalize) {
       processBuffer(MainBuffer, InputKind::MainFile, /*NestingDepth=*/0))
     return true;
   FinalRegisterAliases = std::move(S.RegisterAliases);
+  // armasm numbers debug files in byte order of their paths.
+  for (const auto &File : S.DebugFileSet)
+    DebugFileOrder.push_back(File.getKey().str());
+  llvm::sort(DebugFileOrder);
   FinalStorageMapFields = std::move(S.StorageMapFields);
-  if (Opts.DebugInfo)
-    collectDebugFiles(MainFilename);
   if (HadError)
     return true;
 

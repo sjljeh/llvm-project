@@ -134,6 +134,16 @@ public:
   /// that implement ldr= constant pools.
   virtual void emitCurrentConstantPool() {}
 
+  /// Emit the constant pool for the current section where the section ends,
+  /// which armasm aligns differently from a pool placed by LTORG.
+  virtual void emitCurrentConstantPoolAtSectionEnd() {
+    emitCurrentConstantPool();
+  }
+
+  /// Whether the current section has ldr= constant pool entries waiting to be
+  /// emitted.
+  virtual bool hasCurrentConstantPool() { return false; }
+
   virtual void finish();
 };
 
@@ -208,6 +218,8 @@ public:
   /// Callback used to implement the .ltorg directive.
   /// Emit contents of constant pool for the current section.
   void emitCurrentConstantPool() override;
+  void emitCurrentConstantPoolAtSectionEnd() override;
+  bool hasCurrentConstantPool() override;
 
 private:
   std::unique_ptr<AssemblerConstantPools> ConstantPools;

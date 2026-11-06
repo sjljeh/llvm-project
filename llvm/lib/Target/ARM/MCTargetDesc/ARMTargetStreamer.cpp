@@ -36,8 +36,17 @@ const MCExpr *ARMTargetStreamer::addConstantPoolEntry(const MCExpr *Expr, SMLoc 
   return ConstantPools->addEntry(Streamer, Expr, 4, Loc);
 }
 
+bool ARMTargetStreamer::hasCurrentConstantPool() {
+  return ConstantPools->hasEntriesForCurrentSection(Streamer);
+}
+
 void ARMTargetStreamer::emitCurrentConstantPool() {
   ConstantPools->emitForCurrentSection(Streamer);
+  ConstantPools->clearCacheForCurrentSection(Streamer);
+}
+
+void ARMTargetStreamer::emitCurrentConstantPoolAtSectionEnd() {
+  ConstantPools->emitForCurrentSection(Streamer, /*AtSectionEnd=*/true);
   ConstantPools->clearCacheForCurrentSection(Streamer);
 }
 

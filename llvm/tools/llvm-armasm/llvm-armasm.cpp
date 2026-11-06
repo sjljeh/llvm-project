@@ -78,10 +78,22 @@ struct DiagnosticContext {
 ///       source line
 ///     at file(line)          (one per enclosing macro expansion)
 ///         invocation line
+/// armasm names files by their absolute path in diagnostics.
+std::string getDiagnosticPath(StringRef Filename) {
+  if (Filename.empty() || Filename == "<unknown>" || Filename == "<stdin>")
+    return Filename.str();
+  SmallString<256> Path(Filename);
+  sys::fs::make_absolute(Path);
+  sys::path::native(Path);
+  sys::path::remove_dots(Path, /*remove_dot_dot=*/true);
+  return Path.str().str();
+}
+
 void printDiagnostic(const SMDiagnostic &Diagnostic, void *Context) {
   auto &Diag = *static_cast<DiagnosticContext *>(Context);
   raw_ostream &OS = Diag.OS;
-  StringRef Filename = Diagnostic.getFilename();
+  std::string Path = getDiagnosticPath(Diagnostic.getFilename());
+  StringRef Filename = Path;
   int Line = Diagnostic.getLineNo();
   StringRef Message = Diagnostic.getMessage();
 
@@ -210,7 +222,12 @@ int assembleInput(StringRef ProgName, StringRef InputFilename,
       ParserOptions.IncludeDirs.push_back(Path.str());
   }
   ParserOptions.DebugInfo = Args.hasArg(OPT_debug_info);
-  ParserOptions.DebugObjectFilename = OutputFilename.str();
+  // armasm records the absolute path of the object in S_OBJNAME.
+  SmallString<256> ObjectPath(OutputFilename);
+  sys::fs::make_absolute(ObjectPath);
+  sys::path::native(ObjectPath);
+  sys::path::remove_dots(ObjectPath, /*remove_dot_dot=*/true);
+  ParserOptions.DebugObjectFilename = ObjectPath.str().str();
   if (Arg *Hash = Args.getLastArg(OPT_sha1, OPT_sha256))
     ParserOptions.DebugUseSHA1 = Hash->getOption().matches(OPT_sha1);
   if (ParserOptions.DebugInfo)

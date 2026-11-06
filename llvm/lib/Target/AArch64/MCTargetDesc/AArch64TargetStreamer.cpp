@@ -54,6 +54,14 @@ void AArch64TargetStreamer::emitCurrentConstantPool() {
   ConstantPools->emitForCurrentSection(Streamer);
 }
 
+void AArch64TargetStreamer::emitCurrentConstantPoolAtSectionEnd() {
+  ConstantPools->emitForCurrentSection(Streamer, /*AtSectionEnd=*/true);
+}
+
+bool AArch64TargetStreamer::hasCurrentConstantPool() {
+  return ConstantPools->hasEntriesForCurrentSection(Streamer);
+}
+
 void AArch64TargetStreamer::setARMASMConstantPoolLayout() {
   ConstantPools->setARMASMLayout(true);
 }

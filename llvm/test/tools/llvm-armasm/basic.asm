@@ -2,8 +2,10 @@
 ; RUN: llvm-objdump -dr --triple=thumbv7-windows %t.obj | FileCheck %s
 ; RUN: llvm-readobj --file-headers --sections --symbols %t.obj | FileCheck %s --check-prefix=OBJ
 ; RUN: llvm-readobj -r %t.obj | FileCheck %s --check-prefix=RELOCS
-; RUN: llvm-armasm64 -machine ARM %s %t.machine.obj
-; RUN: cmp %t.obj %t.machine.obj
+; The object path is recorded in .debug$S, so both runs write the same path.
+; RUN: mv %t.obj %t.default.obj
+; RUN: llvm-armasm64 -machine ARM %s %t.obj
+; RUN: cmp %t.default.obj %t.obj
 
 ; Thumb-2 code as Microsoft armasm assembles it: MOV32, RN register aliases,
 ; BL with a BLX23T relocation and B.W with BRANCH24T, and DCD with ADDR32.

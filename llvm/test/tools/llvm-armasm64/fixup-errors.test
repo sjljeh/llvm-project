@@ -1,0 +1,17 @@
+# Errors found when fixups are resolved at the end of assembly name the
+# statement that needs the fixup.
+# RUN: rm -rf %t && split-file %s %t && cd %t
+# RUN: not llvm-armasm64 branch.asm branch.obj 2>&1 | FileCheck %s
+
+# CHECK: branch.asm(3) : error: fixup value out of range
+# CHECK-NEXT: cbz x0, far
+
+#--- branch.asm
+        AREA |.text|, CODE, READONLY
+f       PROC
+        cbz x0, far
+        ret
+        SPACE 2000000
+far     ret
+        ENDP
+        END

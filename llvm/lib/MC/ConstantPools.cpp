@@ -25,13 +25,20 @@ using namespace llvm;
 // ConstantPool implementation
 //
 // Emit the contents of the constant pool using the provided streamer.
-void ConstantPool::emitEntries(MCStreamer &Streamer) {
+void ConstantPool::emitEntries(MCStreamer &Streamer, bool AtSectionEnd) {
   if (Entries.empty())
     return;
   if (ARMASMLayout) {
-    bool Has64BitEntry = llvm::any_of(
-        Entries, [](const ConstantPoolEntry &Entry) { return Entry.Size == 8; });
-    Streamer.emitValueToAlignment(Align(Has64BitEntry ? 8 : 4), 0, 1, 0);
+    // armasm aligns a pool to 4 bytes, or to 8 when it places a pool with
+    // 8-byte entries at the end of its section. The padding is relative to
+    // the section start; the section keeps the alignment its AREA gave it.
+    bool AlignTo8 = AtSectionEnd && llvm::any_of(Entries, [](const auto &E) {
+                      return E.Size == 8;
+                    });
+    MCSection *Section = Streamer.getCurrentSectionOnly();
+    Align SectionAlign = Section->getAlign();
+    Streamer.emitValueToAlignment(Align(AlignTo8 ? 8 : 4), 0, 1, 0);
+    Section->setAlignment(SectionAlign);
     for (const ConstantPoolEntry &Entry : llvm::reverse(Entries))
       if (Entry.Size == 8) {
         Streamer.emitLabel(Entry.Label);
@@ -129,10 +136,10 @@ AssemblerConstantPools::getOrCreateConstantPool(MCSection *Section) {
 }
 
 static void emitConstantPool(MCStreamer &Streamer, MCSection *Section,
-                             ConstantPool &CP) {
+                             ConstantPool &CP, bool AtSectionEnd = false) {
   if (!CP.empty()) {
     Streamer.switchSection(Section);
-    CP.emitEntries(Streamer);
+    CP.emitEntries(Streamer, AtSectionEnd);
   }
 }
 
@@ -146,10 +153,16 @@ void AssemblerConstantPools::emitAll(MCStreamer &Streamer) {
   }
 }
 
-void AssemblerConstantPools::emitForCurrentSection(MCStreamer &Streamer) {
+void AssemblerConstantPools::emitForCurrentSection(MCStreamer &Streamer,
+                                                   bool AtSectionEnd) {
   MCSection *Section = Streamer.getCurrentSectionOnly();
   if (ConstantPool *CP = getConstantPool(Section))
-    emitConstantPool(Streamer, Section, *CP);
+    emitConstantPool(Streamer, Section, *CP, AtSectionEnd);
+}
+
+bool AssemblerConstantPools::hasEntriesForCurrentSection(MCStreamer &Streamer) {
+  ConstantPool *CP = getConstantPool(Streamer.getCurrentSectionOnly());
+  return CP && !CP->empty();
 }
 
 void AssemblerConstantPools::clearCacheForCurrentSection(MCStreamer &Streamer) {

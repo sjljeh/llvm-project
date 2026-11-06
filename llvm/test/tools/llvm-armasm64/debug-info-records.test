@@ -1,0 +1,135 @@
+# CodeView records and line tables, checked against Microsoft armasm64.
+# RUN: rm -rf %t && split-file %s %t && cd %t
+# RUN: llvm-armasm64 -g data.asm data.obj
+# RUN: llvm-readobj --codeview data.obj | FileCheck %s --check-prefix=DATA
+# RUN: llvm-armasm64 -g lines.asm lines.obj
+# RUN: llvm-readobj --codeview lines.obj | FileCheck %s --check-prefix=LINES
+# RUN: llvm-armasm64 lines.asm nodbg.obj
+# RUN: llvm-readobj --sections --codeview nodbg.obj | FileCheck %s --check-prefix=NODBG
+
+## Without -g, .debug$S still names the object, with the NoDbgInfo flag.
+# NODBG:      Name: .debug$S
+# NODBG:      ObjNameSym {
+# NODBG-NEXT:   Kind: S_OBJNAME (0x1101)
+# NODBG-NEXT:   Signature: 0x0
+# NODBG-NEXT:   ObjectName: {{.*}}nodbg.obj
+# NODBG:      Compile3Sym {
+# NODBG:        Flags [
+# NODBG-NEXT:     NoDbgInfo
+# NODBG-NEXT:   ]
+# NODBG-NOT:  SubSectionType: Lines
+# NODBG-NOT:  FileChecksums
+
+## All symbol records share one subsection. Data labels are typed by their
+## directive; SPACE and bare labels have no type. An alias repeats the record
+## of its original under its own name, and PDATA areas have no records.
+# DATA:      SubSectionType: Symbols
+# DATA:      SubSectionType: Symbols
+# DATA:      Kind: S_GPROC32
+# DATA:      DisplayName: gfunc
+# DATA:      Kind: S_LABEL32
+# DATA-NEXT: CodeOffset: .text+0x0
+# DATA:      DisplayName: inner
+# DATA:      Kind: S_LDATA32
+# DATA-NEXT: DataOffset: .data+0x0
+# DATA-NEXT: Type: unsigned char (0x20)
+# DATA-NEXT: DisplayName: bytes
+# DATA:      Type: unsigned __int16 (0x73)
+# DATA-NEXT: DisplayName: halves
+# DATA:      Kind: S_GDATA32
+# DATA-NEXT: DataOffset: .data+0x0
+# DATA-NEXT: Type: unsigned (0x75)
+# DATA-NEXT: DisplayName: gword
+# DATA:      Type: unsigned __int64 (0x77)
+# DATA-NEXT: DisplayName: quads
+# DATA:      Type: float (0x40)
+# DATA-NEXT: DisplayName: single
+# DATA:      Type: double (0x41)
+# DATA-NEXT: DisplayName: double
+# DATA:      Type: 0x0
+# DATA-NEXT: DisplayName: buffer
+# DATA:      Type: 0x0
+# DATA-NEXT: DisplayName: bare
+# DATA:      Kind: S_LDATA32
+# DATA-NEXT: DataOffset: .data+0x0
+# DATA-NEXT: Type: unsigned (0x75)
+# DATA-NEXT: DisplayName: other
+# DATA-NOT:  pentry
+
+## Macro expansions take the invocation line once. ALIGN and LTORG have line
+## entries only when they emit bytes; pools placed at END take the line after
+## END. #line moves the remaining lines to another file, whose checksum is
+## empty.
+# LINES:      FileChecksum {
+# LINES:        Filename: {{.*}}lines.asm
+# LINES:      FileChecksum {
+# LINES-NEXT:   Filename: virtual.asm
+# LINES-NEXT:   ChecksumSize: 0x20
+# LINES-NEXT:   ChecksumKind: None (0x0)
+# LINES:      FunctionLineTable [
+# LINES:        Filename: {{.*}}lines.asm
+# LINES-NEXT:   +0x0 [
+# LINES-NEXT:     LineNumberStart: 8
+# LINES:        +0x8 [
+# LINES-NEXT:     LineNumberStart: 10
+# LINES:        +0xC [
+# LINES-NEXT:     LineNumberStart: 11
+# LINES:        +0x10 [
+# LINES-NEXT:     LineNumberStart: 13
+# LINES:        +0x14 [
+# LINES-NEXT:     LineNumberStart: 14
+# LINES:        +0x18 [
+# LINES-NEXT:     LineNumberStart: 15
+# LINES:        +0x28 [
+# LINES-NEXT:     LineNumberStart: 16
+# LINES:        Filename: virtual.asm
+# LINES-NEXT:   +0x2C [
+# LINES-NEXT:     LineNumberStart: 100
+# LINES:        +0x30 [
+# LINES-NEXT:     LineNumberStart: 103
+# LINES-NOT:    LineNumberStart
+
+#--- data.asm
+        AREA |.text|, CODE, READONLY
+        EXPORT gfunc
+gfunc   PROC
+        mov x0, #1
+inner   ret
+        ENDP
+        AREA |.data|, DATA, READWRITE
+        EXPORT gword
+bytes   DCB 1, 2
+halves  DCW 3
+gword   DCD 4
+quads   DCQ 5
+single  DCFS 1.0
+double  DCFD 2.0
+buffer  SPACE 4
+bare
+        DCB 0
+        ALIAS gword, other
+        AREA |.pdata|, DATA, READONLY
+pentry  DCD 0
+        END
+
+#--- lines.asm
+        MACRO
+        TWO
+        nop
+        nop
+        MEND
+        AREA |.text|, CODE, READONLY
+f       PROC
+        TWO
+        ALIGN 4
+        nop
+        ALIGN 8
+        LTORG
+        ldr x0, =0x1122334455667788
+        ldr x1, =0x8877665544332211
+        LTORG
+        ldr x2, =0x0102030405060708
+#line 100 "virtual.asm"
+        ret
+        ENDP
+        END
