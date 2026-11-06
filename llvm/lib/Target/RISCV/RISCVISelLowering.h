@@ -491,8 +491,22 @@ public:
 
   unsigned getStackProbeSize(const MachineFunction &MF, Align StackAlign) const;
 
+  /// True if stack allocations of at least getStackProbeSize() bytes must be
+  /// performed by the Windows stack probe routine (__chkstk).
+  ///
+  /// The RISC-V Windows __chkstk contract: the allocation size in bytes, a
+  /// multiple of the stack alignment, is passed in t1 (x6) and the routine is
+  /// called with t0 (x5) as the link register ("call t0, __chkstk"). It touches
+  /// every page of the new allocation in order, from the current SP downwards,
+  /// lowers SP by t1 and returns through t0. It may clobber t0 and t1 only.
+  /// t0 and t1 are never used to pass arguments, so they are free in prologues.
+  bool usesWindowsStackProbe(const MachineFunction &MF) const;
+
   MachineBasicBlock *emitDynamicProbedAlloc(MachineInstr &MI,
                                             MachineBasicBlock *MBB) const;
+
+  MachineBasicBlock *emitWindowsDynamicStackAlloc(MachineInstr &MI,
+                                                  MachineBasicBlock *MBB) const;
 
   ArrayRef<MCPhysReg> getRoundingControlRegisters() const override;
 

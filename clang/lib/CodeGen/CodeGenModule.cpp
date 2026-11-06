@@ -247,6 +247,8 @@ createTargetCodeGenInfo(CodeGenModule &CGM) {
     else if (ABIStr.ends_with("d"))
       ABIFLen = 64;
     bool EABI = ABIStr.ends_with("e");
+    if (Triple.isOSWindows())
+      return createWindowsRISCVTargetCodeGenInfo(CGM, XLen, ABIFLen, EABI);
     return createRISCVTargetCodeGenInfo(CGM, XLen, ABIFLen, EABI);
   }
 

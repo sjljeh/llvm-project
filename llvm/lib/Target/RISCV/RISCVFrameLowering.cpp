@@ -875,6 +875,26 @@ void RISCVFrameLowering::allocateStack(MachineBasicBlock &MBB,
           .setMIFlag(Flag);
   };
 
+  // Windows: __chkstk probes and performs allocations of at least one probe
+  // interval. See RISCVTargetLowering::usesWindowsStackProbe().
+  if (STI.getTargetLowering()->usesWindowsStackProbe(MF) &&
+      Offset >= ProbeSize) {
+    TII->movImm(MBB, MBBI, DL, RISCV::X6, Offset, Flag);
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::PseudoCALLReg), RISCV::X5)
+        .addExternalSymbol("__chkstk", RISCVII::MO_CALL)
+        .addUse(RISCV::X6, RegState::Implicit)
+        .addDef(RISCV::X6, RegState::ImplicitDefine)
+        .addUse(SPReg, RegState::Implicit)
+        .addDef(SPReg, RegState::ImplicitDefine)
+        .setMIFlags(Flag);
+
+    EmitRVUWCFA(RealStackSize);
+
+    if (EmitCFI)
+      CFIBuilder.buildDefCFAOffset(RealStackSize);
+    return;
+  }
+
   // Simply allocate the stack if it's not big enough to require a probe.
   if (!NeedProbe || Offset <= ProbeSize) {
     RI->adjustReg(MBB, MBBI, DL, SPReg, SPReg, StackOffset::getFixed(-Offset),
@@ -2410,7 +2430,8 @@ MachineBasicBlock::iterator RISCVFrameLowering::eliminateCallFramePseudoInstr(
       const RISCVTargetLowering *TLI =
           MF.getSubtarget<RISCVSubtarget>().getTargetLowering();
       int64_t ProbeSize = TLI->getStackProbeSize(MF, getStackAlign());
-      if (TLI->hasInlineStackProbe(MF) && -Amount >= ProbeSize) {
+      if ((TLI->hasInlineStackProbe(MF) || TLI->usesWindowsStackProbe(MF)) &&
+          -Amount >= ProbeSize) {
         // When stack probing is enabled, the decrement of SP may need to be
         // probed. We can handle both the decrement and the probing in
         // allocateStack.
@@ -2915,6 +2936,15 @@ bool RISCVFrameLowering::canUseAsPrologue(const MachineBasicBlock &MBB) const {
   if (STI.preferVsetvliOverReadVLENB() &&
       (MBB.isLiveIn(RISCV::VTYPE) || MBB.isLiveIn(RISCV::VL)))
     return false;
+
+  // A Windows __chkstk call in the prologue uses t0 (X5) as its link register
+  // and passes the allocation size in t1 (X6).
+  if (STI.getTargetLowering()->usesWindowsStackProbe(*MF)) {
+    RegScavenger RS;
+    RS.enterBasicBlock(*TmpMBB);
+    if (RS.isRegUsed(RISCV::X5) || RS.isRegUsed(RISCV::X6))
+      return false;
+  }
 
   if (!RVFI->useSaveRestoreLibCalls(*MF))
     return true;

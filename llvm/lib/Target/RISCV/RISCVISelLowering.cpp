@@ -28396,6 +28396,8 @@ RISCVTargetLowering::EmitInstrWithCustomInserter(MachineInstr &MI,
     return emitFROUND(MI, BB, Subtarget);
   case RISCV::PROBED_STACKALLOC_DYN:
     return emitDynamicProbedAlloc(MI, BB);
+  case RISCV::PseudoWinChkStkAlloca:
+    return emitWindowsDynamicStackAlloc(MI, BB);
   case TargetOpcode::STATEPOINT:
     // STATEPOINT is a pseudo instruction which has no implicit defs/uses
     // while jal call instruction (where statepoint will be lowered at the end)
@@ -31132,6 +31134,9 @@ namespace llvm::RISCVVIntrinsicsTable {
 } // namespace llvm::RISCVVIntrinsicsTable
 
 bool RISCVTargetLowering::hasInlineStackProbe(const MachineFunction &MF) const {
+  // Windows probes the stack through __chkstk instead.
+  if (Subtarget.getTargetTriple().isOSWindows())
+    return false;
 
   // If the function specifically requests inline stack probes, emit them.
   if (MF.getFunction().hasFnAttribute("probe-stack"))
@@ -31153,9 +31158,42 @@ unsigned RISCVTargetLowering::getStackProbeSize(const MachineFunction &MF,
   return StackProbeSize ? StackProbeSize : StackAlign.value();
 }
 
+bool RISCVTargetLowering::usesWindowsStackProbe(
+    const MachineFunction &MF) const {
+  return Subtarget.getTargetTriple().isOSWindows() &&
+         !MF.getFunction().hasFnAttribute("no-stack-arg-probe");
+}
+
 SDValue RISCVTargetLowering::lowerDYNAMIC_STACKALLOC(SDValue Op,
                                                      SelectionDAG &DAG) const {
   MachineFunction &MF = DAG.getMachineFunction();
+  if (usesWindowsStackProbe(MF)) {
+    // Let __chkstk probe and allocate the stack-aligned size, then apply any
+    // extra alignment. Over-alignment moves SP down by less than one page.
+    MVT XLenVT = Subtarget.getXLenVT();
+    SDLoc DL(Op);
+    SDValue Chain = Op.getOperand(0);
+    SDValue Size = Op.getOperand(1);
+    MaybeAlign Alignment =
+        cast<ConstantSDNode>(Op.getOperand(2))->getMaybeAlignValue();
+    Align StackAlign = Subtarget.getFrameLowering()->getStackAlign();
+
+    Size = DAG.getNode(ISD::ADD, DL, XLenVT, Size,
+                       DAG.getConstant(StackAlign.value() - 1, DL, XLenVT));
+    Size = DAG.getNode(ISD::AND, DL, XLenVT, Size,
+                       DAG.getSignedConstant(-StackAlign.value(), DL, XLenVT));
+    Chain = DAG.getNode(RISCVISD::WIN_CHKSTK_ALLOCA, DL, MVT::Other, Chain,
+                        Size);
+    SDValue SP = DAG.getCopyFromReg(Chain, DL, RISCV::X2, XLenVT);
+    Chain = SP.getValue(1);
+    if (Alignment && *Alignment > StackAlign) {
+      SP = DAG.getNode(ISD::AND, DL, XLenVT, SP,
+                       DAG.getSignedConstant(-Alignment->value(), DL, XLenVT));
+      Chain = DAG.getCopyToReg(Chain, DL, RISCV::X2, SP);
+    }
+    return DAG.getMergeValues({SP, Chain}, DL);
+  }
+
   if (!hasInlineStackProbe(MF))
     return SDValue();
 
@@ -31180,6 +31218,25 @@ SDValue RISCVTargetLowering::lowerDYNAMIC_STACKALLOC(SDValue Op,
   // Set the real SP to the new value with a probing loop.
   Chain = DAG.getNode(RISCVISD::PROBED_ALLOCA, dl, MVT::Other, Chain, SP);
   return DAG.getMergeValues({SP, Chain}, dl);
+}
+
+MachineBasicBlock *
+RISCVTargetLowering::emitWindowsDynamicStackAlloc(MachineInstr &MI,
+                                                  MachineBasicBlock *MBB) const {
+  // Pass the size in t1 and call __chkstk with t0 as the link register. See
+  // usesWindowsStackProbe() for the contract.
+  const RISCVInstrInfo *TII = Subtarget.getInstrInfo();
+  DebugLoc DL = MI.getDebugLoc();
+  BuildMI(*MBB, MI, DL, TII->get(TargetOpcode::COPY), RISCV::X6)
+      .add(MI.getOperand(0));
+  BuildMI(*MBB, MI, DL, TII->get(RISCV::PseudoCALLReg), RISCV::X5)
+      .addExternalSymbol("__chkstk", RISCVII::MO_CALL)
+      .addUse(RISCV::X6, RegState::Implicit)
+      .addDef(RISCV::X6, RegState::ImplicitDefine)
+      .addUse(RISCV::X2, RegState::Implicit)
+      .addDef(RISCV::X2, RegState::ImplicitDefine);
+  MI.eraseFromParent();
+  return MBB;
 }
 
 MachineBasicBlock *

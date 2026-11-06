@@ -1156,6 +1156,32 @@ public:
     Fn->addFnAttr("interrupt", Kind);
   }
 };
+
+class WindowsRISCVTargetCodeGenInfo : public RISCVTargetCodeGenInfo {
+public:
+  WindowsRISCVTargetCodeGenInfo(CodeGen::CodeGenTypes &CGT, unsigned XLen,
+                                unsigned FLen, bool EABI)
+      : RISCVTargetCodeGenInfo(CGT, XLen, FLen, EABI) {}
+
+  void setTargetAttributes(const Decl *D, llvm::GlobalValue *GV,
+                           CodeGen::CodeGenModule &CGM) const override {
+    RISCVTargetCodeGenInfo::setTargetAttributes(D, GV, CGM);
+    if (GV->isDeclaration())
+      return;
+    // Honor /Gs (stack-probe-size) and -mno-stack-arg-probe for __chkstk.
+    addStackProbeTargetAttributes(D, GV, CGM);
+  }
+
+  void getDependentLibraryOption(llvm::StringRef Lib,
+                                 llvm::SmallString<24> &Opt) const override {
+    Opt = "/DEFAULTLIB:" + qualifyWindowsLibrary(Lib);
+  }
+
+  void getDetectMismatchOption(llvm::StringRef Name, llvm::StringRef Value,
+                               llvm::SmallString<32> &Opt) const override {
+    Opt = "/FAILIFMISMATCH:\"" + Name.str() + "=" + Value.str() + "\"";
+  }
+};
 } // namespace
 
 std::unique_ptr<TargetCodeGenInfo>
@@ -1163,4 +1189,11 @@ CodeGen::createRISCVTargetCodeGenInfo(CodeGenModule &CGM, unsigned XLen,
                                       unsigned FLen, bool EABI) {
   return std::make_unique<RISCVTargetCodeGenInfo>(CGM.getTypes(), XLen, FLen,
                                                   EABI);
+}
+
+std::unique_ptr<TargetCodeGenInfo>
+CodeGen::createWindowsRISCVTargetCodeGenInfo(CodeGenModule &CGM, unsigned XLen,
+                                             unsigned FLen, bool EABI) {
+  return std::make_unique<WindowsRISCVTargetCodeGenInfo>(CGM.getTypes(), XLen,
+                                                         FLen, EABI);
 }
