@@ -14,8 +14,8 @@
 # IMPLIB-DAG: T _exported@8
 
 # DLL: <exported>:
-# DLL-NEXT: movl $1, %eax
-# DLL-NEXT: retl $8
+# DLL-NEXT: movl $0x1, %eax
+# DLL-NEXT: retl $0x8
 
 #--- export.def
 EXPORTS
