@@ -178,6 +178,12 @@ def riscv_probed_alloca : RVSDNode<"PROBED_ALLOCA",
                                    SDTypeProfile<0, 1, [SDTCisPtrTy<0>]>,
                                    [SDNPHasChain, SDNPMayStore]>;
 
+// Windows dynamic stack allocation: __chkstk probes and allocates the given,
+// stack-aligned number of bytes.
+def riscv_win_chkstk_alloca : RVSDNode<"WIN_CHKSTK_ALLOCA",
+                                       SDTypeProfile<0, 1, [SDTCisPtrTy<0>]>,
+                                       [SDNPHasChain, SDNPMayStore]>;
+
 
 defvar GPRPairVT = untyped;
 
@@ -1675,6 +1681,10 @@ def PROBED_STACKALLOC_DYN : Pseudo<(outs),
                                (ins GPR:$target),
                                [(riscv_probed_alloca GPR:$target)]>,
                                Sched<[]>;
+let usesCustomInserter = 1 in
+def PseudoWinChkStkAlloca : Pseudo<(outs), (ins GPR:$size),
+                                   [(riscv_win_chkstk_alloca GPR:$size)]>,
+                            Sched<[]>;
 }
 
 /// HI and ADD_LO address nodes.
