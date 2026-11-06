@@ -67,9 +67,9 @@ int seh_finally(volatile int *p) {
 
 // OBJ: Format: COFF-PowerPC
 // OBJ: Name: .xdata
-// OBJ: RawDataSize: 20
+// OBJ: RawDataSize: 0x14
 // OBJ: Name: .pdata
-// OBJ: RawDataSize: 60
+// OBJ: RawDataSize: 0x3C
 // OBJ: Section {{.*}} .xdata {
 // OBJ: IMAGE_REL_PPC_ADDR32 ?dtor$
 // OBJ: Section {{.*}} .pdata {

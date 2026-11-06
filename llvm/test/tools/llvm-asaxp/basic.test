@@ -32,7 +32,7 @@
 
 # LEGACY:      Name: .text
 # LEGACY-NEXT: VirtualSize: 0x0
-# LEGACY:      RawDataSize: 36
+# LEGACY:      RawDataSize: 0x24
 
 #--- basic.s
         .text

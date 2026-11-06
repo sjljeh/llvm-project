@@ -55,9 +55,9 @@ void g() {
 
 // OBJ: Format: COFF-MIPS
 // OBJ: Name: .xdata
-// OBJ: RawDataSize: 176
+// OBJ: RawDataSize: 0xB0
 // OBJ: Name: .pdata
-// OBJ: RawDataSize: 40
+// OBJ: RawDataSize: 0x28
 // OBJ: Section {{.*}} .xdata {
 // OBJ: IMAGE_REL_MIPS_REFWORD $stateUnwindMap$?g@@YAXXZ
 // OBJ: IMAGE_REL_MIPS_REFWORD $ip2state$?catch$1@?0??g@@YAXXZ@4HA

@@ -10,17 +10,17 @@
 # for PowerPC that is 16 bytes, represented by omitting the alignment bits.
 
 # COFF-LABEL: Name: .text
-# COFF:       RawDataSize: 1
+# COFF:       RawDataSize: 0x1
 # COFF:       Characteristics [ (0x60400020)
 # COFF:         IMAGE_SCN_ALIGN_8BYTES
 
 # COFF-LABEL: Name: .data
-# COFF:       RawDataSize: 1
+# COFF:       RawDataSize: 0x1
 # COFF:       Characteristics [ (0xC0400040)
 # COFF:         IMAGE_SCN_ALIGN_8BYTES
 
 # COFF-LABEL: Name: CODE
-# COFF:       RawDataSize: 1
+# COFF:       RawDataSize: 0x1
 # COFF:       Characteristics [ (0x60400020)
 # COFF:         IMAGE_SCN_ALIGN_8BYTES
 # COFF:         IMAGE_SCN_CNT_CODE
@@ -28,7 +28,7 @@
 # COFF:         IMAGE_SCN_MEM_READ
 
 # COFF-LABEL: Name: WRITEC
-# COFF:       RawDataSize: 1
+# COFF:       RawDataSize: 0x1
 # COFF:       Characteristics [ (0xE0000020)
 # COFF-NOT:     IMAGE_SCN_ALIGN_
 # COFF:         IMAGE_SCN_CNT_CODE
@@ -37,12 +37,12 @@
 # COFF:         IMAGE_SCN_MEM_WRITE
 
 # COFF-LABEL: Name: ALIGN64
-# COFF:       RawDataSize: 1
+# COFF:       RawDataSize: 0x1
 # COFF:       Characteristics [ (0x60700020)
 # COFF:         IMAGE_SCN_ALIGN_64BYTES
 
 # COFF-LABEL: Name: DATA4
-# COFF:       RawDataSize: 1
+# COFF:       RawDataSize: 0x1
 # COFF:       Characteristics [ (0xC0300040)
 # COFF:         IMAGE_SCN_ALIGN_4BYTES
 # COFF:         IMAGE_SCN_CNT_INITIALIZED_DATA
@@ -50,11 +50,11 @@
 # COFF:         IMAGE_SCN_MEM_WRITE
 
 # COFF-LABEL: Name: .CRT$XIC
-# COFF:       RawDataSize: 1
+# COFF:       RawDataSize: 0x1
 # COFF:       Characteristics [ (0xC0300040)
 
 # COFF-LABEL: Name: .pdata
-# COFF:       RawDataSize: 1
+# COFF:       RawDataSize: 0x1
 # COFF:       Characteristics [ (0x40300040)
 # COFF:         IMAGE_SCN_ALIGN_4BYTES
 # COFF:         IMAGE_SCN_CNT_INITIALIZED_DATA

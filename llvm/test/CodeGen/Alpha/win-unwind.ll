@@ -21,7 +21,7 @@ entry:
 ; Alpha runtime-function records contain five absolute 32-bit fields:
 ; begin, end, exception handler, handler data, and prologue end.
 ; OBJ: Name: .pdata
-; OBJ: RawDataSize: 20
+; OBJ: RawDataSize: 0x14
 ; OBJ:      RelocationCount: 3
 ; OBJ:      0x0 IMAGE_REL_ALPHA_REFLONG .text
 ; OBJ:      0x4 IMAGE_REL_ALPHA_REFLONG .text

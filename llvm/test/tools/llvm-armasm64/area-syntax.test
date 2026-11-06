@@ -5,7 +5,7 @@
 # RUN: not llvm-armasm64 %t/unquoted-space.asm %t.obj 2>&1 | FileCheck %s --check-prefix=SPACE
 
 # QUOTED: Name: section,name
-# QUOTED: RawDataSize: 1
+# QUOTED: RawDataSize: 0x1
 
 # EMPTY: empty-attribute.asm:1: A2146: illegal symbol ,; AREA attribute expected
 # SPACE: unquoted-space.asm:1: A2003: improper line syntax: ,

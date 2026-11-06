@@ -33,7 +33,7 @@ void cleanup() {
 
 // OBJ: Format: COFF-PowerPC
 // OBJ: Name: .pdata
-// OBJ: RawDataSize: 40
+// OBJ: RawDataSize: 0x28
 // OBJ: RelocationCount: 8
 // OBJ: Section {{.*}} .pdata {
 // OBJ: 0x0 IMAGE_REL_PPC_ADDR32 .text

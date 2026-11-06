@@ -36,7 +36,7 @@ end_pool_code
         END
 
 ; OBJ: Name: .text
-; OBJ: RawDataSize: 84
+; OBJ: RawDataSize: 0x54
 ; OBJ: RelocationCount: 2
 ; OBJ: Offset: 0x20
 ; OBJ-NEXT: Type: IMAGE_REL_ARM64_ADDR64

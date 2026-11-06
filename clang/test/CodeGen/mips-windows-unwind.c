@@ -24,7 +24,7 @@ void caller(void) { f(); }
 
 // OBJ: Format: COFF-MIPS
 // OBJ: Name: .pdata
-// OBJ: RawDataSize: 40
+// OBJ: RawDataSize: 0x28
 // OBJ: Section {{.*}} .pdata {
 // OBJ: 0x0 IMAGE_REL_MIPS_REFWORD .text
 // OBJ-NEXT: 0x4 IMAGE_REL_MIPS_REFWORD .text

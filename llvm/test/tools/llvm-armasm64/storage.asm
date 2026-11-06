@@ -42,9 +42,9 @@ Reg     # 4
 ; CONTENTS-NEXT: 14: f9000526     str x6, [x9, #0x8]
 
 ; OBJ:      Name: .data
-; OBJ:      RawDataSize: 25
+; OBJ:      RawDataSize: 0x19
 ; OBJ:      Name: .bss
-; OBJ:      RawDataSize: 9
+; OBJ:      RawDataSize: 0x9
 ; OBJ-DAG:  Name: Start
 ; OBJ-DAG:  Value: 0
 ; OBJ-DAG:  Name: Zero
