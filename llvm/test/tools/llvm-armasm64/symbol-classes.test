@@ -7,15 +7,15 @@
 # RUN: llvm-readobj --sections --symbols end-only.obj | FileCheck %s --check-prefix=END
 
 ## A label on an instruction is a Label even in a data area; data labels and
-## bare labels in data areas are Static.
-# DATA:      Name: word
-# DATA-NEXT: Value: 0
-# DATA:      StorageClass: Static
+## bare labels in data areas are Static. (Symbols follow armasm's hash order.)
 # DATA:      Name: code
 # DATA-NEXT: Value: 4
 # DATA:      StorageClass: Label
 # DATA:      Name: bare
 # DATA-NEXT: Value: 8
+# DATA:      StorageClass: Static
+# DATA:      Name: word
+# DATA-NEXT: Value: 0
 # DATA:      StorageClass: Static
 
 ## The object has only .debug$S, and the usual leading symbols.

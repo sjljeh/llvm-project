@@ -13,12 +13,12 @@
 |target-label| ret
         END
 
-; SYMBOLS:      Name: symbol with space
-; SYMBOLS-NEXT: Value: 0
-; SYMBOLS-NEXT: Section: .data
-; SYMBOLS:      StorageClass: External
 ; SYMBOLS:      Name: symbol-name
 ; SYMBOLS-NEXT: Value: 4
+; SYMBOLS-NEXT: Section: .data
+; SYMBOLS:      StorageClass: External
+; SYMBOLS:      Name: symbol with space
+; SYMBOLS-NEXT: Value: 0
 ; SYMBOLS-NEXT: Section: .data
 ; SYMBOLS:      StorageClass: External
 ; SYMBOLS:      Name: target-label

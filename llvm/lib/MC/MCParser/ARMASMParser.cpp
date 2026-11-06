@@ -49,6 +49,8 @@
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/MCSymbolCOFF.h"
+#include "llvm/MC/MCWinCOFFObjectWriter.h"
+#include "llvm/MC/MCWinCOFFStreamer.h"
 #include "llvm/MC/MCValue.h"
 #include "llvm/MC/MCTargetOptions.h"
 #include "llvm/Support/Format.h"
@@ -1959,6 +1961,16 @@ class ARMASMParser final : public MCAsmParser, private ExpressionContext {
     /// A symbol at the start of the symbol's area: armasm gives the section
     /// index of labels and data relative to the section symbol.
     MCSymbol *SectionSymbol = nullptr;
+    /// The lines of a procedure's PROC and ENDP; EndLine is 0 until ENDP.
+    unsigned Line = 0;
+    unsigned EndLine = 0;
+  };
+
+  /// The storage class and type armasm gives a symbol the source defines
+  /// when it is not exported; an alias of the symbol gets them too.
+  struct LocalSymbolClass {
+    int StorageClass;
+    std::optional<int> Type;
   };
 
   struct PendingWeakExternal {
@@ -2024,6 +2036,10 @@ class ARMASMParser final : public MCAsmParser, private ExpressionContext {
     SmallVector<AreaDefinition *, 8> AreaOrder;
     SmallVector<PendingWeakExternal, 4> PendingWeakExternals;
     StringSet<> ReferencedNames;
+    /// The order in which the source first mentions each symbol, which is
+    /// the order names enter armasm's symbol hash table.
+    StringMap<unsigned> SymbolMentions;
+    StringMap<LocalSymbolClass> LocalSymbolClasses;
 
     // Current area and procedure.
     std::string CurrentAreaName;
@@ -2243,8 +2259,8 @@ class ARMASMParser final : public MCAsmParser, private ExpressionContext {
       return nullptr;
     S.ReferencedNames.insert(Name);
     auto Constant = S.ConstantSymbols.find(Name);
-    MCSymbol *Symbol = Ctx.getOrCreateSymbol(
-        Constant == S.ConstantSymbols.end() ? Name : Constant->second);
+    MCSymbol *Symbol =
+        getSymbol(Constant == S.ConstantSymbols.end() ? Name : Constant->second);
     // The statement's location lets fixup errors at layout name the line.
     return MCSymbolRefExpr::create(Symbol, Ctx, S.CurrentLoc);
   }
@@ -2982,7 +2998,10 @@ class ARMASMParser final : public MCAsmParser, private ExpressionContext {
   // Emission helpers
   //===--------------------------------------------------------------------===//
 
-  MCSymbol *getSymbol(StringRef Name) { return Ctx.getOrCreateSymbol(Name); }
+  MCSymbol *getSymbol(StringRef Name) {
+    S.SymbolMentions.try_emplace(Name, S.SymbolMentions.size());
+    return Ctx.getOrCreateSymbol(Name);
+  }
 
   bool isExported(StringRef Name) const {
     return CollectedExports.contains(Name);
@@ -2996,6 +3015,17 @@ class ARMASMParser final : public MCAsmParser, private ExpressionContext {
       Out.emitCOFFSymbolType(*Type);
     Out.endCOFFSymbolDef();
   }
+
+  /// Define a symbol the source defines with the storage class (and type)
+  /// armasm gives it when it is not exported.
+  void defineLocalSymbol(StringRef Name, MCSymbol *Symbol, int StorageClass,
+                         std::optional<int> Type = std::nullopt) {
+    S.LocalSymbolClasses[Name] = {StorageClass, Type};
+    if (!isExported(Name))
+      defineCOFFSymbol(Symbol, StorageClass, Type);
+  }
+
+  void registerDebugFunction(const DebugSymbol &Procedure);
 
   void emitLabel(MCSymbol *Symbol, SMLoc Loc) {
     Out.emitLabel(Symbol, Loc);
@@ -3909,14 +3939,12 @@ bool ARMASMParser::defineCodeLabel(const SourceLine &Line, StringRef NameToken,
     return symbolConflict(Line, Name);
   S.DefinedObjectSymbols.insert(Name);
   MCSymbol *Symbol = getSymbol(Name);
-  if (!isExported(Name)) {
-    if (S.AtProcedureStart)
-      defineCOFFSymbol(Symbol, COFF::IMAGE_SYM_CLASS_LABEL,
-                       COFF::IMAGE_SYM_DTYPE_FUNCTION
-                           << COFF::SCT_COMPLEX_TYPE_SHIFT);
-    else
-      defineCOFFSymbol(Symbol, COFF::IMAGE_SYM_CLASS_LABEL);
-  }
+  if (S.AtProcedureStart)
+    defineLocalSymbol(Name, Symbol, COFF::IMAGE_SYM_CLASS_LABEL,
+                      COFF::IMAGE_SYM_DTYPE_FUNCTION
+                          << COFF::SCT_COMPLEX_TYPE_SHIFT);
+  else
+    defineLocalSymbol(Name, Symbol, COFF::IMAGE_SYM_CLASS_LABEL);
   emitLabel(Symbol, Line.getLoc());
   recordDebugSymbol(Name, Symbol, DebugSymbol::Label);
   S.SymbolSizes[Name] = Size;
@@ -3938,12 +3966,10 @@ bool ARMASMParser::handleProcedureStart(const SourceLine &Line,
   MCSymbol *Symbol = getSymbol(Name);
   const int FunctionType = COFF::IMAGE_SYM_DTYPE_FUNCTION
                            << COFF::SCT_COMPLEX_TYPE_SHIFT;
-  if (!isExported(Name)) {
-    if (Opts.DebugInfo)
-      defineCOFFSymbol(Symbol, COFF::IMAGE_SYM_CLASS_LABEL, FunctionType);
-    else
-      defineCOFFSymbol(Symbol, COFF::IMAGE_SYM_CLASS_LABEL);
-  } else if (Opts.DebugInfo) {
+  defineLocalSymbol(Name, Symbol, COFF::IMAGE_SYM_CLASS_LABEL,
+                    Opts.DebugInfo ? std::optional<int>(FunctionType)
+                                   : std::nullopt);
+  if (isExported(Name) && Opts.DebugInfo) {
     defineCOFFSymbol(Symbol, COFF::IMAGE_SYM_CLASS_EXTERNAL, FunctionType);
     Out.emitSymbolAttribute(Symbol, MCSA_Global);
   }
@@ -3955,6 +3981,7 @@ bool ARMASMParser::handleProcedureStart(const SourceLine &Line,
     S.ActiveDebugProcedure = S.DebugSymbols.size();
     S.DebugSymbols.push_back({Name.str(), Symbol, Ctx.createTempSymbol(),
                               DebugSymbol::Procedure, isExported(Name)});
+    S.DebugSymbols.back().Line = S.CurrentLine;
   }
   return false;
 }
@@ -3970,8 +3997,18 @@ bool ARMASMParser::handleProcedureEnd(const SourceLine &Line, StringRef First,
   if (!S.ActiveProcedureArea)
     return fatal(Line,
                  "A2093: improper program syntax; unexpected ENDP directive");
-  if (S.ActiveDebugProcedure)
-    Out.emitLabel(S.DebugSymbols[*S.ActiveDebugProcedure].EndSymbol);
+  if (S.ActiveDebugProcedure) {
+    MCSymbol *End = S.DebugSymbols[*S.ActiveDebugProcedure].EndSymbol;
+    Out.emitLabel(End);
+    // The procedure, and any alias of it made inside it, get .bf and .ef
+    // symbols as well.
+    for (DebugSymbol &Procedure : S.DebugSymbols)
+      if (Procedure.Kind == DebugSymbol::Procedure &&
+          Procedure.EndSymbol == End) {
+        Procedure.EndLine = S.CurrentLine;
+        registerDebugFunction(Procedure);
+      }
+  }
   S.ActiveDebugProcedure.reset();
   S.ActiveProcedureArea.reset();
   S.AtProcedureStart = false;
@@ -4192,6 +4229,11 @@ bool ARMASMParser::handleArea(const SourceLine &Line, StringRef Tail) {
                            Definition.ComdatSymbol, Definition.Selection);
     Definition.BaseSymbol = Ctx.createTempSymbol();
     S.AreaOrder.push_back(&Definition);
+    // armasm writes the names of COMDAT areas ahead of the other symbols.
+    if (!Area->ComdatSymbol.empty() && Out.isObj() &&
+        Ctx.getObjectFileType() == MCContext::IsCOFF)
+      static_cast<MCWinCOFFStreamer &>(Out).getWriter().addARMASMCOMDATKey(
+          getSymbol(Area->ComdatSymbol));
   } else if (Definition.AttributeSignature != AttributeSignature) {
     statementWarning(Line, 4043, "redefinition of section flags ignored");
   }
@@ -4426,11 +4468,16 @@ bool ARMASMParser::handleExport(const SourceLine &Line, StringRef Tail) {
     return symbolConflict(Line, Name);
   S.ExportLocations[Name] = {Line.getLoc(), {S.CurrentFilename, S.CurrentLine}};
   MCSymbol *Symbol = getSymbol(Name);
-  defineCOFFSymbol(Symbol, COFF::IMAGE_SYM_CLASS_EXTERNAL,
-                   Spec->Type == ExportKind::Function
-                       ? COFF::IMAGE_SYM_DTYPE_FUNCTION
-                             << COFF::SCT_COMPLEX_TYPE_SHIFT
-                       : 0);
+  // [FUNC] makes the symbol a function; otherwise it keeps the type its
+  // definition gave it (a procedure under -g is a function even if exported
+  // with [DATA]).
+  int Type = 0;
+  if (Spec->Type == ExportKind::Function)
+    Type = COFF::IMAGE_SYM_DTYPE_FUNCTION << COFF::SCT_COMPLEX_TYPE_SHIFT;
+  else if (auto It = S.LocalSymbolClasses.find(Name);
+           It != S.LocalSymbolClasses.end() && It->second.Type)
+    Type = *It->second.Type;
+  defineCOFFSymbol(Symbol, COFF::IMAGE_SYM_CLASS_EXTERNAL, Type);
   if (Symbol->isTemporary())
     return Error(Line.getLoc(), "non-local symbol required");
   Out.emitSymbolAttribute(Symbol, MCSA_Global);
@@ -4452,25 +4499,48 @@ bool ARMASMParser::handleAlias(const SourceLine &Line, StringRef Tail) {
     return symbolConflict(Line, Alias);
   S.DefinedObjectSymbols.insert(Alias);
   MCSymbol *AliasSymbol = getSymbol(Alias);
-  if (!isExported(Alias))
-    defineCOFFSymbol(AliasSymbol, COFF::IMAGE_SYM_CLASS_STATIC);
+  // An alias has the storage class and type of the symbol it names, as that
+  // symbol would have if it were not exported.
+  auto Class = S.LocalSymbolClasses.find(Original);
+  int StorageClass = Class != S.LocalSymbolClasses.end()
+                         ? Class->second.StorageClass
+                         : COFF::IMAGE_SYM_CLASS_STATIC;
+  std::optional<int> Type = Class != S.LocalSymbolClasses.end()
+                                ? Class->second.Type
+                                : std::nullopt;
+  defineLocalSymbol(Alias, AliasSymbol, StorageClass, Type);
+  if (isExported(Alias) && Type)
+    defineCOFFSymbol(AliasSymbol, COFF::IMAGE_SYM_CLASS_EXTERNAL, Type);
   Out.emitAssignment(AliasSymbol,
                      MCSymbolRefExpr::create(getSymbol(Original), Ctx));
-  // An alias gets the same debug record as the symbol it names.
+  // An alias gets the same debug record as the symbol it names, and the
+  // alias of a procedure is described as a procedure too.
   if (Opts.DebugInfo && !S.DebugSymbolNames.contains(Alias)) {
     auto It = llvm::find_if(S.DebugSymbols, [&](const DebugSymbol &Symbol) {
       return Symbol.Name == Original;
     });
-    if (It != S.DebugSymbols.end() && It->Kind != DebugSymbol::Procedure) {
+    if (It != S.DebugSymbols.end()) {
       DebugSymbol Copy = *It;
       Copy.Name = Alias.str();
       Copy.Symbol = AliasSymbol;
       Copy.IsExternal = isExported(Alias);
       S.DebugSymbolNames.insert(Alias);
       S.DebugSymbols.push_back(std::move(Copy));
+      if (S.DebugSymbols.back().Kind == DebugSymbol::Procedure &&
+          S.DebugSymbols.back().EndLine)
+        registerDebugFunction(S.DebugSymbols.back());
     }
   }
   return false;
+}
+
+/// Describe a procedure (or an alias of one) to the object writer, which
+/// writes .bf and .ef symbols for it as armasm does under -g.
+void ARMASMParser::registerDebugFunction(const DebugSymbol &Procedure) {
+  if (Out.isObj() && Ctx.getObjectFileType() == MCContext::IsCOFF)
+    static_cast<MCWinCOFFStreamer &>(Out).getWriter().addARMASMFunction(
+        {Procedure.Symbol, Procedure.EndSymbol, Procedure.Line,
+         Procedure.EndLine});
 }
 
 bool ARMASMParser::handleImport(const SourceLine &Line, StringRef First,
@@ -4481,7 +4551,16 @@ bool ARMASMParser::handleImport(const SourceLine &Line, StringRef First,
   if (Operands.empty() || Operands.size() > 3 || Operands[0].empty())
     return fatal(Line, "A2003: improper line syntax");
 
-  StringRef Name = unquoteIdentifier(Operands[0]);
+  // armasm ignores a bracketed attribute after the name, with a warning.
+  StringRef NameOperand = Operands[0].trim();
+  if (!NameOperand.starts_with("|"))
+    if (size_t Open = NameOperand.find('['); Open != StringRef::npos) {
+      statementWarning(
+          Line, 4039,
+          "[ attribute does not pertain to a relocatable module; ignored");
+      NameOperand = NameOperand.take_front(Open).trim();
+    }
+  StringRef Name = unquoteIdentifier(NameOperand);
   if (Name.empty() || hasInternalSymbol(Name) ||
       S.DefinedObjectSymbols.contains(Name) || S.CommonSymbols.contains(Name) ||
       S.ExternalSymbols.contains(Name))
@@ -4688,8 +4767,7 @@ bool ARMASMParser::handleStorage(
         return symbolConflict(Line, Name);
       S.DefinedObjectSymbols.insert(Name);
       MCSymbol *Symbol = getSymbol(Name);
-      if (!isExported(Name))
-        defineCOFFSymbol(Symbol, COFF::IMAGE_SYM_CLASS_STATIC);
+      defineLocalSymbol(Name, Symbol, COFF::IMAGE_SYM_CLASS_STATIC);
       emitLabel(Symbol, Line.getLoc());
       recordDebugSymbol(Name, Symbol, DebugSymbol::Data);
       S.SymbolSizes[Name] = Count;
@@ -4737,8 +4815,7 @@ bool ARMASMParser::handleData(
         return symbolConflict(Line, Name);
       S.DefinedObjectSymbols.insert(Name);
       MCSymbol *Symbol = getSymbol(Name);
-      if (!isExported(Name))
-        defineCOFFSymbol(Symbol, COFF::IMAGE_SYM_CLASS_STATIC);
+      defineLocalSymbol(Name, Symbol, COFF::IMAGE_SYM_CLASS_STATIC);
       emitLabel(Symbol, Line.getLoc());
       recordDebugSymbol(Name, Symbol, DebugSymbol::Data,
                         getCodeViewDataType(*Data));
@@ -4873,8 +4950,7 @@ bool ARMASMParser::handleRout(const SourceLine &Line, StringRef First,
       return symbolConflict(Line, Name);
     S.DefinedObjectSymbols.insert(Name);
     MCSymbol *Symbol = getSymbol(Name);
-    if (!isExported(Name))
-      defineCOFFSymbol(Symbol, COFF::IMAGE_SYM_CLASS_STATIC);
+    defineLocalSymbol(Name, Symbol, COFF::IMAGE_SYM_CLASS_STATIC);
     Out.emitAssignment(Symbol,
                        MCSymbolRefExpr::create(S.CurrentAreaBaseSymbol, Ctx));
     S.SymbolSizes[Name] = 0;
@@ -4902,18 +4978,16 @@ bool ARMASMParser::handleInstructionLine(
         return symbolConflict(Line, Name);
       S.DefinedObjectSymbols.insert(Name);
       MCSymbol *Symbol = getSymbol(Name);
-      if (!isExported(Name)) {
-        // Labels on instructions, and bare labels in code, are code labels.
-        int StorageClass = !Second.empty() || S.CurrentAreaIsCode
-                               ? COFF::IMAGE_SYM_CLASS_LABEL
-                               : COFF::IMAGE_SYM_CLASS_STATIC;
-        if (S.CurrentAreaIsCode && S.AtProcedureStart)
-          defineCOFFSymbol(Symbol, StorageClass,
-                           COFF::IMAGE_SYM_DTYPE_FUNCTION
-                               << COFF::SCT_COMPLEX_TYPE_SHIFT);
-        else
-          defineCOFFSymbol(Symbol, StorageClass);
-      }
+      // Labels on instructions, and bare labels in code, are code labels.
+      int StorageClass = !Second.empty() || S.CurrentAreaIsCode
+                             ? COFF::IMAGE_SYM_CLASS_LABEL
+                             : COFF::IMAGE_SYM_CLASS_STATIC;
+      if (S.CurrentAreaIsCode && S.AtProcedureStart)
+        defineLocalSymbol(Name, Symbol, StorageClass,
+                          COFF::IMAGE_SYM_DTYPE_FUNCTION
+                              << COFF::SCT_COMPLEX_TYPE_SHIFT);
+      else
+        defineLocalSymbol(Name, Symbol, StorageClass);
       emitLabel(Symbol, Line.getLoc());
       // A label on its own line names data in data areas.
       recordDebugSymbol(Name, Symbol,
@@ -5067,7 +5141,20 @@ void ARMASMParser::emitDebugInformation() {
   if (S.SawDebugSymbol) {
     MCSymbol *SymbolsEnd =
         BeginSubsection(codeview::DebugSubsectionKind::Symbols);
-    for (const DebugSymbol &Symbol : S.DebugSymbols) {
+    // armasm writes the records in the order of its symbol hash table: by
+    // bucket, and within a bucket the most recently mentioned name first.
+    SmallVector<const DebugSymbol *, 16> Records;
+    for (const DebugSymbol &Symbol : S.DebugSymbols)
+      Records.push_back(&Symbol);
+    auto RecordKey = [&](const DebugSymbol *Symbol) {
+      unsigned Mention = S.SymbolMentions.lookup(Symbol->Name);
+      return std::make_pair(getARMASMSymbolBucket(Symbol->Name), ~Mention);
+    };
+    llvm::stable_sort(Records, [&](const DebugSymbol *A, const DebugSymbol *B) {
+      return RecordKey(A) < RecordKey(B);
+    });
+    for (const DebugSymbol *Record : Records) {
+      const DebugSymbol &Symbol = *Record;
       switch (Symbol.Kind) {
       case DebugSymbol::Procedure: {
         MCSymbol *End = BeginRecord(Symbol.IsExternal

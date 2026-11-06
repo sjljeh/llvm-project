@@ -20,22 +20,28 @@
 # NODBG-NOT:  SubSectionType: Lines
 # NODBG-NOT:  FileChecksums
 
-## All symbol records share one subsection. Data labels are typed by their
-## directive; SPACE and bare labels have no type. An alias repeats the record
-## of its original under its own name, and PDATA areas have no records.
+## All symbol records share one subsection, in the order of armasm's symbol
+## hash table. Data labels are typed by their directive; SPACE and bare labels
+## have no type. An alias repeats the record of its original under its own
+## name, and PDATA areas have no records.
 # DATA:      SubSectionType: Symbols
 # DATA:      SubSectionType: Symbols
-# DATA:      Kind: S_GPROC32
-# DATA:      DisplayName: gfunc
-# DATA:      Kind: S_LABEL32
-# DATA-NEXT: CodeOffset: .text+0x0
-# DATA:      DisplayName: inner
+# DATA:      Kind: S_LDATA32
+# DATA-NEXT: DataOffset: .data+0x0
+# DATA-NEXT: Type: 0x0
+# DATA-NEXT: DisplayName: buffer
+# DATA:      Type: unsigned __int16 (0x73)
+# DATA-NEXT: DisplayName: halves
+# DATA:      Kind: S_LDATA32
+# DATA-NEXT: DataOffset: .data+0x0
+# DATA-NEXT: Type: unsigned (0x75)
+# DATA-NEXT: DisplayName: other
+# DATA:      Type: 0x0
+# DATA-NEXT: DisplayName: bare
 # DATA:      Kind: S_LDATA32
 # DATA-NEXT: DataOffset: .data+0x0
 # DATA-NEXT: Type: unsigned char (0x20)
 # DATA-NEXT: DisplayName: bytes
-# DATA:      Type: unsigned __int16 (0x73)
-# DATA-NEXT: DisplayName: halves
 # DATA:      Kind: S_GDATA32
 # DATA-NEXT: DataOffset: .data+0x0
 # DATA-NEXT: Type: unsigned (0x75)
@@ -44,16 +50,13 @@
 # DATA-NEXT: DisplayName: quads
 # DATA:      Type: float (0x40)
 # DATA-NEXT: DisplayName: single
+# DATA:      Kind: S_LABEL32
+# DATA-NEXT: CodeOffset: .text+0x0
+# DATA:      DisplayName: inner
+# DATA:      Kind: S_GPROC32
+# DATA:      DisplayName: gfunc
 # DATA:      Type: double (0x41)
 # DATA-NEXT: DisplayName: double
-# DATA:      Type: 0x0
-# DATA-NEXT: DisplayName: buffer
-# DATA:      Type: 0x0
-# DATA-NEXT: DisplayName: bare
-# DATA:      Kind: S_LDATA32
-# DATA-NEXT: DataOffset: .data+0x0
-# DATA-NEXT: Type: unsigned (0x75)
-# DATA-NEXT: DisplayName: other
 # DATA-NOT:  pentry
 
 ## Macro expansions take the invocation line once. ALIGN and LTORG have line

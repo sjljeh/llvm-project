@@ -13,6 +13,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
@@ -57,7 +58,13 @@ constexpr int OffsetLabelIntervalBits = 20;
 
 using name = SmallString<COFF::NameSize>;
 
-enum AuxiliaryType { ATWeakExternal, ATFile, ATSectionDefinition };
+enum AuxiliaryType {
+  ATWeakExternal,
+  ATFile,
+  ATSectionDefinition,
+  ATFunctionDefinition,
+  ATbfAndefSymbol
+};
 
 struct AuxSymbol {
   AuxiliaryType AuxType;
@@ -574,6 +581,24 @@ void WinCOFFWriter::WriteAuxiliarySymbols(
       if (UseBigObj)
         W.OS.write_zeros(COFF::Symbol32Size - COFF::Symbol16Size);
       break;
+    case ATFunctionDefinition:
+      W.write<uint32_t>(i.Aux.FunctionDefinition.TagIndex);
+      W.write<uint32_t>(i.Aux.FunctionDefinition.TotalSize);
+      W.write<uint32_t>(i.Aux.FunctionDefinition.PointerToLinenumber);
+      W.write<uint32_t>(i.Aux.FunctionDefinition.PointerToNextFunction);
+      W.OS.write_zeros(sizeof(i.Aux.FunctionDefinition.unused));
+      if (UseBigObj)
+        W.OS.write_zeros(COFF::Symbol32Size - COFF::Symbol16Size);
+      break;
+    case ATbfAndefSymbol:
+      W.OS.write_zeros(sizeof(i.Aux.bfAndefSymbol.unused1));
+      W.write<uint16_t>(i.Aux.bfAndefSymbol.Linenumber);
+      W.OS.write_zeros(sizeof(i.Aux.bfAndefSymbol.unused2));
+      W.write<uint32_t>(i.Aux.bfAndefSymbol.PointerToNextFunction);
+      W.OS.write_zeros(sizeof(i.Aux.bfAndefSymbol.unused3));
+      if (UseBigObj)
+        W.OS.write_zeros(COFF::Symbol32Size - COFF::Symbol16Size);
+      break;
     }
   }
 }
@@ -877,18 +902,42 @@ void WinCOFFWriter::reset() {
 }
 
 void WinCOFFWriter::executePostLayoutBinding() {
+  // armasm leaves out an area that has neither contents nor symbols, except
+  // the default area it creates when the source needs one.
+  SmallPtrSet<const MCSection *, 4> UsedSections;
+  SmallPtrSet<const MCSection *, 4> DroppedSections;
+  bool DropEmptySections =
+      getContext().getTargetOptions().isARMASMCompatible();
+  if (DropEmptySections)
+    for (const MCSymbol &Symbol : Asm->symbols())
+      if (Symbol.isInSection() &&
+          Symbol.getSection().getBeginSymbol() != &Symbol &&
+          (!Symbol.isTemporary() ||
+           static_cast<const MCSymbolCOFF &>(Symbol).getClass() ==
+               COFF::IMAGE_SYM_CLASS_STATIC))
+        UsedSections.insert(&Symbol.getSection());
+
   // "Define" each section & symbol. This creates section & symbol
   // entries in the staging area.
   for (const auto &Section : *Asm) {
     if ((Mode == NonDwoOnly && isDwoSection(Section)) ||
         (Mode == DwoOnly && !isDwoSection(Section)))
       continue;
+    if (DropEmptySections && !UsedSections.contains(&Section) &&
+        Asm->getSectionAddressSize(Section) == 0 &&
+        !static_cast<const MCSectionCOFF &>(Section).getCOMDATSymbol() &&
+        Section.getName() != "__DefaultSection") {
+      DroppedSections.insert(&Section);
+      continue;
+    }
     defineSection(static_cast<const MCSectionCOFF &>(Section));
   }
 
   if (Mode != DwoOnly) {
     for (const MCSymbol &Symbol : Asm->symbols()) {
       auto &Sym = static_cast<const MCSymbolCOFF &>(Symbol);
+      if (Sym.isInSection() && DroppedSections.contains(&Sym.getSection()))
+        continue;
       // Define non-temporary or temporary static (private-linkage) symbols
       if (!Sym.isTemporary() || Sym.getClass() == COFF::IMAGE_SYM_CLASS_STATIC)
         defineSymbol(Sym);
@@ -1127,6 +1176,16 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
   }
 }
 
+unsigned llvm::getARMASMSymbolBucket(StringRef Name) {
+  uint32_t Hash = 0;
+  for (char C : Name) {
+    Hash = (Hash << 4) + static_cast<uint32_t>(static_cast<signed char>(C));
+    if (uint32_t High = Hash & 0xf0000000)
+      Hash ^= High | (High >> 24);
+  }
+  return Hash % 503;
+}
+
 static std::time_t getTime() {
   std::time_t Now = time(nullptr);
   if (Now < 0 || !isUInt<32>(Now))
@@ -1142,22 +1201,91 @@ uint64_t WinCOFFWriter::writeObject() {
     createFileSymbols();
 
   // armasm and armasm64 start the symbol table with @comp.id and @feat.00,
-  // then the .file symbol, then one symbol per section.
+  // then the .file symbol, then one symbol per section. The other symbols
+  // follow in the order of armasm's symbol hash table: COMDAT key symbols
+  // first, then the rest, each by bucket, and within a bucket the most
+  // recently entered name first. Names enter the table where the source
+  // first mentions them, which is when the assembler registers them.
   if (getContext().getTargetOptions().isARMASMCompatible()) {
-    auto Rank = [](const std::unique_ptr<COFFSymbol> &Symbol) {
+    DenseMap<const MCSymbol *, unsigned> Registration;
+    for (const MCSymbol &Symbol : Asm->symbols())
+      Registration.try_emplace(&Symbol, Registration.size());
+    SmallPtrSet<const MCSymbol *, 4> COMDATKeys;
+    COMDATKeys.insert_range(OWriter.ARMASMCOMDATKeys);
+    for (const MCSection &Section : *Asm)
+      if (const MCSymbol *Key =
+              static_cast<const MCSectionCOFF &>(Section).getCOMDATSymbol())
+        COMDATKeys.insert(Key);
+    auto Key = [&](const std::unique_ptr<COFFSymbol> &Symbol) {
+      enum { CompId, Features, File, Section, COMDATKey, Other };
+      unsigned Rank = Other;
       if (Symbol->Name == "@comp.id")
-        return 0;
-      if (Symbol->Name == "@feat.00")
-        return 1;
-      if (Symbol->Data.StorageClass == COFF::IMAGE_SYM_CLASS_FILE)
-        return 2;
-      if (Symbol->Section && Symbol->Section->Symbol == Symbol.get())
-        return 3;
-      return 4;
+        Rank = CompId;
+      else if (Symbol->Name == "@feat.00")
+        Rank = Features;
+      else if (Symbol->Data.StorageClass == COFF::IMAGE_SYM_CLASS_FILE)
+        Rank = File;
+      else if (Symbol->Section && Symbol->Section->Symbol == Symbol.get())
+        Rank = Section;
+      else if (Symbol->MC && COMDATKeys.contains(Symbol->MC))
+        Rank = COMDATKey;
+      if (Rank < COMDATKey)
+        return std::make_tuple(Rank, 0u, 0u);
+      // Symbols the assembler never registered (such as weak external
+      // defaults) count as entered last.
+      unsigned Entered = Symbol->MC ? Registration.lookup(Symbol->MC)
+                                    : unsigned(Registration.size());
+      return std::make_tuple(Rank, getARMASMSymbolBucket(Symbol->Name),
+                             ~Entered);
     };
     llvm::stable_sort(Symbols, [&](const auto &A, const auto &B) {
-      return Rank(A) < Rank(B);
+      return Key(A) < Key(B);
     });
+  }
+
+  // Under -g armasm follows each procedure's symbol with .bf and .ef symbols
+  // naming the lines of its PROC and ENDP, gives .bf the value 0 and .ef the
+  // procedure's size, and chains the procedures in symbol table order.
+  struct FunctionSymbols {
+    COFFSymbol *Function, *Begin;
+  };
+  SmallVector<FunctionSymbols, 0> Functions;
+  if (Mode != DwoOnly && !OWriter.ARMASMFunctions.empty()) {
+    DenseMap<const MCSymbol *, const WinCOFFObjectWriter::ARMASMFunction *>
+        BySymbol;
+    for (const auto &Function : OWriter.ARMASMFunctions)
+      BySymbol[Function.Symbol] = &Function;
+    symbols Ordered;
+    for (auto &Symbol : Symbols) {
+      COFFSymbol *Function = Symbol.get();
+      Ordered.push_back(std::move(Symbol));
+      const WinCOFFObjectWriter::ARMASMFunction *Info =
+          Function->MC ? BySymbol.lookup(Function->MC) : nullptr;
+      if (!Info || !Function->Aux.empty())
+        continue;
+      uint32_t Size = Asm->getSymbolOffset(*Info->End) -
+                      Asm->getSymbolOffset(*Info->Symbol);
+      auto AddMarker = [&](StringRef Name, uint32_t Value, unsigned Line) {
+        auto Marker = std::make_unique<COFFSymbol>(Name);
+        Marker->Data.Value = Value;
+        Marker->Data.StorageClass = COFF::IMAGE_SYM_CLASS_FUNCTION;
+        Marker->Section = Function->Section;
+        Marker->Aux.resize(1);
+        Marker->Aux[0].AuxType = ATbfAndefSymbol;
+        Marker->Aux[0].Aux = {};
+        Marker->Aux[0].Aux.bfAndefSymbol.Linenumber = Line;
+        Ordered.push_back(std::move(Marker));
+        return Ordered.back().get();
+      };
+      COFFSymbol *Begin = AddMarker(".bf", 0, Info->BeginLine);
+      AddMarker(".ef", Size, Info->EndLine);
+      Function->Aux.resize(1);
+      Function->Aux[0].AuxType = ATFunctionDefinition;
+      Function->Aux[0].Aux = {};
+      Function->Aux[0].Aux.FunctionDefinition.TotalSize = Size;
+      Functions.push_back({Function, Begin});
+    }
+    Symbols = std::move(Ordered);
   }
 
   for (auto &Symbol : Symbols) {
@@ -1168,6 +1296,15 @@ uint64_t WinCOFFWriter::writeObject() {
     // Update auxiliary symbol info.
     Symbol->Data.NumberOfAuxSymbols = Symbol->Aux.size();
     Header.NumberOfSymbols += Symbol->Data.NumberOfAuxSymbols;
+  }
+
+  for (size_t I = 0, E = Functions.size(); I != E; ++I) {
+    const FunctionSymbols *Next = I + 1 != E ? &Functions[I + 1] : nullptr;
+    auto &Definition = Functions[I].Function->Aux[0].Aux.FunctionDefinition;
+    Definition.TagIndex = Functions[I].Begin->getIndex();
+    Definition.PointerToNextFunction = Next ? Next->Function->getIndex() : 0;
+    Functions[I].Begin->Aux[0].Aux.bfAndefSymbol.PointerToNextFunction =
+        Next ? Next->Begin->getIndex() : 0;
   }
 
   // Build string table.
@@ -1325,6 +1462,8 @@ int WinCOFFWriter::getSectionNumber(const MCSection &Section) const {
 
 void WinCOFFObjectWriter::reset() {
   IncrementalLinkerCompatible = false;
+  ARMASMFunctions.clear();
+  ARMASMCOMDATKeys.clear();
   ObjWriter->reset();
   if (DwoWriter)
     DwoWriter->reset();
