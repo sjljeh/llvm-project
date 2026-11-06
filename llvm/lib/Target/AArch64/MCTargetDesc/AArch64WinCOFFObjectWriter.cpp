@@ -105,9 +105,7 @@ unsigned AArch64WinCOFFObjectWriter::getRelocType(
       return COFF::IMAGE_REL_ARM64_REL32;
     // ARMASM64 uses ADDR64 relocations for symbolic DCD values even though the
     // directive reserves four bytes.
-    if (!Spec &&
-        Ctx.getTargetOptions().getAssemblyLanguage().equals_insensitive(
-            "armasm64"))
+    if (!Spec && Ctx.getTargetOptions().isARMASMCompatible())
       return COFF::IMAGE_REL_ARM64_ADDR64;
     switch (Spec) {
     default:

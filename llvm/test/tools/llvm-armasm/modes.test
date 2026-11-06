@@ -1,0 +1,44 @@
+# The program name selects armasm (Thumb-2) or armasm64 (AArch64), and
+# -machine overrides it.
+
+# RUN: rm -rf %t && split-file %s %t
+# RUN: llvm-armasm -help | FileCheck %s --check-prefix=HELP
+# RUN: llvm-armasm -machine ARM64 %t/aarch64.asm %t/aarch64.obj
+# RUN: llvm-readobj --file-headers %t/aarch64.obj | FileCheck %s --check-prefix=ARM64
+# RUN: llvm-armasm -machine THUMB %t/thumb.asm %t/thumb.obj
+# RUN: llvm-readobj --file-headers %t/thumb.obj | FileCheck %s --check-prefix=ARMNT
+# RUN: not llvm-armasm -32 %t/thumb.asm %t/arm.obj 2>&1 | FileCheck %s --check-prefix=ARM-MODE
+# RUN: not llvm-armasm %t/code32.asm %t/code32.obj 2>&1 | FileCheck %s --check-prefix=CODE32
+# RUN: not llvm-armasm -machine X86 %t/thumb.asm %t/x86.obj 2>&1 | FileCheck %s --check-prefix=MACHINE
+# RUN: llvm-armasm %t/rn64.asm %t/rn32.obj
+# RUN: not llvm-armasm64 %t/rn64.asm %t/rn64.obj 2>&1 | FileCheck %s --check-prefix=RN64
+
+# HELP: OVERVIEW: LLVM ARMASM Assembler
+# HELP: USAGE: llvm-armasm{{(.exe)?}} [options] sourcefile [objectfile]
+# HELP: -oldit
+# ARM64: Machine: IMAGE_FILE_MACHINE_ARM64 (0xAA64)
+# ARMNT: Machine: IMAGE_FILE_MACHINE_ARMNT (0x1C4)
+# ARM-MODE: error: -32 (ARM instruction set) is not supported
+# CODE32: code32.asm(2) : error: ARM instructions are not supported; only Thumb-2 code can be assembled for Windows on ARM
+# MACHINE: error: invalid machine type 'X86'
+# RN64: rn64.asm(1) : error A2034: unknown opcode: RN
+
+#--- aarch64.asm
+        AREA |.text|, CODE, READONLY
+        ret
+        END
+#--- thumb.asm
+        AREA |.text|, CODE, READONLY
+        THUMB
+        PRESERVE8
+        bx lr
+        END
+#--- code32.asm
+        AREA |.text|, CODE, READONLY
+        CODE32
+        END
+#--- rn64.asm
+alias   RN r1
+        AREA |.text|, CODE, READONLY
+        mov alias, #1
+        END

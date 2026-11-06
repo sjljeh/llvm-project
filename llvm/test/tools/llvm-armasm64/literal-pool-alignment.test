@@ -1,0 +1,43 @@
+# Microsoft armasm64 aligns a literal pool placed by LTORG to 4 bytes, even
+# with 8-byte entries. A pool that END places at the end of its area is
+# aligned to 8 when it has 8-byte entries, relative to the start of the area,
+# and the area keeps the alignment its AREA directive gave it.
+# RUN: rm -rf %t && split-file %s %t && cd %t
+# RUN: llvm-armasm64 ltorg.asm ltorg.obj
+# RUN: llvm-objdump -s -j .text ltorg.obj | FileCheck %s --check-prefix=LTORG
+# RUN: llvm-armasm64 end.asm end.obj
+# RUN: llvm-objdump -s -j .text end.obj | FileCheck %s --check-prefix=END
+# RUN: llvm-armasm64 small-area.asm small-area.obj
+# RUN: llvm-readobj --sections small-area.obj | FileCheck %s --check-prefix=SMALL-FLAGS
+# RUN: llvm-objdump -s -j .text small-area.obj | FileCheck %s --check-prefix=SMALL
+
+# LTORG:      0000 1f2003d5 1f2003d5 20000058 88776655
+# LTORG-NEXT: 0010 44332211 c0035fd6
+
+# END:      0000 1f2003d5 1f2003d5 40000058 00000000
+# END-NEXT: 0010 88776655 44332211
+
+# SMALL-FLAGS:     Name: .text
+# SMALL-FLAGS:     IMAGE_SCN_ALIGN_2BYTES
+# SMALL:      0000 40000058 00000000 88776655 44332211
+
+#--- ltorg.asm
+        AREA |.text|, CODE, READONLY, ALIGN=4
+        nop
+        nop
+        ldr x0, =0x1122334455667788
+        LTORG
+        ret
+        END
+
+#--- end.asm
+        AREA |.text|, CODE, READONLY, ALIGN=4
+        nop
+        nop
+        ldr x0, =0x1122334455667788
+        END
+
+#--- small-area.asm
+        AREA |.text|, CODE, READONLY, ALIGN=1
+f       ldr x0, =0x1122334455667788
+        END

@@ -10,12 +10,14 @@ set(LLVM_LINK_COMPONENTS
   DebugInfoDWARF
   MC
   MCDisassembler
+  MCParser
   Object
   Support
   TargetParser
   )
 
 add_llvm_unittest(MCTests
+  AsmLexerARMASMTest.cpp
   Disassembler.cpp
   DwarfDebugFrameCIE.cpp
   DwarfLineTables.cpp

@@ -1,0 +1,96 @@
+# With -g armasm describes each procedure with a function definition and
+# .bf/.ef symbols naming the lines of its PROC and ENDP; .bf has the value 0
+# and .ef the procedure's size, and the procedures are chained in symbol table
+# order. An ALIAS takes the storage class and type its original would have
+# unexported, and an alias of a procedure is described as one too. EXPORT
+# keeps a symbol's type. Checked against Microsoft armasm64.
+# RUN: rm -rf %t && split-file %s %t && cd %t
+# RUN: llvm-armasm64 -g procs.asm procs.obj
+# RUN: llvm-objdump -t procs.obj | FileCheck %s --check-prefix=PROCS
+# RUN: llvm-readobj --symbols procs.obj | FileCheck %s --check-prefix=PROCS-AUX
+# RUN: llvm-armasm64 procs.asm procs-nog.obj
+# RUN: llvm-objdump -t procs-nog.obj | FileCheck %s --check-prefix=NOG
+# RUN: llvm-armasm64 aliases.asm aliases.obj
+# RUN: llvm-readobj --symbols aliases.obj | FileCheck %s --check-prefix=ALIASES
+# RUN: llvm-armasm64 -g aliases.asm aliases-g.obj
+# RUN: llvm-objdump -t aliases-g.obj | FileCheck %s --check-prefix=ALIASES-G
+
+# PROCS:      (sec  1)(fl 0x00)(ty  20)(scl   6) (nx 1) 0x00000004 f
+# PROCS-NEXT: AUX
+# PROCS-NEXT: (sec  1)(fl 0x00)(ty   0)(scl  65) (nx 1) 0x00000000 .bf
+# PROCS-NEXT: AUX
+# PROCS-NEXT: (sec  1)(fl 0x00)(ty   0)(scl  65) (nx 1) 0x0000000c .ef
+# PROCS-NEXT: AUX
+# PROCS-NEXT: (sec  1)(fl 0x00)(ty  20)(scl   6) (nx 1) 0x00000010 g
+# PROCS:      (sec  1)(fl 0x00)(ty  20)(scl   2) (nx 1) 0x00000014 h
+# PROCS-NEXT: AUX
+# PROCS-NEXT: (sec  1)(fl 0x00)(ty   0)(scl  65) (nx 1) 0x00000000 .bf
+# PROCS-NEXT: AUX
+# PROCS-NEXT: (sec  1)(fl 0x00)(ty   0)(scl  65) (nx 1) 0x00000004 .ef
+
+# PROCS-AUX:      Name: h
+# PROCS-AUX:      AuxFunctionDef {
+# PROCS-AUX-NEXT:   TagIndex: {{[0-9]+}}
+# PROCS-AUX-NEXT:   TotalSize: 4
+# PROCS-AUX-NEXT:   PointerToLineNumber: 0x0
+# PROCS-AUX-NEXT:   PointerToNextFunction: 0x0
+
+# NOG-NOT: .bf
+# NOG: (ty   0)(scl   6) (nx 0) 0x00000004 f
+# NOG-NOT: .bf
+
+# ALIASES:      Name: cla
+# ALIASES:      StorageClass: Label
+# ALIASES:      Name: laba
+# ALIASES:      StorageClass: Label
+# ALIASES:      Name: da
+# ALIASES:      StorageClass: Static
+# ALIASES:      Name: fa
+# ALIASES:      StorageClass: Label
+# ALIASES:      Name: barea
+# ALIASES:      StorageClass: Static
+
+# ALIASES-G:      (ty  20)(scl   2) (nx 1) 0x00000000 f
+# ALIASES-G:      (ty  20)(scl   6) (nx 1) 0x00000000 fa
+# ALIASES-G-NEXT: AUX
+# ALIASES-G-NEXT: (scl  65) (nx 1) 0x00000000 .bf
+# ALIASES-G-NEXT: AUX
+# ALIASES-G-NEXT: (scl  65) (nx 1) 0x00000008 .ef
+
+#--- procs.asm
+        AREA |.text|, CODE, READONLY
+        nop
+f       PROC
+        nop
+        nop
+        ret
+        ENDP
+g       PROC
+        ret
+        ENDP
+        EXPORT h
+h       PROC
+        ret
+        ENDP
+        END
+
+#--- aliases.asm
+        AREA |.text|, CODE, READONLY
+        EXPORT f
+        EXPORT lab
+f       PROC
+        nop
+lab     ret
+        ENDP
+        ALIAS f, fa
+        ALIAS lab, laba
+        AREA |.data|, DATA
+        EXPORT d
+d       DCD 1
+cl      nop
+bare
+        DCD 2
+        ALIAS d, da
+        ALIAS cl, cla
+        ALIAS bare, barea
+        END

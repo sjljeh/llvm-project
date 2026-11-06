@@ -1,0 +1,30 @@
+# ADRL reaches only targets in the same section whose offset splits into 12
+# bits and a Thumb-2 modified immediate; armasm reports A2199 otherwise.
+# RUN: rm -rf %t && split-file %s %t && cd %t
+# RUN: not llvm-armasm far.asm far.obj 2>&1 | FileCheck %s --check-prefix=FAR
+# RUN: not llvm-armasm section.asm section.obj 2>&1 | FileCheck %s --check-prefix=SECTION
+
+# FAR: far.asm(3) : error A2199: address out of range for adrl
+# FAR-NEXT: adrl r3, vfar
+# SECTION: section.asm(3) : error A2199: address out of range for adrl
+# SECTION-NEXT: adrl r4, ext
+
+#--- far.asm
+        AREA |.text|, CODE, READONLY
+f       PROC
+        adrl r3, vfar
+        bx lr
+        SPACE 1052670
+vfar    nop
+        ENDP
+        END
+
+#--- section.asm
+        AREA |.text|, CODE, READONLY
+f       PROC
+        adrl r4, ext
+        bx lr
+        ENDP
+        AREA |.data|, DATA
+ext     DCD 0
+        END

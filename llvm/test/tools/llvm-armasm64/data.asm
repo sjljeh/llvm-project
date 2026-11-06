@@ -41,13 +41,14 @@ escaped DCB "a""b", "$$", "c\n"
 ; OBJ: Offset: 0x40
 ; OBJ-NEXT: Type: IMAGE_REL_ARM64_ADDR64
 ; OBJ-NEXT: Symbol: external
+; Symbols follow armasm's hash table order.
+; OBJ-DAG: Name: word_aligned
+; OBJ-DAG: Name: dword_unaligned
+; OBJ-DAG: Name: qword_unaligned
 ; OBJ: Name: data_start
 ; OBJ: Value: 0
 ; OBJ: Section: .data
 ; OBJ: StorageClass: External
-; OBJ-DAG: Name: word_aligned
-; OBJ-DAG: Name: dword_unaligned
-; OBJ-DAG: Name: qword_unaligned
 
 ; CONTENTS: Contents of section .data:
 ; CONTENTS-NEXT: 0000 11003322 44665577 bbaa9988 cc00ffee

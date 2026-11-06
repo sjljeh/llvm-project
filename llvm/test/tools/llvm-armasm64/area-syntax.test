@@ -7,8 +7,8 @@
 # QUOTED: Name: section,name
 # QUOTED: RawDataSize: 0x1
 
-# EMPTY: empty-attribute.asm:1: A2146: illegal symbol ,; AREA attribute expected
-# SPACE: unquoted-space.asm:1: A2003: improper line syntax: ,
+# EMPTY: empty-attribute.asm(1) : error A2146: illegal symbol ,; AREA attribute expected
+# SPACE: unquoted-space.asm(1) : error A2003: improper line syntax: ,
 
 #--- quoted-comma.asm
         AREA |section,name|, DATA, READWRITE

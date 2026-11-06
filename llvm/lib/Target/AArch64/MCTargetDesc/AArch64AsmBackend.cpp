@@ -459,6 +459,13 @@ void AArch64AsmBackend::applyFixup(const MCFragment &F, const MCFixup &Fixup,
                                    uint64_t Value, bool IsResolved) {
   if (shouldForceRelocation(Fixup))
     IsResolved = false;
+  // armasm64 leaves a BL to a symbol without an addend to the linker even
+  // within a section.
+  if (Fixup.getKind() == AArch64::fixup_aarch64_pcrel_call26 &&
+      Target.getAddSym() && !Target.getAddSym()->isTemporary() &&
+      !Target.getSubSym() && Target.getConstant() == 0 &&
+      getContext().getTargetOptions().isARMASMCompatible())
+    IsResolved = false;
   maybeAddReloc(F, Fixup, Target, Value, IsResolved);
   MCFixupKind Kind = Fixup.getKind();
   if (mc::isRelocation(Kind))

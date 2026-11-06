@@ -401,6 +401,20 @@ static std::string radixName(unsigned Radix) {
 ///   Hex integer: 0x[0-9a-fA-F]+ or [0x]?[0-9][0-9a-fA-F]*[hH]
 ///   Decimal integer: [1-9][0-9]*
 AsmToken AsmLexer::LexDigit() {
+  // ARMASM base-n integer: n_ddd for n in 2..9.
+  if (LexARMASM && CurPtr[-1] >= '2' && CurPtr[-1] <= '9' && *CurPtr == '_') {
+    unsigned Radix = CurPtr[-1] - '0';
+    const char *DigitsStart = ++CurPtr;
+    while (isAlnum(*CurPtr))
+      ++CurPtr;
+    StringRef Digits(DigitsStart, CurPtr - DigitsStart);
+    APInt Value(128, 0);
+    if (Digits.empty() || Digits.getAsInteger(Radix, Value))
+      return ReturnError(TokStart, "invalid base-" + std::to_string(Radix) +
+                                       " integer constant");
+    return intToken(StringRef(TokStart, CurPtr - TokStart), Value);
+  }
+
   // MASM-flavor binary integer: [01]+[yY] (if DefaultRadix < 16, [bByY])
   // MASM-flavor octal integer: [0-7]+[oOqQ]
   // MASM-flavor decimal integer: [0-9]+[tT] (if DefaultRadix < 16, [dDtT])
@@ -790,6 +804,9 @@ bool AsmLexer::isAtStartOfComment(const char *Ptr) {
   if (MAI.isHLASM() && !IsAtStartOfStatement)
     return false;
 
+  if (LexARMASM && *Ptr == ';')
+    return true;
+
   StringRef CommentString = MAI.getCommentString();
 
   if (CommentString.size() == 1)
@@ -946,6 +963,18 @@ AsmToken AsmLexer::LexToken() {
     }
     return AsmToken(AsmToken::Minus, StringRef(TokStart, 1));
   case '|':
+    if (LexARMASM) {
+      // |quoted symbol|: everything up to the closing bar on this line.
+      const char *End = CurPtr;
+      while (*End != '|' && *End != '\n' && *End != '\r' &&
+             End != CurBuf.end())
+        ++End;
+      if (*End == '|' && End != CurBuf.end()) {
+        CurPtr = End + 1;
+        return AsmToken(AsmToken::Identifier,
+                        StringRef(TokStart, CurPtr - TokStart));
+      }
+    }
     if (*CurPtr == '|') {
       ++CurPtr;
       return AsmToken(AsmToken::PipePipe, StringRef(TokStart, 2));
@@ -953,6 +982,15 @@ AsmToken AsmLexer::LexToken() {
     return AsmToken(AsmToken::Pipe, StringRef(TokStart, 1));
   case '^': return AsmToken(AsmToken::Caret, StringRef(TokStart, 1));
   case '&':
+    if (LexARMASM && isHexDigit(*CurPtr)) {
+      // ARMASM hexadecimal integer: &FF.
+      const char *DigitsStart = CurPtr;
+      while (isHexDigit(*CurPtr))
+        ++CurPtr;
+      APInt Value(128, 0);
+      StringRef(DigitsStart, CurPtr - DigitsStart).getAsInteger(16, Value);
+      return intToken(StringRef(TokStart, CurPtr - TokStart), Value);
+    }
     if (*CurPtr == '&') {
       ++CurPtr;
       return AsmToken(AsmToken::AmpAmp, StringRef(TokStart, 2));

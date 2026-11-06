@@ -9,15 +9,15 @@
 # RUN: not llvm-armasm64 %t/case.asm %t.obj 2>&1 | FileCheck %s --check-prefix=CASE
 # RUN: not llvm-armasm64 %t/missing.asm %t.obj 2>&1 | FileCheck %s --check-prefix=MISSING
 
-# RN: rn.asm:1: A2034: unknown opcode: RN
-# CROSS: cross-kind.asm:2: A2026: multiple symbol definition or incompatibility: Alias
-# RANGE: range.asm:1: A2069: immediate value 32 out of range
-# KIND: register-kind.asm:1: A2046: unknown or bad symbol type: q1
-# TYPE: type.asm:1: A2003: improper line syntax
-# PREDEFINED: predefined.asm:1: A2026: multiple symbol definition or incompatibility: x0
-# SYMBOL: symbol.asm:2: A2026: multiple symbol definition or incompatibility: Value
+# RN: rn.asm(1) : error A2034: unknown opcode: RN
+# CROSS: cross-kind.asm(2) : error A2026: multiple symbol definition or incompatibility: Alias
+# RANGE: range.asm(1) : error A2069: immediate value 32 out of range
+# KIND: register-kind.asm(1) : error A2046: unknown or bad symbol type: q1
+# TYPE: type.asm(1) : error A2003: improper line syntax
+# PREDEFINED: predefined.asm(1) : error A2026: multiple symbol definition or incompatibility: x0
+# SYMBOL: symbol.asm(2) : error A2026: multiple symbol definition or incompatibility: Value
 # CASE: error: expected compatible register or floating-point constant
-# MISSING: missing.asm:1: A2173: syntax error in expression
+# MISSING: missing.asm(1) : error A2173: syntax error in expression
 
 #--- rn.asm
 Alias RN x1

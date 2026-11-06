@@ -120,6 +120,11 @@ enum Fixups {
   fixup_wls,
   fixup_le,
 
+  // Fixup for the armasm ADRL pseudo-instruction: an adr.w followed by an
+  // add.w/sub.w of the same register, 8 bytes in all. The PC-relative offset
+  // is split into the low 12 bits (adr.w) and a modified immediate (add.w).
+  fixup_t2_adrl_pcrel,
+
   // Marker
   LastTargetFixupKind,
   NumTargetFixupKinds = LastTargetFixupKind - FirstTargetFixupKind

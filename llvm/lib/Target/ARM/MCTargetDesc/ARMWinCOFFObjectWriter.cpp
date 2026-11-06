@@ -80,8 +80,13 @@ unsigned ARMWinCOFFObjectWriter::getRelocType(MCContext &Ctx,
     return COFF::IMAGE_REL_ARM_SECREL;
   case ARM::fixup_t2_condbranch:
     return COFF::IMAGE_REL_ARM_BRANCH20T;
-  case ARM::fixup_t2_uncondbranch:
   case ARM::fixup_arm_thumb_bl:
+    // armasm describes BL with the BLX23T relocation, which the linker
+    // resolves as a BL when the target is Thumb code.
+    if (Ctx.getTargetOptions().isARMASMCompatible())
+      return COFF::IMAGE_REL_ARM_BLX23T;
+    return COFF::IMAGE_REL_ARM_BRANCH24T;
+  case ARM::fixup_t2_uncondbranch:
     return COFF::IMAGE_REL_ARM_BRANCH24T;
   case ARM::fixup_arm_thumb_blx:
     return COFF::IMAGE_REL_ARM_BLX23T;

@@ -163,8 +163,8 @@ set(LLVM_TEST_DEPENDS
   yaml2obj
   )
 
-if(TARGET llvm-armasm64)
-  list(APPEND LLVM_TEST_DEPENDS llvm-armasm64)
+if(TARGET llvm-armasm)
+  list(APPEND LLVM_TEST_DEPENDS llvm-armasm llvm-armasm64)
 endif()
 
 if(TARGET llvm-lto)

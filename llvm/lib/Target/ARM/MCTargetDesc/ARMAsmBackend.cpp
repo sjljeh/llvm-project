@@ -113,6 +113,7 @@ MCFixupKindInfo ARMAsmBackend::getFixupKindInfo(MCFixupKind Kind) const {
       {"fixup_bfcsel_else_target", 0, 32, 0},
       {"fixup_wls", 0, 32, 0},
       {"fixup_le", 0, 32, 0},
+      {"fixup_t2_adrl_pcrel", 0, 32, 0},
   };
   const static MCFixupKindInfo InfosBE[ARM::NumTargetFixupKinds] = {
       // This table *must* be in the order that the fixup_* kinds are defined in
@@ -162,6 +163,7 @@ MCFixupKindInfo ARMAsmBackend::getFixupKindInfo(MCFixupKind Kind) const {
       {"fixup_bfcsel_else_target", 0, 32, 0},
       {"fixup_wls", 0, 32, 0},
       {"fixup_le", 0, 32, 0},
+      {"fixup_t2_adrl_pcrel", 0, 32, 0},
   };
 
   // Fixup kinds from .reloc directive are like R_ARM_NONE. They do not require
@@ -941,6 +943,22 @@ bool ARMAsmBackend::shouldForceRelocation(const MCFixup &Fixup,
   // different execution mode in ELF binaries.
   if (needsInterworking(*Asm, Sym, Fixup.getKind()))
     return true;
+  // armasm leaves BL, and wide branches, to a symbol without an addend to the
+  // linker even within a section, and resolves BLX where it can.
+  if (Sym && getContext().getTargetOptions().isARMASMCompatible()) {
+    bool BareSymbol = !Sym->isTemporary() && !Target.getSubSym() &&
+                      Target.getConstant() == 0;
+    switch (FixupKind) {
+    case ARM::fixup_arm_thumb_bl:
+    case ARM::fixup_t2_uncondbranch:
+    case ARM::fixup_t2_condbranch:
+      return BareSymbol;
+    case ARM::fixup_arm_thumb_blx:
+      return false;
+    default:
+      break;
+    }
+  }
   // We must always generate a relocation for BL/BLX instructions if we have
   // a symbol to reference, as the linker relies on knowing the destination
   // symbol's thumb-ness to get interworking right.
@@ -1091,6 +1109,7 @@ std::optional<bool> ARMAsmBackend::evaluateFixup(const MCFragment &F,
   case ARM::fixup_t2_pcrel_10:
   case ARM::fixup_t2_pcrel_9:
   case ARM::fixup_t2_adr_pcrel_12:
+  case ARM::fixup_t2_adrl_pcrel:
   case ARM::fixup_arm_thumb_blx:
     // These Thumb2/BLX fixups are not on relaxable fragments, so Stretch
     // (which is only nonzero during relaxation) must be zero here.
@@ -1107,16 +1126,58 @@ std::optional<bool> ARMAsmBackend::evaluateFixup(const MCFragment &F,
   return {};
 }
 
+/// Resolve an armasm ADRL pair (adr.w Rd, #lo; add.w Rd, Rd, #hi) the way
+/// armasm does: the low 12 bits of the offset go to adr.w and the rest, as a
+/// Thumb-2 modified immediate, to add.w. For a target behind the PC both
+/// instructions take their subtracting forms, even when the rest is zero.
+static void applyADRLFixup(MCContext &Ctx, const MCFixup &Fixup, uint8_t *Data,
+                           uint64_t Value, bool IsResolved) {
+  int64_t Offset = static_cast<int64_t>(Value) - 4;
+  bool Negative = Offset < 0;
+  uint64_t Magnitude = Negative ? -static_cast<uint64_t>(Offset) : Offset;
+  uint64_t Low = Magnitude & 0xfff;
+  uint64_t High = Magnitude & ~uint64_t(0xfff);
+  int HighEncoded = isUInt<32>(High) ? ARM_AM::getT2SOImmVal(High) : -1;
+  if (!IsResolved || HighEncoded == -1) {
+    Ctx.reportError(Fixup.getLoc(), "A2199: address out of range for adrl");
+    return;
+  }
+  // adr.w and add.w (op 0b1000) become their subtracting forms, adr.w with
+  // opc 0b101 and sub.w (op 0b1101), by setting bits 21 and 23.
+  uint32_t Subtract = Negative ? 5u << 21 : 0;
+  uint32_t Words[2] = {
+      Subtract | uint32_t((Low & 0x800) << 15) | uint32_t((Low & 0x700) << 4) |
+          uint32_t(Low & 0xff),
+      Subtract | (uint32_t(HighEncoded & 0x800) << 15) |
+          (uint32_t(HighEncoded & 0x700) << 4) | uint32_t(HighEncoded & 0xff)};
+  for (unsigned I = 0; I != 2; ++I) {
+    uint32_t Word = swapHalfWords(Words[I], /*IsLittleEndian=*/true);
+    for (unsigned J = 0; J != 4; ++J)
+      Data[I * 4 + J] |= uint8_t(Word >> (J * 8));
+  }
+}
+
 void ARMAsmBackend::applyFixup(const MCFragment &F, const MCFixup &Fixup,
                                const MCValue &Target, uint8_t *Data,
                                uint64_t Value, bool IsResolved) {
   if (IsResolved && shouldForceRelocation(Fixup, Target))
     IsResolved = false;
+  if (Fixup.getKind() == ARM::fixup_t2_adrl_pcrel) {
+    assert(Endian == llvm::endianness::little && "ADRL is armasm-only");
+    assert(Fixup.getOffset() + 8 <= F.getSize() && "Invalid fixup offset!");
+    applyADRLFixup(getContext(), Fixup, Data, Value, IsResolved);
+    return;
+  }
   maybeAddReloc(F, Fixup, Target, Value, IsResolved);
   auto Kind = Fixup.getKind();
   if (mc::isRelocation(Kind))
     return;
   MCContext &Ctx = getContext();
+  // armasm writes a BLX that it leaves to the linker as BL, which BLX23T
+  // relocations describe; bit 12 of the second halfword selects BL.
+  if (!IsResolved && Kind == ARM::fixup_arm_thumb_blx &&
+      Ctx.getTargetOptions().isARMASMCompatible())
+    Data[Endian == llvm::endianness::little ? 3 : 2] |= 0x10;
   Value = adjustFixupValue(*Asm, Fixup, Target, Value, IsResolved, Ctx,
                            getSubtargetInfo(F));
   if (!Value)

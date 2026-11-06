@@ -39,3 +39,9 @@ StringRef MCTargetOptions::getABIName() const {
 StringRef MCTargetOptions::getAssemblyLanguage() const {
   return AssemblyLanguage;
 }
+
+bool MCTargetOptions::isARMASMCompatible() const {
+  StringRef Language = getAssemblyLanguage();
+  return Language.equals_insensitive("armasm") ||
+         Language.equals_insensitive("armasm64");
+}

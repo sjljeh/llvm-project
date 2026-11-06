@@ -53,6 +53,20 @@ class WinCOFFObjectWriter final : public MCObjectWriter {
   bool IncrementalLinkerCompatible = false;
 
 public:
+  /// A procedure that armasm, under -g, describes with a function definition
+  /// and .bf/.ef symbols that give the lines of its PROC and ENDP.
+  struct ARMASMFunction {
+    const MCSymbol *Symbol;
+    const MCSymbol *End;
+    unsigned BeginLine;
+    unsigned EndLine;
+  };
+
+private:
+  SmallVector<ARMASMFunction, 0> ARMASMFunctions;
+  SmallVector<const MCSymbol *, 0> ARMASMCOMDATKeys;
+
+public:
   WinCOFFObjectWriter(std::unique_ptr<MCWinCOFFObjectTargetWriter> MOTW,
                       raw_pwrite_stream &OS);
   WinCOFFObjectWriter(std::unique_ptr<MCWinCOFFObjectTargetWriter> MOTW,
@@ -63,6 +77,14 @@ public:
   void setAssembler(MCAssembler *Asm) override;
   void setIncrementalLinkerCompatible(bool Value) {
     IncrementalLinkerCompatible = Value;
+  }
+  void addARMASMFunction(const ARMASMFunction &Function) {
+    ARMASMFunctions.push_back(Function);
+  }
+  /// Name a symbol that armasm writes with the COMDAT names, ahead of the
+  /// other symbols: the name in braces of a COMDAT area, associative or not.
+  void addARMASMCOMDATKey(const MCSymbol *Symbol) {
+    ARMASMCOMDATKeys.push_back(Symbol);
   }
   void executePostLayoutBinding() override;
   bool isSymbolRefDifferenceFullyResolvedImpl(const MCSymbol &SymA,
@@ -86,6 +108,12 @@ createWinCOFFObjectWriter(std::unique_ptr<MCWinCOFFObjectTargetWriter> MOTW,
 LLVM_ABI std::unique_ptr<MCObjectWriter>
 createWinCOFFDwoObjectWriter(std::unique_ptr<MCWinCOFFObjectTargetWriter> MOTW,
                              raw_pwrite_stream &OS, raw_pwrite_stream &DwoOS);
+
+/// The bucket of \p Name in the symbol hash table of Microsoft armasm and
+/// armasm64, which write symbols (and CodeView symbol records) in bucket
+/// order: a PJW/ELF hash of the name's bytes, read as signed chars, modulo
+/// 503 buckets.
+LLVM_ABI unsigned getARMASMSymbolBucket(StringRef Name);
 } // end namespace llvm
 
 #endif // LLVM_MC_MCWINCOFFOBJECTWRITER_H

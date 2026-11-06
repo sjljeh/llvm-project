@@ -27,6 +27,7 @@ namespace llvm {
 
 class MCAsmInfo;
 class MCAsmParserExtension;
+struct ARMASMParserOptions;
 class MCExpr;
 class MCInstPrinter;
 class MCInstrInfo;
@@ -195,6 +196,31 @@ public:
   virtual bool discardLTOSymbol(StringRef) const { return false; }
 
   virtual bool isParsingMasm() const { return false; }
+
+  /// Whether this parser accepts the ARM/Microsoft ARMASM dialect (as used by
+  /// armasm and armasm64). Target parsers use this to enable dialect-specific
+  /// instruction syntax and pseudo-instructions.
+  virtual bool isParsingARMASM() const { return false; }
+
+  /// The options of an ARMASM parser, or null for other dialects.
+  virtual const ARMASMParserOptions *getARMASMOptions() const {
+    return nullptr;
+  }
+
+  /// ARMASM register aliases (RN, SN, DN, QN). \p Class is 'r', 's', 'd' or
+  /// 'q'. ARMASM resolves aliases with their final definition, so this may
+  /// return an alias defined later in the source.
+  virtual bool lookUpARMASMRegisterAlias(StringRef Name, char &Class,
+                                         unsigned &Number) const {
+    return false;
+  }
+
+  /// ARMASM storage-map fields declared relative to a base register, which
+  /// stand for a [base, #offset] memory operand.
+  virtual bool lookUpARMASMBasedField(StringRef Name, StringRef &BaseRegister,
+                                      int64_t &Offset) const {
+    return false;
+  }
 
   virtual void setMasmIdentifierCaseSensitive(bool) {}
 

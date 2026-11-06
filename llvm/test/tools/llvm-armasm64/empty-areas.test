@@ -1,0 +1,52 @@
+# armasm leaves out an AREA with neither contents nor symbols, but keeps the
+# default area it creates for the source, and ignores a bracketed attribute
+# after an IMPORT name with a warning. Checked against Microsoft armasm64.
+# RUN: rm -rf %t && split-file %s %t && cd %t
+# RUN: llvm-armasm64 empty.asm empty.obj
+# RUN: llvm-readobj --sections empty.obj | FileCheck %s --check-prefix=EMPTY --implicit-check-not=.data --implicit-check-not=.bss --implicit-check-not=.empty
+# RUN: llvm-armasm64 label.asm label.obj
+# RUN: llvm-readobj --sections label.obj | FileCheck %s --check-prefix=LABEL
+# RUN: llvm-armasm64 common.asm common.obj
+# RUN: llvm-readobj --sections common.obj | FileCheck %s --check-prefix=COMMON
+# RUN: llvm-armasm64 import.asm import.obj 2>&1 | FileCheck %s --check-prefix=IMPORT-WARN
+# RUN: llvm-readobj --symbols import.obj | FileCheck %s --check-prefix=IMPORT --implicit-check-not=WEAK --implicit-check-not=DATA
+
+# EMPTY: Name: .text
+# EMPTY: Name: .debug$S
+
+# LABEL: Name: .text
+# LABEL: Name: .data
+
+# COMMON: Name: __DefaultSection
+
+# IMPORT-WARN: import.asm(2) : warning A4039: [ attribute does not pertain to a relocatable module; ignored
+# IMPORT-WARN: import.asm(3) : warning A4039: [ attribute does not pertain to a relocatable module; ignored
+# IMPORT:      Name: a1
+# IMPORT:      Name: a2
+
+#--- empty.asm
+        AREA |.bss|, NOINIT, READWRITE
+        AREA |.text|, CODE, READONLY
+        ret
+        AREA |.data|, DATA, READWRITE
+        AREA |.empty|, CODE, READONLY
+        END
+
+#--- label.asm
+        AREA |.text|, CODE, READONLY
+        ret
+        AREA |.data|, DATA, READWRITE
+lab
+        END
+
+#--- common.asm
+        COMMON value, 4
+        END
+
+#--- import.asm
+        AREA |.text|, CODE, READONLY
+        IMPORT a1 [WEAK]
+        IMPORT a2[DATA]
+        bl a1
+        bl a2
+        END

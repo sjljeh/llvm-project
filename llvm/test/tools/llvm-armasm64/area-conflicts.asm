@@ -9,8 +9,8 @@
         nop
         END
 
-; WARNING-DAG: warning: {{.*}}area-conflicts.asm:5: A4172: illegal combination of section flags: section flags can not be inferred, code and data/uninitialized, readonly/readwrite
-; WARNING-DAG: warning: {{.*}}area-conflicts.asm:8: A4172: illegal combination of section flags: section flags can not be inferred, code and data/uninitialized, readonly/readwrite
+; WARNING-DAG: {{.*}}area-conflicts.asm(5) : warning A4172: illegal combination of section flags: section flags can not be inferred, code and data/uninitialized, readonly/readwrite
+; WARNING-DAG: {{.*}}area-conflicts.asm(8) : warning A4172: illegal combination of section flags: section flags can not be inferred, code and data/uninitialized, readonly/readwrite
 
 ; SECTIONS:      Name: code_bss
 ; SECTIONS:      IMAGE_SCN_CNT_CODE
