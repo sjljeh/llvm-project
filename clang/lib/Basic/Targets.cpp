@@ -139,15 +139,18 @@ std::unique_ptr<TargetInfo> AllocateTarget(const llvm::Triple &Triple,
 
   case llvm::Triple::alpha:
     switch (os) {
-    case llvm::Triple::Win32:
+    case llvm::Triple::Win32: {
+      bool IsTASO = llvm::is_contained(Opts.FeaturesAsWritten, "+taso") ||
+                    llvm::is_contained(Opts.Features, "+taso");
       if (Triple.isKnownWindowsMSVCEnvironment()) {
-        if (llvm::is_contained(Opts.FeaturesAsWritten, "+taso") ||
-            llvm::is_contained(Opts.Features, "+taso"))
-          return std::make_unique<WindowsAlphaTargetInfo>(Triple, Opts);
-        else
-          return std::make_unique<WindowsAlpha64TargetInfo>(Triple, Opts);
+        if (IsTASO)
+          return std::make_unique<MicrosoftAlphaTargetInfo>(Triple, Opts);
+        return std::make_unique<MicrosoftAlpha64TargetInfo>(Triple, Opts);
       }
-      return std::make_unique<MicrosoftAlpha64TargetInfo>(Triple, Opts);
+      if (IsTASO)
+        return std::make_unique<WindowsAlphaTargetInfo>(Triple, Opts);
+      return std::make_unique<WindowsAlpha64TargetInfo>(Triple, Opts);
+    }
     case llvm::Triple::Linux:
       return std::make_unique<LinuxTargetInfo<Alpha64TargetInfo>>(Triple, Opts);
     case llvm::Triple::NetBSD:
