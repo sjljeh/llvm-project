@@ -9,7 +9,7 @@
         RELOC 2, target
         END
 
-; WARNING: warning: {{.*}}reloc-string.asm:9: A4205: Previous data definition too small for requested relocation; emitting anyway
+; WARNING: {{.*}}reloc-string.asm(9) : warning A4205: Previous data definition too small for requested relocation; emitting anyway
 ; CONTENTS:      Contents of section .data:
 ; CONTENTS-NEXT: 0000 4142
 ; RELOCS:        0x0 IMAGE_REL_ARM64_ADDR32NB target

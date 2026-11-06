@@ -130,6 +130,10 @@ public:
 
   virtual void emitConstantPools();
 
+  /// Emit the constant pool for the current section (.ltorg), for targets
+  /// that implement ldr= constant pools.
+  virtual void emitCurrentConstantPool() {}
+
   virtual void finish();
 };
 
@@ -203,7 +207,7 @@ public:
 
   /// Callback used to implement the .ltorg directive.
   /// Emit contents of constant pool for the current section.
-  void emitCurrentConstantPool();
+  void emitCurrentConstantPool() override;
 
 private:
   std::unique_ptr<AssemblerConstantPools> ConstantPools;

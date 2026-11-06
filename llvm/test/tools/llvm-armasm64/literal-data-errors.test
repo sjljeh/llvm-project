@@ -10,16 +10,16 @@
 # RUN: not llvm-armasm64 %t/byte-symbol.asm %t.obj 2>&1 | FileCheck %s --check-prefix=BYTE-SYMBOL
 # RUN: not llvm-armasm64 %t/word-symbol.asm %t.obj 2>&1 | FileCheck %s --check-prefix=WORD-SYMBOL
 
-# BYTE-RANGE: byte-range.asm:2: A2209: Immediate value -129 out of range
-# WORD-RANGE: word-range.asm:2: A2209: Immediate value 65536 out of range
-# LONG-RANGE: long-range.asm:2: A2209: Immediate value 4294967296 out of range
-# SINGLE-RANGE: single-range.asm:2: A2022: Floating point value can not be represented in single precision
-# DOUBLE-RANGE: double-range.asm:2: A2220: Floating point value out of range
-# LITERAL-RANGE: literal-range.asm:2: A2209: Immediate value 4294967297 out of range
-# LTORG-OPERANDS: ltorg-operands.asm:2: A2003: improper line syntax
-# DATA-TYPE: data-type.asm:2: A2062: illegal expression type; expected absolute numeric
-# BYTE-SYMBOL: byte-symbol.asm:3: A2065: illegal expression type; expected absolute numeric or string
-# WORD-SYMBOL: word-symbol.asm:3: A2061: illegal expression type; expected absolute numeric
+# BYTE-RANGE: byte-range.asm(2) : error A2209: Immediate value -129 out of range
+# WORD-RANGE: word-range.asm(2) : error A2209: Immediate value 65536 out of range
+# LONG-RANGE: long-range.asm(2) : error A2209: Immediate value 4294967296 out of range
+# SINGLE-RANGE: single-range.asm(2) : error A2022: Floating point value can not be represented in single precision
+# DOUBLE-RANGE: double-range.asm(2) : error A2220: Floating point value out of range
+# LITERAL-RANGE: literal-range.asm(2) : error A2209: Immediate value 4294967297 out of range
+# LTORG-OPERANDS: ltorg-operands.asm(2) : error A2003: improper line syntax
+# DATA-TYPE: data-type.asm(2) : error A2062: illegal expression type; expected absolute numeric
+# BYTE-SYMBOL: byte-symbol.asm(3) : error A2065: illegal expression type; expected absolute numeric or string
+# WORD-SYMBOL: word-symbol.asm(3) : error A2061: illegal expression type; expected absolute numeric
 
 #--- byte-range.asm
         AREA |.data|, DATA

@@ -14,6 +14,7 @@
 #define LLVM_MC_CONSTANTPOOLS_H
 
 #include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/SMLoc.h"
 #include <cstdint>
@@ -50,9 +51,18 @@ class ConstantPool {
   DenseMap<std::pair<const MCSymbol *, unsigned>, const MCSymbolRefExpr *>
       CachedSymbolEntries;
 
+  // The layout used by ARMASM (armasm/armasm64): the pool is aligned once,
+  // 8-byte entries come first in reverse order of use followed by 4-byte
+  // entries in order of use, entries are shared by their textual form, and
+  // each emitted pool starts a fresh set of entries.
+  bool ARMASMLayout = false;
+  StringMap<const MCSymbolRefExpr *> CachedTextEntries;
+
 public:
   // Initialize a new empty constant pool
   ConstantPool() = default;
+
+  void setARMASMLayout(bool V) { ARMASMLayout = V; }
 
   // Add a new entry to the constant pool in the next slot.
   // \param Value is the new entry to put in the constant pool.
@@ -88,8 +98,11 @@ class AssemblerConstantPools {
   // file.
   using ConstantPoolMapTy = MapVector<MCSection *, ConstantPool>;
   ConstantPoolMapTy ConstantPools;
+  bool ARMASMLayout = false;
 
 public:
+  /// Use the ARMASM constant pool layout for pools created from now on.
+  void setARMASMLayout(bool V) { ARMASMLayout = V; }
   LLVM_ABI void emitAll(MCStreamer &Streamer);
   LLVM_ABI void emitForCurrentSection(MCStreamer &Streamer);
   LLVM_ABI void clearCacheForCurrentSection(MCStreamer &Streamer);

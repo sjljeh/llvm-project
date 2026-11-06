@@ -3,9 +3,9 @@
 # RUN: not llvm-armasm64 %t/pad.asm %t.obj 2>&1 | FileCheck %s --check-prefix=PAD
 # RUN: llvm-armasm64 %t/warning.asm %t.obj 2>&1 | FileCheck %s --check-prefix=WARNING
 
-# ATTRIBUTE: attribute.asm:1: A2041: unknown section flag: BOGUS
+# ATTRIBUTE: attribute.asm(1) : error A2041: unknown section flag: BOGUS
 # PAD: A2226: The given alignment pad doesn't evenly divide the number of padding bytes
-# WARNING: warning: {{.*}}warning.asm:3: A4228: Alignment value exceeds AREA alignment; alignment not guaranteed
+# WARNING: {{.*}}warning.asm(3) : warning A4228: Alignment value exceeds AREA alignment; alignment not guaranteed
 
 #--- attribute.asm
         AREA |.data|, DATA, READWRITE, BOGUS

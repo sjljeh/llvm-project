@@ -308,6 +308,21 @@ public:
   bool IsILP32;
   bool IsWindowsArm64EC;
 
+  /// The second half of an ARMASM ADRL pseudo-instruction, emitted after the
+  /// ADRP that parseInstruction produced.
+  struct ARMASMAdrlLow {
+    MCRegister Reg;
+    const MCExpr *Expr;
+  };
+  std::optional<ARMASMAdrlLow> PendingARMASMAdrlLow;
+
+  bool parseARMASMAdrl(SMLoc NameLoc, OperandVector &Operands);
+  bool parseARMASMLiteralLoad(SMLoc Loc, const MCExpr *Value,
+                              OperandVector &Operands, bool &Handled);
+  bool tryParseARMASMBasedField(OperandVector &Operands, bool &Handled);
+  std::string resolveARMASMRegisterAlias(const AsmToken &Tok, StringRef Name,
+                                         bool AllowVector);
+
   AArch64AsmParser(const MCSubtargetInfo &STI, MCAsmParser &Parser,
                    const MCInstrInfo &MII)
       : MCTargetAsmParser(STI, MII) {
@@ -317,6 +332,8 @@ public:
     MCStreamer &S = getParser().getStreamer();
     if (S.getTargetStreamer() == nullptr)
       new AArch64TargetStreamer(S);
+    if (Parser.isParsingARMASM())
+      getTargetStreamer().setARMASMConstantPoolLayout();
 
     // Alias .hword/.word/.[dx]word to the target-independent
     // .2byte/.4byte/.8byte directives as they have the same form and
@@ -3020,6 +3037,10 @@ ParseStatus AArch64AsmParser::tryParseScalarRegister(MCRegister &RegNum) {
     return ParseStatus::NoMatch;
 
   std::string lowerCase = Tok.getString().lower();
+  std::string Alias =
+      resolveARMASMRegisterAlias(Tok, Tok.getString(), /*AllowVector=*/false);
+  if (!Alias.empty())
+    lowerCase = Alias;
   MCRegister Reg = matchRegisterNameAlias(lowerCase, RegKind::Scalar);
   if (!Reg)
     return ParseStatus::NoMatch;
@@ -3027,6 +3048,29 @@ ParseStatus AArch64AsmParser::tryParseScalarRegister(MCRegister &RegNum) {
   RegNum = Reg;
   Lex(); // Eat identifier token.
   return ParseStatus::Success;
+}
+
+/// ARMASM register aliases (SN, DN, QN) name an S, D or Q register, or the
+/// corresponding V register when used with an arrangement or lane index.
+/// Returns the register's name, or an empty string if \p Name is not an
+/// alias.
+std::string AArch64AsmParser::resolveARMASMRegisterAlias(const AsmToken &Tok,
+                                                         StringRef Name,
+                                                         bool AllowVector) {
+  if (!getParser().isParsingARMASM())
+    return {};
+  if (Name.size() >= 2 && Name.front() == '|' && Name.back() == '|')
+    Name = Name.drop_front().drop_back();
+  char Class;
+  unsigned Number;
+  if (!getParser().lookUpARMASMRegisterAlias(Name, Class, Number))
+    return {};
+  StringRef Rest = Tok.getString().drop_front(Name.size());
+  bool VectorUse = Class != 's' &&
+                   (Rest.starts_with(".") || *Tok.getEndLoc().getPointer() == '[');
+  if (VectorUse != AllowVector)
+    return {};
+  return (Twine(VectorUse ? 'v' : Class) + Twine(Number)).str();
 }
 
 /// tryParseSysCROperand - Try to parse a system instruction CR operand name.
@@ -4311,7 +4355,11 @@ ParseStatus AArch64AsmParser::tryParseVectorRegister(MCRegister &Reg,
   // a '.'.
   size_t Start = 0, Next = Name.find('.');
   StringRef Head = Name.slice(Start, Next);
-  MCRegister RegNum = matchRegisterNameAlias(Head, MatchKind);
+  std::string Alias;
+  if (MatchKind == RegKind::NeonVector)
+    Alias = resolveARMASMRegisterAlias(Tok, Head, /*AllowVector=*/true);
+  MCRegister RegNum =
+      matchRegisterNameAlias(Alias.empty() ? Head : StringRef(Alias), MatchKind);
 
   if (RegNum) {
     if (Next != StringRef::npos) {
@@ -4954,9 +5002,43 @@ bool AArch64AsmParser::parseKeywordOperand(OperandVector &Operands) {
 
 /// parseOperand - Parse a arm instruction operand.  For now this parses the
 /// operand regardless of the mnemonic.
+/// An ARMASM storage-map field declared with a base register stands for the
+/// memory operand [base, #offset].
+bool AArch64AsmParser::tryParseARMASMBasedField(OperandVector &Operands,
+                                                bool &Handled) {
+  Handled = false;
+  if (!getParser().isParsingARMASM() || getTok().isNot(AsmToken::Identifier))
+    return false;
+  StringRef Name = getTok().getString();
+  if (Name.size() >= 2 && Name.front() == '|' && Name.back() == '|')
+    Name = Name.drop_front().drop_back();
+  StringRef BaseName;
+  int64_t Offset;
+  if (!getParser().lookUpARMASMBasedField(Name, BaseName, Offset))
+    return false;
+  Handled = true;
+  SMLoc S = getLoc();
+  MCRegister Base = matchRegisterNameAlias(BaseName.lower(), RegKind::Scalar);
+  if (!Base)
+    return Error(S, "invalid storage map base register '" + BaseName + "'");
+  Lex();
+  SMLoc E = getLoc();
+  MCContext &Ctx = getContext();
+  Operands.push_back(AArch64Operand::CreateToken("[", S, Ctx));
+  Operands.push_back(AArch64Operand::CreateReg(Base, RegKind::Scalar, S, E, Ctx));
+  Operands.push_back(
+      AArch64Operand::CreateImm(MCConstantExpr::create(Offset, Ctx), S, E, Ctx));
+  Operands.push_back(AArch64Operand::CreateToken("]", E, Ctx));
+  return false;
+}
+
 bool AArch64AsmParser::parseOperand(OperandVector &Operands, bool isCondCode,
                                   bool invertCondCode) {
   MCAsmParser &Parser = getParser();
+
+  bool HandledField;
+  if (tryParseARMASMBasedField(Operands, HandledField) || HandledField)
+    return HandledField ? false : true;
 
   ParseStatus ResTy =
       MatchOperandParserImpl(Operands, Mnemonic, /*ParseForAllFeatures=*/true);
@@ -5143,6 +5225,12 @@ bool AArch64AsmParser::parseOperand(OperandVector &Operands, bool isCondCode,
         !static_cast<AArch64Operand &>(*Operands[1]).isScalarReg())
       return Error(Loc, "Only valid when first operand is register");
 
+    bool HandledLiteral;
+    if (parseARMASMLiteralLoad(Loc, SubExprVal, Operands, HandledLiteral))
+      return true;
+    if (HandledLiteral)
+      return false;
+
     bool IsXReg = getAArch64MCRegisterClass(AArch64::GPR64allRegClassID)
                       .contains(Operands[1]->getReg());
 
@@ -5177,6 +5265,87 @@ bool AArch64AsmParser::parseOperand(OperandVector &Operands, bool isCondCode,
     return false;
   }
   }
+}
+
+/// ARMASM's ADRL pseudo-instruction: ADRP of the target's page followed by
+/// an ADD of its low 12 bits.
+bool AArch64AsmParser::parseARMASMAdrl(SMLoc NameLoc, OperandVector &Operands) {
+  MCContext &Ctx = getContext();
+  Operands.push_back(AArch64Operand::CreateToken("adrp", NameLoc, Ctx));
+  SMLoc RegLoc = getLoc();
+  MCRegister Reg;
+  if (!tryParseScalarRegister(Reg).isSuccess() ||
+      !getAArch64MCRegisterClass(AArch64::GPR64RegClassID).contains(Reg))
+    return Error(RegLoc, "expected a 64-bit general-purpose register");
+  Operands.push_back(
+      AArch64Operand::CreateReg(Reg, RegKind::Scalar, RegLoc, getLoc(), Ctx));
+  if (parseComma())
+    return true;
+  SMLoc S = getLoc();
+  const MCExpr *Expr;
+  if (getParser().parseExpression(Expr))
+    return true;
+  SMLoc E = SMLoc::getFromPointer(getLoc().getPointer() - 1);
+  if (getTok().isNot(AsmToken::EndOfStatement))
+    return TokError("unexpected token in argument list");
+
+  const MCExpr *Page = Expr;
+  AArch64::Specifier ELFSpec;
+  AArch64::Specifier DarwinSpec;
+  int64_t Addend;
+  if (classifySymbolRef(Expr, ELFSpec, DarwinSpec, Addend) &&
+      DarwinSpec == AArch64::S_None && ELFSpec == AArch64::S_INVALID)
+    Page = MCSpecifierExpr::create(Expr, AArch64::S_ABS_PAGE, Ctx, S);
+  Operands.push_back(AArch64Operand::CreateImm(Page, S, E, Ctx));
+  PendingARMASMAdrlLow = ARMASMAdrlLow{Reg, Expr};
+  return false;
+}
+
+/// ARMASM's LDR Rd, =expr: a single MOV when the value fits one, otherwise
+/// a literal pool load. Only general-purpose registers are handled here.
+bool AArch64AsmParser::parseARMASMLiteralLoad(SMLoc Loc, const MCExpr *Value,
+                                              OperandVector &Operands,
+                                              bool &Handled) {
+  Handled = false;
+  if (!getParser().isParsingARMASM())
+    return false;
+  MCRegister Reg = Operands[1]->getReg();
+  bool IsXReg =
+      getAArch64MCRegisterClass(AArch64::GPR64allRegClassID).contains(Reg);
+  bool IsWReg =
+      getAArch64MCRegisterClass(AArch64::GPR32allRegClassID).contains(Reg);
+  if (!IsXReg && !IsWReg)
+    return false;
+  Handled = true;
+
+  MCContext &Ctx = getContext();
+  unsigned Width = IsXReg ? 64 : 32;
+  SMLoc E = SMLoc::getFromPointer(getLoc().getPointer() - 1);
+  if (const auto *Constant = dyn_cast<MCConstantExpr>(Value)) {
+    uint64_t Imm = Constant->getValue();
+    int64_t SignedImm = Constant->getValue();
+    if (Width == 32 && Imm > UINT32_MAX && (SignedImm < INT32_MIN || SignedImm >= 0))
+      return Error(Loc, "A2209: Immediate value " + Twine(SignedImm) +
+                            " out of range");
+    // A value that one MOV (MOVZ, MOVN or ORR) can materialize.
+    uint64_t Masked = Width == 32 ? Imm & UINT32_MAX : Imm;
+    unsigned NonZeroChunks = 0, NonOneChunks = 0;
+    for (unsigned Shift = 0; Shift != Width; Shift += 16) {
+      uint64_t Chunk = (Masked >> Shift) & UINT16_MAX;
+      NonZeroChunks += Chunk != 0;
+      NonOneChunks += Chunk != UINT16_MAX;
+    }
+    if (NonZeroChunks <= 1 || NonOneChunks <= 1 ||
+        AArch64_AM::isLogicalImmediate(Masked, Width)) {
+      Operands[0] = AArch64Operand::CreateToken("mov", Loc, Ctx);
+      Operands.push_back(AArch64Operand::CreateImm(Value, Loc, E, Ctx));
+      return false;
+    }
+  }
+  const MCExpr *Literal =
+      getTargetStreamer().addConstantPoolEntry(Value, Width / 8, Loc);
+  Operands.push_back(AArch64Operand::CreateImm(Literal, Loc, E, Ctx));
+  return false;
 }
 
 bool AArch64AsmParser::parseImmExpr(int64_t &Out) {
@@ -5305,9 +5474,14 @@ bool AArch64AsmParser::parseInstruction(ParseInstructionInfo &Info,
     return true;
   }
 
+  PendingARMASMAdrlLow.reset();
+
   // Create the leading tokens for the mnemonic, split by '.' characters.
   size_t Start = 0, Next = Name.find('.');
   StringRef Head = Name.slice(Start, Next);
+
+  if (getParser().isParsingARMASM() && Head == "adrl")
+    return parseARMASMAdrl(NameLoc, Operands);
 
   // IC, DC, AT, TLBI, PLBI, GIC{R}, GSB and Prediction invalidation
   // instructions are aliases for the SYS instruction.
@@ -6824,6 +6998,18 @@ bool AArch64AsmParser::matchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
 
     Inst.setLoc(IDLoc);
     Out.emitInstruction(Inst, getSTI());
+    if (PendingARMASMAdrlLow) {
+      MCInst Add;
+      Add.setOpcode(AArch64::ADDXri);
+      Add.addOperand(MCOperand::createReg(PendingARMASMAdrlLow->Reg));
+      Add.addOperand(MCOperand::createReg(PendingARMASMAdrlLow->Reg));
+      Add.addOperand(MCOperand::createExpr(MCSpecifierExpr::create(
+          PendingARMASMAdrlLow->Expr, AArch64::S_LO12, getContext())));
+      Add.addOperand(MCOperand::createImm(0));
+      Add.setLoc(IDLoc);
+      Out.emitInstruction(Add, getSTI());
+      PendingARMASMAdrlLow.reset();
+    }
     return false;
   }
   case Match_MissingFeature: {

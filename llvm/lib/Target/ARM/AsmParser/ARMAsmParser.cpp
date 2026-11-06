@@ -31,6 +31,7 @@
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCInstrDesc.h"
 #include "llvm/MC/MCInstrInfo.h"
+#include "llvm/MC/MCParser/ARMASMParser.h"
 #include "llvm/MC/MCParser/AsmLexer.h"
 #include "llvm/MC/MCParser/MCAsmParser.h"
 #include "llvm/MC/MCParser/MCAsmParserExtension.h"
@@ -250,9 +251,20 @@ class ARMAsmParser : public MCTargetAsmParser {
   bool NextSymbolIsThumb;
 
   bool useImplicitITThumb() const {
+    // armasm always generates IT blocks for conditional Thumb instructions.
     return ImplicitItMode == ImplicitItModeTy::Always ||
-           ImplicitItMode == ImplicitItModeTy::ThumbOnly;
+           ImplicitItMode == ImplicitItModeTy::ThumbOnly ||
+           getParser().isParsingARMASM();
   }
+
+  /// armasm gives each conditional instruction its own IT instruction, as
+  /// ARMv8 recommends, unless -oldit asks for pre-ARMv8 IT blocks.
+  bool useSingleInstructionITBlocks() const {
+    const ARMASMParserOptions *Options = getParser().getARMASMOptions();
+    return Options && !Options->LegacyITBlocks;
+  }
+
+  bool parseARMASMMov32(SMLoc NameLoc);
 
   bool useImplicitITARM() const {
     return ImplicitItMode == ImplicitItModeTy::Always ||
@@ -4235,6 +4247,16 @@ MCRegister ARMAsmParser::tryParseRegister(bool AllowOutOfBoundReg) {
     return MCRegister();
 
   std::string lowerCase = Tok.getString().lower();
+  // ARMASM register aliases (RN, SN, DN, QN) shadow register names.
+  if (getParser().isParsingARMASM()) {
+    StringRef Name = Tok.getString();
+    if (Name.size() >= 2 && Name.front() == '|' && Name.back() == '|')
+      Name = Name.drop_front().drop_back();
+    char Class;
+    unsigned Number;
+    if (getParser().lookUpARMASMRegisterAlias(Name, Class, Number))
+      lowerCase = (Twine(Class) + Twine(Number)).str();
+  }
   MCRegister Reg = MatchRegisterName(lowerCase);
   if (!Reg) {
     Reg = StringSwitch<MCRegister>(lowerCase)
@@ -6466,6 +6488,61 @@ bool ARMAsmParser::parseOperand(OperandVector &Operands, StringRef Mnemonic) {
   }
 }
 
+/// ARMASM's MOV32 pseudo-instruction: MOVW of the low half followed by MOVT
+/// of the high half, with a MOV32T relocation for symbolic values.
+bool ARMAsmParser::parseARMASMMov32(SMLoc NameLoc) {
+  MCContext &Ctx = getContext();
+  if (!isThumbTwo())
+    return Error(NameLoc, "MOV32 requires Thumb-2");
+  SMLoc RegLoc = getParser().getTok().getLoc();
+  MCRegister Reg = tryParseRegister();
+  if (!Reg || !MRI->getRegClass(ARM::rGPRRegClassID).contains(Reg))
+    return Error(RegLoc, "general-purpose register expected");
+  if (getParser().parseComma())
+    return true;
+  if (getLexer().is(AsmToken::Hash))
+    getParser().Lex();
+  const MCExpr *Value;
+  if (getParser().parseExpression(Value))
+    return true;
+  if (getLexer().isNot(AsmToken::EndOfStatement))
+    return Error(getLexer().getLoc(), "unexpected token in argument list");
+
+  MCOperand Low;
+  MCOperand High;
+  if (const auto *Constant = dyn_cast<MCConstantExpr>(Value)) {
+    uint64_t Imm = static_cast<uint32_t>(Constant->getValue());
+    Low = MCOperand::createImm(Imm & 0xffff);
+    High = MCOperand::createImm(Imm >> 16);
+  } else {
+    Low = MCOperand::createExpr(
+        MCSpecifierExpr::create(Value, ARM::S_LO16, Ctx));
+    High = MCOperand::createExpr(
+        MCSpecifierExpr::create(Value, ARM::S_HI16, Ctx));
+  }
+
+  MCStreamer &Out = getParser().getStreamer();
+  flushPendingInstructions(Out);
+  MCInst Movw;
+  Movw.setOpcode(ARM::t2MOVi16);
+  Movw.addOperand(MCOperand::createReg(Reg));
+  Movw.addOperand(Low);
+  Movw.addOperand(MCOperand::createImm(ARMCC::AL));
+  Movw.addOperand(MCOperand::createReg(MCRegister()));
+  Movw.setLoc(NameLoc);
+  Out.emitInstruction(Movw, getSTI());
+  MCInst Movt;
+  Movt.setOpcode(ARM::t2MOVTi16);
+  Movt.addOperand(MCOperand::createReg(Reg));
+  Movt.addOperand(MCOperand::createReg(Reg));
+  Movt.addOperand(High);
+  Movt.addOperand(MCOperand::createImm(ARMCC::AL));
+  Movt.addOperand(MCOperand::createReg(MCRegister()));
+  Movt.setLoc(NameLoc);
+  Out.emitInstruction(Movt, getSTI());
+  return false;
+}
+
 bool ARMAsmParser::parseImmExpr(int64_t &Out) {
   const MCExpr *Expr = nullptr;
   SMLoc L = getParser().getTok().getLoc();
@@ -7102,6 +7179,13 @@ bool ARMAsmParser::parseInstruction(ParseInstructionInfo &Info, StringRef Name,
     parseDirectiveReq(Name, NameLoc);
     // We always return 'error' for this, as we're done with this
     // statement and don't need to match the 'instruction."
+    return true;
+  }
+
+  // ARMASM's MOV32 pseudo-instruction is emitted here; like .req, report
+  // 'error' so that no instruction is matched for the statement.
+  if (getParser().isParsingARMASM() && Name.equals_insensitive("mov32")) {
+    parseARMASMMov32(NameLoc);
     return true;
   }
 
@@ -11487,7 +11571,11 @@ bool ARMAsmParser::matchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
     Inst.setLoc(IDLoc);
     if (PendConditionalInstruction) {
       PendingConditionalInsts.push_back(Inst);
-      if (isITBlockFull() || isITBlockTerminator(Inst))
+      bool SingleIT = useSingleInstructionITBlocks();
+      if (SingleIT && !isV8EligibleForIT(&Inst))
+        Warning(IDLoc, "A4509: This form of conditional instruction is "
+                       "deprecated");
+      if (SingleIT || isITBlockFull() || isITBlockTerminator(Inst))
         flushPendingInstructions(Out);
     } else {
       Out.emitInstruction(Inst, getSTI());

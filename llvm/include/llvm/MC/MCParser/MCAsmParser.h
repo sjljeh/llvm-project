@@ -27,6 +27,7 @@ namespace llvm {
 
 class MCAsmInfo;
 class MCAsmParserExtension;
+struct ARMASMParserOptions;
 class MCExpr;
 class MCInstPrinter;
 class MCInstrInfo;
@@ -201,6 +202,26 @@ public:
   /// instruction syntax and pseudo-instructions.
   virtual bool isParsingARMASM() const { return false; }
 
+  /// The options of an ARMASM parser, or null for other dialects.
+  virtual const ARMASMParserOptions *getARMASMOptions() const {
+    return nullptr;
+  }
+
+  /// ARMASM register aliases (RN, SN, DN, QN). \p Class is 'r', 's', 'd' or
+  /// 'q'. ARMASM resolves aliases with their final definition, so this may
+  /// return an alias defined later in the source.
+  virtual bool lookUpARMASMRegisterAlias(StringRef Name, char &Class,
+                                         unsigned &Number) const {
+    return false;
+  }
+
+  /// ARMASM storage-map fields declared relative to a base register, which
+  /// stand for a [base, #offset] memory operand.
+  virtual bool lookUpARMASMBasedField(StringRef Name, StringRef &BaseRegister,
+                                      int64_t &Offset) const {
+    return false;
+  }
+
   virtual void setMasmIdentifierCaseSensitive(bool) {}
 
   virtual void setMasmDotName(bool) {}
@@ -374,11 +395,6 @@ LLVM_ABI MCAsmParser *createMCAsmParser(SourceMgr &, MCContext &, MCStreamer &,
 LLVM_ABI MCAsmParser *createMCMasmParser(SourceMgr &, MCContext &, MCStreamer &,
                                          const MCAsmInfo &, struct tm,
                                          unsigned CB = 0);
-
-/// Create an MCAsmParser instance for parsing ARMASM-style assembly, the
-/// dialect accepted by Microsoft armasm and armasm64.
-LLVM_ABI MCAsmParser *createMCARMASMParser(SourceMgr &, MCContext &,
-                                           MCStreamer &, const MCAsmInfo &);
 
 } // end namespace llvm
 

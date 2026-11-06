@@ -1,0 +1,33 @@
+# Diagnostics use the armasm format that MSBuild and Visual Studio parse:
+# file(line) : error Axxxx: message, followed by the source line, and an
+# "at" line for each macro expansion that led to the error.
+
+# RUN: rm -rf %t && split-file %s %t
+# RUN: not llvm-armasm64 %t/macro.asm %t/macro.obj 2>&1 | FileCheck %s --check-prefix=MACRO --strict-whitespace
+# RUN: not llvm-armasm64 %t/statement.asm %t/statement.obj 2>&1 | FileCheck %s --check-prefix=STATEMENT --strict-whitespace
+
+# MACRO:      macro.asm(5) : error: unrecognized instruction mnemonic{{.*}}
+# MACRO-NEXT: {{^}}    addz x3, x3, #5{{$}}
+# MACRO-NEXT: {{^}}  at {{.*}}macro.asm(10){{$}}
+# MACRO-NEXT: {{^}}      BADOP x3{{$}}
+
+# STATEMENT:      statement.asm(2) : error A2209: Immediate value 256 out of range
+# STATEMENT-NEXT: {{^}}        DCB 256{{$}}
+
+#--- macro.asm
+        AREA |.text|, CODE, READONLY
+        MACRO
+        BADOP $r
+        GBLA unused
+    addz $r, $r, #5
+        MEND
+        GBLA unused2
+f       PROC
+        add x0, x1, #1
+    BADOP x3
+        ENDP
+        END
+#--- statement.asm
+        AREA |.data|, DATA
+        DCB 256
+        END

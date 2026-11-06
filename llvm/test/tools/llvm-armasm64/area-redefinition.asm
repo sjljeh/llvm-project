@@ -13,7 +13,7 @@
         DCB 4
         END
 
-; WARNING: warning: {{.*}}area-redefinition.asm:12: A4043: redefinition of section flags ignored
+; WARNING: {{.*}}area-redefinition.asm(12) : warning A4043: redefinition of section flags ignored
 ; WARNING-NOT: A4043
 
 ; CONTENTS:      Contents of section same:

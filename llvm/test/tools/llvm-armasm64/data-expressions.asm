@@ -26,8 +26,8 @@ encoded
         DCI 0xd65f03c0
         END
 
-; WARNING: data-expressions.asm:25: A2034: unknown opcode: DCI.W; accepted as an LLVM extension
-; WARNING-NEXT: data-expressions.asm:26: A2034: unknown opcode: DCI; accepted as an LLVM extension
+; WARNING: data-expressions.asm(25) : warning A2034: unknown opcode: DCI.W; accepted as an LLVM extension
+; WARNING: data-expressions.asm(26) : warning A2034: unknown opcode: DCI; accepted as an LLVM extension
 ; NO-WARNING-NOT: A2034
 
 ; OBJ: Name: .data
