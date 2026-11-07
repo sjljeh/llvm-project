@@ -1033,13 +1033,14 @@ set(riscv_SOURCES
   ${GENERIC_SOURCES}
   ${GENERIC_TF_SOURCES}
 )
-# Windows/RVUW requires inline frame saves and restores; its code generator
-# rejects the ELF save/restore-libcall convention.
-if(NOT WIN32)
-  list(APPEND riscv_SOURCES riscv/save.S riscv/restore.S)
-endif()
 set(riscv32_SOURCES ${riscv_SOURCES})
 set(riscv64_SOURCES ${riscv_SOURCES})
+# On Windows, only RISC-V64 has an unwind format (RVUW) that can describe the
+# save/restore libcalls; save.S and restore.S carry its records there.
+list(APPEND riscv64_SOURCES riscv/save.S riscv/restore.S)
+if(NOT WIN32)
+  list(APPEND riscv32_SOURCES riscv/save.S riscv/restore.S)
+endif()
 if(NOT WIN32)
   list(APPEND riscv32_SOURCES riscv/mulsi3.S)
   list(APPEND riscv64_SOURCES riscv/muldi3.S)

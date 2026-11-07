@@ -83,6 +83,7 @@ unittest("SupportTests") {
     "ProgramStackTest.cpp",
     "ProgramTest.cpp",
     "RISCVAttributeParserTest.cpp",
+    "RISCVWinEHTest.cpp",
     "RecyclerTest.cpp",
     "RegexTest.cpp",
     "ReplaceFileTest.cpp",

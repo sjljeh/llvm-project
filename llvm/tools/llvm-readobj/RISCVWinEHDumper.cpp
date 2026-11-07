@@ -109,16 +109,38 @@ locateUnwindData(const Dumper::Context &Ctx, const coff_section *PData,
   return LocatedData{Record, nullptr, UnwindRVA};
 }
 
+static std::string registerName(RegisterClass Class, unsigned Register) {
+  switch (Class) {
+  case RegisterClass::GPR:
+    return formatv("x{0}", Register).str();
+  case RegisterClass::FPR:
+    return formatv("f{0}", Register).str();
+  case RegisterClass::VR:
+    return formatv("v{0}", Register).str();
+  case RegisterClass::None:
+    break;
+  }
+  return {};
+}
+
 static void printCode(ScopedPrinter &SW, const DecodedCode &Code) {
   DictScope D(SW, "Code");
   SW.printNumber("Slot", Code.SlotIndex);
   SW.printHex("CodeOffset", Code.CodeOffset);
   SW.printString("Opcode", getOpcodeName(Code.Opcode));
-  SW.printNumber("Register", formatv("x{0}", Code.Register).str(), unsigned(Code.Register));
+  RegisterClass Class = getRegisterClass(Code.Opcode);
+  if (Class != RegisterClass::None)
+    SW.printNumber("Register", registerName(Class, Code.Register),
+                   unsigned(Code.Register));
   if (Code.Opcode == UOP_GPRFromGPR || Code.Opcode == UOP_FPRFromFPR)
-    SW.printNumber("SourceRegister", formatv("x{0}", Code.Operand).str(), unsigned(Code.Operand));
-  else
+    SW.printNumber("SourceRegister", registerName(Class, Code.Operand),
+                   unsigned(Code.Operand));
+  else if (Code.Opcode != UOP_SameGPR && Code.Opcode != UOP_SameFPR &&
+           Code.Opcode != UOP_SameFCSR && Code.Opcode != UOP_SameVR &&
+           (Code.Opcode != UOP_ReturnFromGPR || Code.Operand))
     SW.printNumber("Operand", Code.Operand);
+  if (isScaledOpcode(Code.Opcode))
+    SW.printNumber("VLENBMultiplier", Code.Scale);
   SW.printHex("OpInfo", Code.OpInfo);
   SW.printNumber("Slots", unsigned(Code.SlotCount));
 }
@@ -176,8 +198,8 @@ static void printUnwindInfo(ScopedPrinter &SW, const Dumper::Context &Ctx,
   }
 
   SW.printHex("Magic", support::endian::read32le(Data.Bytes.data()));
-  SW.printNumber("Version", support::endian::read16le(Data.Bytes.data() + 4));
-  SW.printNumber("HeaderSize", support::endian::read16le(Data.Bytes.data() + 6));
+  SW.printNumber("HeaderSize",
+                 support::endian::read16le(Data.Bytes.data() + 4));
   SW.printNumber("RecordSize", support::endian::read32le(Data.Bytes.data() + 8));
   SW.printHex("Flags", support::endian::read32le(Data.Bytes.data() + 12));
   SW.printHex("PrologEndOffset", support::endian::read32le(Data.Bytes.data() + 16));
@@ -186,6 +208,9 @@ static void printUnwindInfo(ScopedPrinter &SW, const Dumper::Context &Ctx,
   SW.printNumber("EpilogScopeCount", support::endian::read16le(Data.Bytes.data() + 26));
   SW.printNumber("EpilogCodeSlots", support::endian::read16le(Data.Bytes.data() + 28));
   SW.printHex("RequiredState", support::endian::read16le(Data.Bytes.data() + 30));
+  if (unsigned Establisher = Data.Bytes[6])
+    SW.printNumber("EstablisherRegister", formatv("x{0}", Establisher).str(),
+                   Establisher);
 
   bool Relocatable = !isImage(Ctx.COFF);
   Expected<DecodedUnwindInfo> Decoded =
@@ -215,11 +240,11 @@ static void printUnwindInfo(ScopedPrinter &SW, const Dumper::Context &Ctx,
   }
 
   uint64_t TailOffset = Decoded->RecordSize;
-  if (Decoded->Handler) {
-    TailOffset -= sizeof(HandlerV1);
+  if (Decoded->HandlerInfo) {
+    TailOffset -= sizeof(Handler);
     DictScope H(SW, "Handler");
-    uint32_t HandlerRVA = Decoded->Handler->ExceptionHandlerRVA;
-    uint32_t HandlerDataRVA = Decoded->Handler->HandlerDataRVA;
+    uint32_t HandlerRVA = Decoded->HandlerInfo->ExceptionHandlerRVA;
+    uint32_t HandlerDataRVA = Decoded->HandlerInfo->HandlerDataRVA;
     bool IsCSpecificHandler = false;
     if (Data.Section) {
       if (std::optional<SymbolRef> Symbol = resolveSymbol(

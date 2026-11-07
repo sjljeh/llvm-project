@@ -1114,15 +1114,35 @@ locateRISCVImageData(const COFFObjectFile *Obj, uint32_t RVA,
 
 static void printRISCVCode(const RISCVWinEH::DecodedCode &Code,
                            StringRef Indent) {
-  outs() << formatv("{0}+{1:X4}: {2} x{3}", Indent, Code.CodeOffset,
-                    RISCVWinEH::getOpcodeName(Code.Opcode), Code.Register);
-  if (Code.Opcode == RISCVWinEH::UOP_GPRFromGPR ||
-      Code.Opcode == RISCVWinEH::UOP_FPRFromFPR)
-    outs() << formatv(", x{0}", Code.Operand);
-  else if (Code.Opcode != RISCVWinEH::UOP_SameGPR &&
-           Code.Opcode != RISCVWinEH::UOP_SameFPR &&
-           Code.Opcode != RISCVWinEH::UOP_SameFCSR)
-    outs() << formatv(", {0}", Code.Operand);
+  using namespace RISCVWinEH;
+  outs() << formatv("{0}+{1:X4}: {2}", Indent, Code.CodeOffset,
+                    getOpcodeName(Code.Opcode));
+  const char *Prefix = "";
+  switch (getRegisterClass(Code.Opcode)) {
+  case RegisterClass::GPR:
+    Prefix = "x";
+    break;
+  case RegisterClass::FPR:
+    Prefix = "f";
+    break;
+  case RegisterClass::VR:
+    Prefix = "v";
+    break;
+  case RegisterClass::None:
+    break;
+  }
+  ListSeparator LS(", ");
+  outs() << " ";
+  if (*Prefix)
+    outs() << LS << Prefix << unsigned(Code.Register);
+  if (Code.Opcode == UOP_GPRFromGPR || Code.Opcode == UOP_FPRFromFPR)
+    outs() << LS << Prefix << Code.Operand;
+  else if (Code.Opcode != UOP_SameGPR && Code.Opcode != UOP_SameFPR &&
+           Code.Opcode != UOP_SameFCSR && Code.Opcode != UOP_SameVR &&
+           (Code.Opcode != UOP_ReturnFromGPR || Code.Operand))
+    outs() << LS << Code.Operand;
+  if (isScaledOpcode(Code.Opcode))
+    outs() << formatv(" + {0} * vlenb", Code.Scale);
   outs() << formatv(" (slot {0}, opinfo {1:X8})\n", Code.SlotIndex, Code.OpInfo);
 }
 
@@ -1175,17 +1195,29 @@ static void printRISCVUnwindInfo(const COFFObjectFile *Obj,
     outs() << "    Validation Error: truncated RVUW header\n\n";
     return;
   }
-  outs() << format("    Magic: 0x%08X\n", support::endian::read32le(Data.Contents.data()))
-         << format("    Version: %u\n", support::endian::read16le(Data.Contents.data() + 4))
-         << format("    Header Size: %u\n", support::endian::read16le(Data.Contents.data() + 6))
-         << format("    Record Size: %u\n", support::endian::read32le(Data.Contents.data() + 8))
-         << format("    Flags: 0x%X\n", support::endian::read32le(Data.Contents.data() + 12))
-         << format("    Prologue End: 0x%X\n", support::endian::read32le(Data.Contents.data() + 16))
-         << format("    Establisher Frame Offset: %d\n", static_cast<int32_t>(support::endian::read32le(Data.Contents.data() + 20)))
-         << format("    Prologue Code Slots: %u\n", support::endian::read16le(Data.Contents.data() + 24))
-         << format("    Epilogue Scope Count: %u\n", support::endian::read16le(Data.Contents.data() + 26))
-         << format("    Epilogue Code Slots: %u\n", support::endian::read16le(Data.Contents.data() + 28))
-         << format("    Required State: 0x%X\n", support::endian::read16le(Data.Contents.data() + 30));
+  outs() << format("    Magic: 0x%08X\n",
+                   support::endian::read32le(Data.Contents.data()))
+         << format("    Header Size: %u\n",
+                   support::endian::read16le(Data.Contents.data() + 4))
+         << format("    Record Size: %u\n",
+                   support::endian::read32le(Data.Contents.data() + 8))
+         << format("    Flags: 0x%X\n",
+                   support::endian::read32le(Data.Contents.data() + 12))
+         << format("    Prologue End: 0x%X\n",
+                   support::endian::read32le(Data.Contents.data() + 16))
+         << format("    Establisher Frame Offset: %d\n",
+                   static_cast<int32_t>(
+                       support::endian::read32le(Data.Contents.data() + 20)))
+         << format("    Prologue Code Slots: %u\n",
+                   support::endian::read16le(Data.Contents.data() + 24))
+         << format("    Epilogue Scope Count: %u\n",
+                   support::endian::read16le(Data.Contents.data() + 26))
+         << format("    Epilogue Code Slots: %u\n",
+                   support::endian::read16le(Data.Contents.data() + 28))
+         << format("    Required State: 0x%X\n",
+                   support::endian::read16le(Data.Contents.data() + 30))
+         << format("    Establisher Register: %u\n",
+                   unsigned(Data.Contents[6]));
 
   Expected<DecodedUnwindInfo> Decoded =
       decodeUnwindInfo(Data.Contents, FunctionLength, Relocatable);
@@ -1207,18 +1239,18 @@ static void printRISCVUnwindInfo(const COFFObjectFile *Obj,
       printRISCVCode(Code, "        ");
   }
 
-  if (Decoded->Handler) {
-    uint64_t TailOffset = Decoded->RecordSize - sizeof(HandlerV1);
+  if (Decoded->HandlerInfo) {
+    uint64_t TailOffset = Decoded->RecordSize - sizeof(Handler);
     printRISCVAddress(Data, "    Exception Handler", TailOffset,
-                      Decoded->Handler->ExceptionHandlerRVA);
-    printRISCVAddress(Data, "    Handler Data", TailOffset + 4, Decoded->Handler->HandlerDataRVA);
+                      Decoded->HandlerInfo->ExceptionHandlerRVA);
+    printRISCVAddress(Data, "    Handler Data", TailOffset + 4,
+                      Decoded->HandlerInfo->HandlerDataRVA);
     Expected<RISCVLocatedData> HandlerData =
         Relocatable
             ? locateRISCVObjectData(Obj, Data.Relocations,
                                     Data.Offset + TailOffset + 4,
-                                    Decoded->Handler->HandlerDataRVA)
-            : locateRISCVImageData(Obj,
-                                   Decoded->Handler->HandlerDataRVA, 4,
+                                    Decoded->HandlerInfo->HandlerDataRVA)
+            : locateRISCVImageData(Obj, Decoded->HandlerInfo->HandlerDataRVA, 4,
                                    "RISC-V64 handler data");
     if (HandlerData)
       printRISCVScopeTable(Obj, *HandlerData);
