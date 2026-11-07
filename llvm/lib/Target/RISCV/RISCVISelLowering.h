@@ -442,6 +442,11 @@ public:
   Value *getIRStackGuard(IRBuilderBase &IRB,
                          const LibcallLoweringInfo &Libcalls) const override;
 
+  /// Declares the MSVC CRT security cookie and its check function on Windows.
+  void
+  insertSSPDeclarations(Module &M,
+                        const LibcallLoweringInfo &Libcalls) const override;
+
   /// Returns whether or not generating a interleaved load/store intrinsic for
   /// this type will be legal.
   bool isLegalInterleavedAccessType(VectorType *VTy, unsigned Factor,

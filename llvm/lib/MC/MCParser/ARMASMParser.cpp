@@ -231,6 +231,13 @@ public:
     return nullptr;
   }
   virtual MCContext *getContext() { return nullptr; }
+  /// The register number :RCONST: yields for \p Name. Returns false to use
+  /// the AArch64 (armasm64) rules; otherwise sets \p Number, or leaves it
+  /// unset when \p Name is not a register of the dialect.
+  virtual bool lookUpRegisterConstant(StringRef Name,
+                                      std::optional<unsigned> &Number) const {
+    return false;
+  }
 };
 
 class ExpressionParser {
@@ -683,6 +690,13 @@ class ExpressionParser {
       if (!parseIdentifier(Name))
         return false;
       unsigned Register;
+      std::optional<unsigned> DialectRegister;
+      if (Context.lookUpRegisterConstant(Name, DialectRegister)) {
+        if (!DialectRegister)
+          return fail(":RCONST: requires a register");
+        Result = VariableValue::arithmetic(*DialectRegister);
+        return true;
+      }
       if (Name.equals_insensitive("fp"))
         Register = 29;
       else if (Name.equals_insensitive("lr"))
@@ -2248,6 +2262,32 @@ class ARMASMParser final : public MCAsmParser, private ExpressionContext {
     return std::nullopt;
   }
 
+  bool lookUpRegisterConstant(StringRef Name,
+                              std::optional<unsigned> &Number) const override {
+    // armasm (32-bit) numbers every register class and its aliases: rN, sN,
+    // dN, qN, sp/lr/pc, ip/fp/sb/sl and RN/SN/DN/QN names.
+    if (Traits.is64Bit())
+      return false;
+    if (std::optional<std::pair<char, unsigned>> Register =
+            Traits.parseAliasableRegister(Name))
+      Number = Register->second;
+    else if (std::optional<std::pair<char, unsigned>> Core =
+                 Traits.parseCoreRegisterAlias(Name))
+      Number = Core->second;
+    else if (Name.equals_insensitive("ip"))
+      Number = 12;
+    else if (Name.equals_insensitive("fp"))
+      Number = 11;
+    else if (Name.equals_insensitive("sl"))
+      Number = 10;
+    else if (Name.equals_insensitive("sb"))
+      Number = 9;
+    else if (auto Alias = S.RegisterAliases.find(Name);
+             Alias != S.RegisterAliases.end())
+      Number = Alias->second.Number;
+    return true;
+  }
+
   std::optional<uint64_t> lookUpSymbolSize(StringRef Name) const override {
     auto It = S.SymbolSizes.find(Name);
     if (It == S.SymbolSizes.end())
@@ -3555,6 +3595,9 @@ void ARMASMParser::collectStatement(const SourceLine &Line, StringRef Text) {
     Size = 4;
   }
   CollectedSizes[Name] = Size;
+  // A later line of this pass may already ask for the size (?label after an
+  // instruction, as kxarm.h's PROLOG_NOP does); emission refines it.
+  S.SymbolSizes.try_emplace(Name, Size);
 }
 
 void ARMASMParser::flushPending(bool ReplaceWithZero) {
@@ -5051,10 +5094,19 @@ bool ARMASMParser::handleInstructionLine(
       emitNumericLabel(*NumericLabel);
     }
     if (!Second.empty()) {
-      if (!NumericLabel)
-        S.SymbolSizes[Name] = IsADRL ? 8 : 4;
       emitDebugLocation();
+      // armasm's ?label of an instruction is its encoded size: 2 or 4 in
+      // Thumb-2 code.
+      MCFragment *Fragment = Out.getCurrentFragment();
+      size_t Before = Fragment ? Fragment->getFixedSize() : 0;
       runTargetInstruction(Line, Text, Second.data() - Text.data());
+      if (!NumericLabel) {
+        uint64_t Size = IsADRL ? 8 : 4;
+        if (!IsADRL && Fragment && Out.getCurrentFragment() == Fragment &&
+            Fragment->getFixedSize() > Before)
+          Size = Fragment->getFixedSize() - Before;
+        S.SymbolSizes[Name] = Size;
+      }
     }
   } else if (!First.empty()) {
     emitDebugLocation();

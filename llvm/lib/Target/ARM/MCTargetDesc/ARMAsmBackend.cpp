@@ -15,6 +15,7 @@
 #include "MCTargetDesc/ARMMCAsmInfo.h"
 #include "MCTargetDesc/ARMMCTargetDesc.h"
 #include "llvm/ADT/StringSwitch.h"
+#include "llvm/BinaryFormat/COFF.h"
 #include "llvm/BinaryFormat/ELF.h"
 #include "llvm/BinaryFormat/MachO.h"
 #include "llvm/MC/MCAsmBackend.h"
@@ -46,6 +47,32 @@ public:
 
 std::optional<MCFixupKind> ARMAsmBackend::getFixupKind(StringRef Name) const {
   return std::nullopt;
+}
+
+std::optional<MCFixupKind>
+ARMAsmBackendWinCOFF::getFixupKind(StringRef Name) const {
+  unsigned Type =
+      StringSwitch<unsigned>(Name)
+          .Case("IMAGE_REL_ARM_ABSOLUTE", COFF::IMAGE_REL_ARM_ABSOLUTE)
+          .Case("IMAGE_REL_ARM_ADDR32", COFF::IMAGE_REL_ARM_ADDR32)
+          .Case("IMAGE_REL_ARM_ADDR32NB", COFF::IMAGE_REL_ARM_ADDR32NB)
+          .Case("IMAGE_REL_ARM_BRANCH24", COFF::IMAGE_REL_ARM_BRANCH24)
+          .Case("IMAGE_REL_ARM_BRANCH11", COFF::IMAGE_REL_ARM_BRANCH11)
+          .Case("IMAGE_REL_ARM_TOKEN", COFF::IMAGE_REL_ARM_TOKEN)
+          .Case("IMAGE_REL_ARM_BLX24", COFF::IMAGE_REL_ARM_BLX24)
+          .Case("IMAGE_REL_ARM_BLX11", COFF::IMAGE_REL_ARM_BLX11)
+          .Case("IMAGE_REL_ARM_REL32", COFF::IMAGE_REL_ARM_REL32)
+          .Case("IMAGE_REL_ARM_SECTION", COFF::IMAGE_REL_ARM_SECTION)
+          .Case("IMAGE_REL_ARM_SECREL", COFF::IMAGE_REL_ARM_SECREL)
+          .Case("IMAGE_REL_ARM_MOV32A", COFF::IMAGE_REL_ARM_MOV32A)
+          .Case("IMAGE_REL_ARM_MOV32T", COFF::IMAGE_REL_ARM_MOV32T)
+          .Case("IMAGE_REL_ARM_BRANCH20T", COFF::IMAGE_REL_ARM_BRANCH20T)
+          .Case("IMAGE_REL_ARM_BRANCH24T", COFF::IMAGE_REL_ARM_BRANCH24T)
+          .Case("IMAGE_REL_ARM_BLX23T", COFF::IMAGE_REL_ARM_BLX23T)
+          .Default(-1u);
+  if (Type == -1u)
+    return std::nullopt;
+  return static_cast<MCFixupKind>(FirstLiteralRelocationKind + Type);
 }
 
 std::optional<MCFixupKind>
