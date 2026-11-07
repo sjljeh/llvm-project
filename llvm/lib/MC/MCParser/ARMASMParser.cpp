@@ -2000,6 +2000,8 @@ class ARMASMParser final : public MCAsmParser, private ExpressionContext {
     std::string Text;
     size_t InstructionOffset = 0;
     std::string Mnemonic;
+    /// The statement's {PC} label, for a branch emitted after it.
+    MCSymbol *PCSymbol = nullptr;
   };
 
   /// Everything that is rebuilt on each pass.
@@ -2054,6 +2056,9 @@ class ARMASMParser final : public MCAsmParser, private ExpressionContext {
     unsigned NumericLabelScope = 0;
     std::string NumericLabelRoutName;
     DenseSet<unsigned> DefinedNumericLabels;
+    /// How many definitions of each numeric local label (by scope and
+    /// number) this pass has seen.
+    DenseMap<unsigned, unsigned> NumericLabelDefinitions;
     unsigned PCSymbolCount = 0;
     MCSymbol *CurrentPCSymbol = nullptr;
 
@@ -2071,6 +2076,8 @@ class ARMASMParser final : public MCAsmParser, private ExpressionContext {
 
     // Statement context.
     bool FirstWasDefined = false;
+    /// Whether the current statement starts with a label in column 1.
+    bool StartsWithLabel = false;
     std::string CurrentFilename;
     unsigned CurrentLine = 0;
     unsigned CurrentListingLine = 0;
@@ -2100,6 +2107,10 @@ class ARMASMParser final : public MCAsmParser, private ExpressionContext {
   StringMap<StorageMapField> FinalStorageMapFields;
   StringMap<uint64_t> CollectedSizes;
   StringMap<ExportType> CollectedExports;
+  /// The _lc symbol names of each numeric local label's definitions (by scope
+  /// and number), in source order, collected in pass 1 so that references in
+  /// either direction can name the symbol armasm relocates against.
+  DenseMap<unsigned, SmallVector<std::string, 1>> NumericLabelNames;
   SmallVector<std::string, 4> DebugFileOrder;
 
 
@@ -2284,8 +2295,18 @@ class ARMASMParser final : public MCAsmParser, private ExpressionContext {
     }
     if (!Direction)
       Direction = S.DefinedNumericLabels.contains(Number) ? 'b' : 'f';
-    MCSymbol *Symbol = Ctx.getDirectionalLocalSymbol(
-        S.NumericLabelScope * 100 + Number, Direction == 'b');
+    // Name the definition's _lc symbol, as armasm does in relocations.
+    unsigned Key = S.NumericLabelScope * 100 + Number;
+    unsigned Seen = S.NumericLabelDefinitions.lookup(Key);
+    auto Names = NumericLabelNames.find(Key);
+    if (Names != NumericLabelNames.end() && (Direction == 'f' || Seen)) {
+      unsigned Index = Direction == 'b' ? Seen - 1 : Seen;
+      if (Index < Names->second.size())
+        return MCSymbolRefExpr::create(
+            Ctx.getOrCreateSymbol(Names->second[Index]), Ctx, S.CurrentLoc);
+    }
+    MCSymbol *Symbol =
+        Ctx.getDirectionalLocalSymbol(Key, Direction == 'b');
     return MCSymbolRefExpr::create(Symbol, Ctx, S.CurrentLoc);
   }
 
@@ -3042,6 +3063,7 @@ class ARMASMParser final : public MCAsmParser, private ExpressionContext {
                          DebugSymbol::KindTy Kind, unsigned Type = 0);
   void emitNumericLabel(const NumericLocalLabel &Label);
   void emitPCLabel();
+  std::string getNumericLabelSymbolName(unsigned Number) const;
   void emitDataValue(const MCExpr *Expr, unsigned Size, bool IsSymbolic,
                      SMLoc Loc);
   void emitAlignment(Align Alignment, std::optional<int64_t> Fill = {});
@@ -3443,6 +3465,15 @@ void ARMASMParser::collectStatement(const SourceLine &Line, StringRef Text) {
   if (First.empty())
     return;
 
+  // Numeric local labels, scoped as pass 2 scopes them: by AREA here, and by
+  // ROUT in handleRout.
+  if (First.equals_insensitive("AREA"))
+    ++S.NumericLabelScope;
+  else if (std::optional<NumericLocalLabel> Label =
+               parseNumericLocalLabel(First))
+    NumericLabelNames[S.NumericLabelScope * 100 + Label->Number].push_back(
+        getNumericLabelSymbolName(Label->Number));
+
   if (First.equals_insensitive("EXPORT") ||
       First.equals_insensitive("GLOBAL")) {
     Expected<ExportSpec> Spec = parseExportSpec(Tail);
@@ -3538,7 +3569,11 @@ void ARMASMParser::flushPending(bool ReplaceWithZero) {
     else
       Out.emitValue(Pending.Expr, Pending.Size, Pending.Loc);
     return;
-  case PendingEmission::Branch:
+  case PendingEmission::Branch: {
+    // {PC} in the branch names its own statement's location.
+    MCSymbol *CurrentPCSymbol = S.CurrentPCSymbol;
+    S.CurrentPCSymbol = Pending.PCSymbol;
+    scope_exit RestorePC([&] { S.CurrentPCSymbol = CurrentPCSymbol; });
     if (ReplaceWithZero) {
       std::string Text = Pending.Mnemonic + " .";
       runTargetInstruction(Pending.Line, Text, 0);
@@ -3547,6 +3582,7 @@ void ARMASMParser::flushPending(bool ReplaceWithZero) {
                            Pending.InstructionOffset);
     }
     return;
+  }
   }
 }
 
@@ -3696,20 +3732,29 @@ void ARMASMParser::recordDebugSymbol(StringRef Name, MCSymbol *Symbol,
                             isExported(Name), Type, S.CurrentAreaBaseSymbol});
 }
 
-void ARMASMParser::emitNumericLabel(const NumericLocalLabel &Label) {
+std::string ARMASMParser::getNumericLabelSymbolName(unsigned Number) const {
   std::string SymbolName;
   raw_string_ostream SymbolOS(SymbolName);
-  SymbolOS << "_lc" << format("%03u", Label.Number) << '_'
+  SymbolOS << "_lc" << format("%03u", Number) << '_'
            << format("%06u", S.CurrentListingLine) << '_';
+  return SymbolName;
+}
+
+void ARMASMParser::emitNumericLabel(const NumericLocalLabel &Label) {
+  std::string SymbolName = getNumericLabelSymbolName(Label.Number);
+  ++S.NumericLabelDefinitions[S.NumericLabelScope * 100 + Label.Number];
   MCSymbol *Symbol = getSymbol(SymbolName);
   defineCOFFSymbol(Symbol, COFF::IMAGE_SYM_CLASS_LABEL);
   emitLabel(Symbol, S.CurrentLoc);
   recordDebugSymbol(SymbolName, Symbol,
                     S.CurrentAreaIsCode ? DebugSymbol::Label
                                         : DebugSymbol::Data);
-  Out.emitLabel(Ctx.createDirectionalLocalSymbol(S.NumericLabelScope * 100 +
-                                                 Label.Number),
-                S.CurrentLoc);
+  // References (%f1, %b1) name the _lc symbol, so that relocations against
+  // a numeric label use it, as armasm's do.
+  Out.emitAssignment(Ctx.createDirectionalLocalSymbol(S.NumericLabelScope *
+                                                          100 +
+                                                      Label.Number),
+                     MCSymbolRefExpr::create(Symbol, Ctx));
 }
 
 void ARMASMParser::emitPCLabel() {
@@ -3794,6 +3839,11 @@ bool ARMASMParser::emitStatement(const SourceLine &Line, StringRef Text) {
   StringRef First = takeToken(Tail);
   StringRef AfterFirst = Tail;
   StringRef Second = takeToken(AfterFirst);
+  // Only a token in column 1 is a label; otherwise the first token is the
+  // opcode, and a directive name in second place is just an operand (as in
+  // "BL proc").
+  S.StartsWithLabel = !Stripped.empty() && !isSpace(Stripped.front());
+  StringRef LabelDirective = S.StartsWithLabel ? Second : StringRef();
 
   bool FirstWasDefined = S.FirstWasDefined;
   S.FirstWasDefined = false;
@@ -3825,9 +3875,9 @@ bool ARMASMParser::emitStatement(const SourceLine &Line, StringRef Text) {
       First.equals_insensitive("GBLS") || isSetDirective(Second))
     return false;
 
-  if (std::optional<char> Class = Traits.aliasClassForDirective(Second))
+  if (std::optional<char> Class = Traits.aliasClassForDirective(LabelDirective))
     return handleRegisterAlias(Line, *Class, First, AfterFirst);
-  if (Second.equals_insensitive("RN"))
+  if (LabelDirective.equals_insensitive("RN"))
     return fatal(Line, "A2034: unknown opcode: RN");
 
   if (First.equals_insensitive("MAP") || First == "^")
@@ -3845,8 +3895,8 @@ bool ARMASMParser::emitStatement(const SourceLine &Line, StringRef Text) {
       return fatal(Line, "numeric local label ROUT name mismatch");
     S.DefinedNumericLabels.insert(NumericLabel->Number);
   }
-  bool IsDataLine = isDataDirective(First) || isDataDirective(Second);
-  bool IsStorageLine = isStorageDirective(First) || isStorageDirective(Second);
+  bool IsDataLine = isDataDirective(First) || isDataDirective(LabelDirective);
+  bool IsStorageLine = isStorageDirective(First) || isStorageDirective(LabelDirective);
   if (UsesPC && !IsDataLine)
     emitPCLabel();
 
@@ -3900,25 +3950,27 @@ bool ARMASMParser::emitStatement(const SourceLine &Line, StringRef Text) {
   }
   if (First.equals_insensitive("AREA"))
     return handleArea(Line, Tail);
-  if (isEquDirective(Second))
+  if (isEquDirective(LabelDirective))
     return handleEqu(Line, First, AfterFirst);
-  if (Second.equals_insensitive("PROC") ||
-      Second.equals_insensitive("FUNCTION"))
+  if (LabelDirective.equals_insensitive("PROC") ||
+      LabelDirective.equals_insensitive("FUNCTION"))
     return handleProcedureStart(Line, First);
   if (First.equals_insensitive("ENDP") ||
       First.equals_insensitive("ENDFUNC") ||
-      Second.equals_insensitive("ENDP") || Second.equals_insensitive("ENDFUNC"))
+      LabelDirective.equals_insensitive("ENDP") ||
+      LabelDirective.equals_insensitive("ENDFUNC"))
     return handleProcedureEnd(Line, First, Tail, AfterFirst);
   if (IsStorageLine)
     return handleStorage(Line, First, Second, Tail, AfterFirst, NumericLabel);
   if (IsDataLine)
     return handleData(Line, First, Second, Tail, AfterFirst, UsesPC,
                       NumericLabel);
-  if (First.equals_insensitive("ROUT") || Second.equals_insensitive("ROUT"))
+  if (First.equals_insensitive("ROUT") ||
+      LabelDirective.equals_insensitive("ROUT"))
     return handleRout(Line, First, Second, Tail, AfterFirst);
   if (First.equals_insensitive("ALIGN"))
     return handleAlign(Line, Tail);
-  if (isBranchMnemonic(First) || isBranchMnemonic(Second))
+  if (isBranchMnemonic(First) || isBranchMnemonic(LabelDirective))
     return handleBranch(Line, Text, First, Second, Tail, AfterFirst);
   return handleInstructionLine(Line, Text, Stripped, First, Second, Tail,
                                NumericLabel);
@@ -4019,7 +4071,7 @@ bool ARMASMParser::handleBranch(const SourceLine &Line, StringRef Text,
                                 StringRef First, StringRef Second,
                                 StringRef Tail, StringRef AfterFirst) {
   ensureDefaultSection();
-  bool HasLabel = isBranchMnemonic(Second);
+  bool HasLabel = S.StartsWithLabel && isBranchMnemonic(Second);
   StringRef Mnemonic = HasLabel ? Second : First;
   StringRef TargetText = HasLabel ? AfterFirst : Tail;
   SmallVector<StringRef, 2> Operands;
@@ -4036,6 +4088,7 @@ bool ARMASMParser::handleBranch(const SourceLine &Line, StringRef Text,
   S.Pending.Text = Text.str();
   S.Pending.InstructionOffset = Mnemonic.data() - Text.data();
   S.Pending.Mnemonic = Mnemonic.str();
+  S.Pending.PCSymbol = S.CurrentPCSymbol;
   S.PreviousData = PreviousDataDefinition{4, /*IsSymbolic=*/true,
                                           /*IsInstruction=*/true};
   S.AtProcedureStart = false;

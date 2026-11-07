@@ -5085,6 +5085,22 @@ bool AArch64AsmParser::parseOperand(OperandVector &Operands, bool isCondCode,
     return parseOperand(Operands, false, false);
   }
   case AsmToken::LCurly: {
+    // ARMASM's location counter, {PC}, is an expression.
+    if (getParser().isParsingARMASM()) {
+      AsmToken Next[2];
+      if (getLexer().peekTokens(Next) == 2 &&
+          Next[0].is(AsmToken::Identifier) &&
+          Next[0].getString().equals_insensitive("pc") &&
+          Next[1].is(AsmToken::RCurly)) {
+        SMLoc S = getLoc();
+        const MCExpr *Expr;
+        if (getParser().parseExpression(Expr))
+          return true;
+        SMLoc E = SMLoc::getFromPointer(getLoc().getPointer() - 1);
+        Operands.push_back(AArch64Operand::CreateImm(Expr, S, E, getContext()));
+        return false;
+      }
+    }
     if (!parseNeonVectorList(Operands))
       return false;
 

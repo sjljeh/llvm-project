@@ -772,6 +772,8 @@ public:
 
   bool hasMVE() const { return getSTI().hasFeature(ARM::HasMVEIntegerOps); }
 
+  bool isParsingARMASM() const { return getParser().isParsingARMASM(); }
+
   // Return the low-subreg of a given Q register.
   MCRegister getDRegFromQReg(MCRegister QReg) const {
     return MRI->getSubReg(QReg, ARM::dsub_0);
@@ -1123,6 +1125,10 @@ public:
   bool isSignedOffset() const {
     if (!isImm()) return false;
     if (isa<MCSymbolRefExpr>(Imm.Val)) return true;
+    // armasm chooses a branch encoding by the distance to any relocatable
+    // target, such as label+2; relaxation widens the branch when needed.
+    if (Parser->isParsingARMASM() && !isa<MCConstantExpr>(Imm.Val))
+      return true;
     if (const MCConstantExpr *CE = dyn_cast<MCConstantExpr>(Imm.Val)) {
       int64_t Val = CE->getValue();
       int64_t Align = 1LL << scale;
@@ -6349,6 +6355,21 @@ bool ARMAsmParser::parseOperand(OperandVector &Operands, StringRef Mnemonic) {
   // the operand parsing failed.
   if (ResTy.isFailure())
     return true;
+
+  // An ARMASM branch target may be a numeric local label (%f1). ({PC} is a
+  // register list to armasm here, as to this parser.)
+  if (getParser().isParsingARMASM() &&
+      (Mnemonic == "b" || Mnemonic == "bl" || Mnemonic == "blx" ||
+       Mnemonic == "cbz" || Mnemonic == "cbnz") &&
+      getLexer().is(AsmToken::Percent)) {
+    S = Parser.getTok().getLoc();
+    const MCExpr *Expr;
+    if (getParser().parseExpression(Expr))
+      return true;
+    E = SMLoc::getFromPointer(Parser.getTok().getLoc().getPointer() - 1);
+    Operands.push_back(ARMOperand::CreateImm(Expr, S, E, *this));
+    return false;
+  }
 
   switch (getLexer().getKind()) {
   default:

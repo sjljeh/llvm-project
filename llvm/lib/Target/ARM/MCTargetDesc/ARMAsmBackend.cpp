@@ -943,6 +943,22 @@ bool ARMAsmBackend::shouldForceRelocation(const MCFixup &Fixup,
   // different execution mode in ELF binaries.
   if (needsInterworking(*Asm, Sym, Fixup.getKind()))
     return true;
+  // armasm leaves BL, and wide branches, to a symbol without an addend to the
+  // linker even within a section, and resolves BLX where it can.
+  if (Sym && getContext().getTargetOptions().isARMASMCompatible()) {
+    bool BareSymbol = !Sym->isTemporary() && !Target.getSubSym() &&
+                      Target.getConstant() == 0;
+    switch (FixupKind) {
+    case ARM::fixup_arm_thumb_bl:
+    case ARM::fixup_t2_uncondbranch:
+    case ARM::fixup_t2_condbranch:
+      return BareSymbol;
+    case ARM::fixup_arm_thumb_blx:
+      return false;
+    default:
+      break;
+    }
+  }
   // We must always generate a relocation for BL/BLX instructions if we have
   // a symbol to reference, as the linker relies on knowing the destination
   // symbol's thumb-ness to get interworking right.
@@ -1157,6 +1173,11 @@ void ARMAsmBackend::applyFixup(const MCFragment &F, const MCFixup &Fixup,
   if (mc::isRelocation(Kind))
     return;
   MCContext &Ctx = getContext();
+  // armasm writes a BLX that it leaves to the linker as BL, which BLX23T
+  // relocations describe; bit 12 of the second halfword selects BL.
+  if (!IsResolved && Kind == ARM::fixup_arm_thumb_blx &&
+      Ctx.getTargetOptions().isARMASMCompatible())
+    Data[Endian == llvm::endianness::little ? 3 : 2] |= 0x10;
   Value = adjustFixupValue(*Asm, Fixup, Target, Value, IsResolved, Ctx,
                            getSubtargetInfo(F));
   if (!Value)
