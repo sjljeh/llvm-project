@@ -116,6 +116,24 @@ SSPLayoutInfo SSPLayoutAnalysis::run(Function &F,
 
 AnalysisKey SSPLayoutAnalysis::Key;
 
+/// Whether \p F uses funclet-based EH that the stack protector cannot handle.
+/// The guard lives in the parent frame and is checked before the parent's
+/// returns; funclets end in catchret/cleanupret, never ret, so they neither
+/// read nor check it. That holds for the MSVC table-based personalities
+/// (__C_specific_handler and C++ EH) except on 32-bit x86, whose EH
+/// registration node has a fixed place in the frame.
+static bool hasUnsupportedFuncletEH(const Function &F) {
+  if (!F.hasPersonalityFn())
+    return false;
+  EHPersonality Personality = classifyEHPersonality(F.getPersonalityFn());
+  if (!isFuncletEHPersonality(Personality))
+    return false;
+  if (Personality != EHPersonality::MSVC_TableSEH &&
+      Personality != EHPersonality::MSVC_CXX)
+    return true;
+  return F.getParent()->getTargetTriple().getArch() == Triple::x86;
+}
+
 PreservedAnalyses StackProtectorPass::run(Function &F,
                                           FunctionAnalysisManager &FAM) {
   auto &Info = FAM.getResult<SSPLayoutAnalysis>(F);
@@ -125,13 +143,8 @@ PreservedAnalyses StackProtectorPass::run(Function &F,
   if (!Info.RequireStackProtector)
     return PreservedAnalyses::all();
 
-  // TODO(etienneb): Functions with funclets are not correctly supported now.
-  // Do nothing if this is funclet-based personality.
-  if (F.hasPersonalityFn()) {
-    EHPersonality Personality = classifyEHPersonality(F.getPersonalityFn());
-    if (isFuncletEHPersonality(Personality))
-      return PreservedAnalyses::all();
-  }
+  if (hasUnsupportedFuncletEH(F))
+    return PreservedAnalyses::all();
 
   auto &MAMProxy = FAM.getResult<ModuleAnalysisManagerFunctionProxy>(F);
   const ModuleLibcallLoweringInfo *LibcallLowering =
@@ -199,13 +212,8 @@ bool StackProtector::runOnFunction(Function &Fn) {
   if (!requiresStackProtector(F, &LayoutInfo.Layout))
     return false;
 
-  // TODO(etienneb): Functions with funclets are not correctly supported now.
-  // Do nothing if this is funclet-based personality.
-  if (Fn.hasPersonalityFn()) {
-    EHPersonality Personality = classifyEHPersonality(Fn.getPersonalityFn());
-    if (isFuncletEHPersonality(Personality))
-      return false;
-  }
+  if (hasUnsupportedFuncletEH(Fn))
+    return false;
 
   const TargetSubtargetInfo *Subtarget = TM->getSubtargetImpl(Fn);
   const LibcallLoweringInfo &Libcalls =
@@ -322,7 +330,11 @@ static bool HasAddressTaken(const Instruction *AI, TypeSize AllocSize,
       // Ignore intrinsics that do not become real instructions.
       // TODO: Narrow this to intrinsics that have store-like effects.
       const auto *CI = cast<CallInst>(I);
-      if (!isa<PseudoProbeInst>(CI) && !CI->isLifetimeStartOrEnd())
+      // llvm.localescape only records the local's frame offset, which SEH
+      // filters and __finally funclets use to reach it exactly as the parent
+      // does. Arrays among the escaped locals are still found by type.
+      if (!isa<PseudoProbeInst>(CI) && !CI->isLifetimeStartOrEnd() &&
+          CI->getIntrinsicID() != Intrinsic::localescape)
         return true;
       break;
     }

@@ -21,6 +21,8 @@ public:
   createObjectTargetWriter() const override {
     return createARMWinCOFFObjectWriter();
   }
+  /// IMAGE_REL_ARM_* names, for armasm's RELOC directive and .reloc.
+  std::optional<MCFixupKind> getFixupKind(StringRef Name) const override;
 };
 } // namespace llvm
 

@@ -45,6 +45,8 @@ unsigned ARMWinCOFFObjectWriter::getRelocType(MCContext &Ctx,
                                               const MCFixup &Fixup,
                                               bool IsCrossSection,
                                               const MCAsmBackend &MAB) const {
+  if (mc::isRelocation(Fixup.getKind()))
+    return Fixup.getKind() - FirstLiteralRelocationKind;
   auto Spec = Target.getSpecifier();
   unsigned FixupKind = Fixup.getKind();
   bool PCRel = false;

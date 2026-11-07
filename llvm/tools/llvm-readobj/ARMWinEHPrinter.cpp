@@ -445,9 +445,27 @@ bool Decoder::opcode_1110110L(const uint8_t *OC, unsigned &Offset,
 
 bool Decoder::opcode_11101110(const uint8_t *OC, unsigned &Offset,
                               unsigned Length, bool Prologue) {
-  assert(!Prologue && "may not be used in prologue");
-
-  if (OC[Offset + 1] & 0xf0)
+  // The Windows kernel's kxarmunw.h emits these in prologues
+  // (PROLOG_PUSH_TRAP_FRAME, ...) and epilogues (EPILOG_REDZONE_RESTORE_LR).
+  const char *Name = nullptr;
+  switch (OC[Offset + 1]) {
+  case 0x01:
+    Name = "machine frame";
+    break;
+  case 0x02:
+    Name = "context";
+    break;
+  case 0x03:
+    Name = "trap frame";
+    break;
+  case 0x04:
+    Name = "redzone restore lr";
+    break;
+  }
+  if (Name)
+    SW.startLine() << format("0x%02x 0x%02x           ; %s\n", OC[Offset + 0],
+                             OC[Offset + 1], Name);
+  else if (OC[Offset + 1] & 0xf0)
     SW.startLine() << format("0x%02x 0x%02x           ; reserved\n",
                              OC[Offset + 0], OC[Offset +  1]);
   else

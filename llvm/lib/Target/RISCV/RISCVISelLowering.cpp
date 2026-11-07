@@ -30852,6 +30852,25 @@ Value *RISCVTargetLowering::getIRStackGuard(
   return TargetLowering::getIRStackGuard(IRB, Libcalls);
 }
 
+void RISCVTargetLowering::insertSSPDeclarations(
+    Module &M, const LibcallLoweringInfo &Libcalls) const {
+  // The MSVC CRT holds the cookie in __security_cookie and validates it with
+  // __security_check_cookie, as on the other Windows targets.
+  RTLIB::LibcallImpl SecurityCheckCookie =
+      Libcalls.getLibcallImpl(RTLIB::SECURITY_CHECK_COOKIE);
+  RTLIB::LibcallImpl SecurityCookie =
+      Libcalls.getLibcallImpl(RTLIB::STACK_CHECK_GUARD);
+  if (SecurityCheckCookie != RTLIB::Unsupported &&
+      SecurityCookie != RTLIB::Unsupported) {
+    M.getOrInsertGlobal(getLibcallImplName(SecurityCookie),
+                        PointerType::getUnqual(M.getContext()));
+    M.getOrInsertFunction(getLibcallImplName(SecurityCheckCookie),
+                          Type::getVoidTy(M.getContext()),
+                          PointerType::getUnqual(M.getContext()));
+  }
+  TargetLowering::insertSSPDeclarations(M, Libcalls);
+}
+
 bool RISCVTargetLowering::isLegalStridedLoadStore(EVT DataType,
                                                   Align Alignment) const {
   if (!Subtarget.hasVInstructions())
