@@ -150,6 +150,19 @@ void WindowsRISCV32TargetInfo::getTargetDefines(const LangOptions &Opts,
   Builder.defineMacro("_M_RISCV32", "100");
 }
 
+TargetInfo::CallingConvCheckResult
+WindowsRISCV32TargetInfo::checkCallingConvention(CallingConv CC) const {
+  switch (CC) {
+  case CC_X86StdCall:
+  case CC_X86ThisCall:
+  case CC_X86FastCall:
+  case CC_X86VectorCall:
+    return CCCR_Ignore;
+  default:
+    return WindowsTargetInfo<RISCV32TargetInfo>::checkCallingConvention(CC);
+  }
+}
+
 WindowsRISCV64TargetInfo::WindowsRISCV64TargetInfo(
     const llvm::Triple &Triple, const TargetOptions &Opts)
     : WindowsTargetInfo<RISCV64TargetInfo>(Triple, Opts) {
@@ -167,6 +180,19 @@ void WindowsRISCV64TargetInfo::getTargetDefines(const LangOptions &Opts,
                                                MacroBuilder &Builder) const {
   WindowsTargetInfo<RISCV64TargetInfo>::getTargetDefines(Opts, Builder);
   Builder.defineMacro("_M_RISCV64", "100");
+}
+
+TargetInfo::CallingConvCheckResult
+WindowsRISCV64TargetInfo::checkCallingConvention(CallingConv CC) const {
+  switch (CC) {
+  case CC_X86StdCall:
+  case CC_X86ThisCall:
+  case CC_X86FastCall:
+  case CC_X86VectorCall:
+    return CCCR_Ignore;
+  default:
+    return WindowsTargetInfo<RISCV64TargetInfo>::checkCallingConvention(CC);
+  }
 }
 
 void RISCVTargetInfo::getTargetDefines(const LangOptions &Opts,

@@ -1,0 +1,184 @@
+# Copyright (c) 2026 Ahmed ARIF
+
+# RUN: yaml2obj %s -o %t
+# RUN: llvm-readobj --file-headers --relocs --unwind %t | FileCheck %s
+# RUN: obj2yaml %t | FileCheck %s --check-prefix=ROUNDTRIP
+
+# CHECK: Format: COFF-PowerPC
+# CHECK: Arch: powerpcle
+# CHECK: Machine: IMAGE_FILE_MACHINE_POWERPC (0x1F0)
+# CHECK:      Section (1) .text {
+# CHECK-NEXT:   0xC IMAGE_REL_PPC_REFHI value
+# CHECK-NEXT:   0xC IMAGE_REL_PPC_PAIR
+# CHECK-NEXT:   0x10 IMAGE_REL_PPC_REFLO value
+# CHECK-NEXT:   0x14 IMAGE_REL_PPC_REL24 ..g
+# CHECK-NEXT:   0x18 IMAGE_REL_PPC_IFGLUE ..g
+# CHECK-NEXT: }
+
+# Windows NT PowerPC function table entries: begin, end, handler, handler
+# data and prologue end.
+# CHECK:      UnwindInformation [
+# CHECK-NEXT:   RuntimeFunction {
+# CHECK-NEXT:     BeginAddress: .text
+# CHECK-NEXT:     EndAddress: .text +0x2C
+# CHECK-NEXT:     ExceptionHandler: handler
+# CHECK-NEXT:     HandlerData: .xdata
+# CHECK-NEXT:     PrologEndAddress: .text +0xC
+# CHECK-NEXT:   }
+# CHECK-NEXT: ]
+
+# A PAIR stores the low half of the REFHI addend in its symbol-table index.
+# ROUNDTRIP:      SymbolName:      value
+# ROUNDTRIP-NEXT: Type:            IMAGE_REL_PPC_REFHI
+# ROUNDTRIP:      SymbolTableIndex: 4660
+# ROUNDTRIP-NEXT: Type:            IMAGE_REL_PPC_PAIR
+# ROUNDTRIP:      Type:            IMAGE_REL_PPC_REFLO
+# ROUNDTRIP:      Type:            IMAGE_REL_PPC_REL24
+# ROUNDTRIP:      Type:            IMAGE_REL_PPC_IFGLUE
+
+--- !COFF
+header:
+  Machine:         IMAGE_FILE_MACHINE_POWERPC
+  Characteristics: [ IMAGE_FILE_BYTES_REVERSED_LO, IMAGE_FILE_32BIT_MACHINE ]
+sections:
+  - Name:            .text
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       8
+    SectionData:     A602087CC0FF2194480001900000603C34126380EDFFFF4B000000604800018040002138A603087C2000804E
+    SizeOfRawData:   44
+    Relocations:
+      - VirtualAddress:  12
+        SymbolName:      value
+        Type:            IMAGE_REL_PPC_REFHI
+      - VirtualAddress:  12
+        SymbolTableIndex: 4660
+        Type:            IMAGE_REL_PPC_PAIR
+      - VirtualAddress:  16
+        SymbolName:      value
+        Type:            IMAGE_REL_PPC_REFLO
+      - VirtualAddress:  20
+        SymbolName:      ..g
+        Type:            IMAGE_REL_PPC_REL24
+      - VirtualAddress:  24
+        SymbolName:      ..g
+        Type:            IMAGE_REL_PPC_IFGLUE
+  - Name:            .data
+    Characteristics: [ IMAGE_SCN_CNT_INITIALIZED_DATA, IMAGE_SCN_MEM_READ, IMAGE_SCN_MEM_WRITE ]
+    Alignment:       4
+    SectionData:     ''
+  - Name:            .bss
+    Characteristics: [ IMAGE_SCN_CNT_UNINITIALIZED_DATA, IMAGE_SCN_MEM_READ, IMAGE_SCN_MEM_WRITE ]
+    Alignment:       4
+    SectionData:     ''
+  - Name:            .xdata
+    Characteristics: [ IMAGE_SCN_CNT_INITIALIZED_DATA, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     '00000000'
+    SizeOfRawData:   4
+  - Name:            .pdata
+    Characteristics: [ IMAGE_SCN_CNT_INITIALIZED_DATA, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     000000002C00000000000000000000000C000000
+    SizeOfRawData:   20
+    Relocations:
+      - VirtualAddress:  0
+        SymbolName:      .text
+        Type:            IMAGE_REL_PPC_ADDR32
+      - VirtualAddress:  4
+        SymbolName:      .text
+        Type:            IMAGE_REL_PPC_ADDR32
+      - VirtualAddress:  8
+        SymbolName:      handler
+        Type:            IMAGE_REL_PPC_ADDR32
+      - VirtualAddress:  12
+        SymbolName:      .xdata
+        Type:            IMAGE_REL_PPC_ADDR32
+      - VirtualAddress:  16
+        SymbolName:      .text
+        Type:            IMAGE_REL_PPC_ADDR32
+symbols:
+  - Name:            .text
+    Value:           0
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_STATIC
+    SectionDefinition:
+      Length:          44
+      NumberOfRelocations: 5
+      NumberOfLinenumbers: 0
+      CheckSum:        3879304098
+      Number:          1
+  - Name:            .data
+    Value:           0
+    SectionNumber:   2
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_STATIC
+    SectionDefinition:
+      Length:          0
+      NumberOfRelocations: 0
+      NumberOfLinenumbers: 0
+      CheckSum:        0
+      Number:          2
+  - Name:            .bss
+    Value:           0
+    SectionNumber:   3
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_STATIC
+    SectionDefinition:
+      Length:          0
+      NumberOfRelocations: 0
+      NumberOfLinenumbers: 0
+      CheckSum:        0
+      Number:          3
+  - Name:            .xdata
+    Value:           0
+    SectionNumber:   4
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_STATIC
+    SectionDefinition:
+      Length:          4
+      NumberOfRelocations: 0
+      NumberOfLinenumbers: 0
+      CheckSum:        0
+      Number:          4
+  - Name:            .pdata
+    Value:           0
+    SectionNumber:   5
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_STATIC
+    SectionDefinition:
+      Length:          20
+      NumberOfRelocations: 5
+      NumberOfLinenumbers: 0
+      CheckSum:        4207613709
+      Number:          5
+  - Name:            ..f
+    Value:           0
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+  - Name:            value
+    Value:           0
+    SectionNumber:   0
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+  - Name:            ..g
+    Value:           0
+    SectionNumber:   0
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+  - Name:            handler
+    Value:           0
+    SectionNumber:   0
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+...

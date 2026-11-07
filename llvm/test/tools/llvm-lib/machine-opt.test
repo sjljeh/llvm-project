@@ -6,6 +6,7 @@ RUN: llvm-lib /out:%t.lib /machine:amd64 2>&1 | FileCheck --check-prefix=EMPTYWA
 RUN: llvm-lib /out:%t.lib /machine:mips 2>&1 | FileCheck --check-prefix=EMPTYWARN %s
 RUN: llvm-lib /out:%t.lib /machine:riscv32 2>&1 | FileCheck --check-prefix=EMPTYWARN %s
 RUN: llvm-lib /out:%t.lib /machine:riscv64 2>&1 | FileCheck --check-prefix=EMPTYWARN %s
+RUN: llvm-lib /out:%t.lib /machine:ppc 2>&1 | FileCheck --check-prefix=EMPTYWARN %s
 
 RUN: llvm-lib /out:%t.lib /machine:arm 2>&1 | FileCheck --check-prefix=EMPTYWARN %s
 RUN: llvm-lib /out:%t.lib /machine:arm64 2>&1 | FileCheck --check-prefix=EMPTYWARN %s

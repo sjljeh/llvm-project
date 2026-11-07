@@ -552,9 +552,33 @@ static const uint8_t importThunkARM64[] = {
 };
 
 static const uint8_t importThunkRISCV[] = {
-    0x97, 0x02, 0x00, 0x00, // auipc t0, 0
-    0x83, 0xb2, 0x02, 0x00, // ld    t0, 0(t0)   (lw on riscv32)
-    0x67, 0x80, 0x02, 0x00, // jalr  zero, 0(t0)
+    0x17, 0x0e, 0x00, 0x00, // auipc t3, 0
+    0x03, 0x3e, 0x0e, 0x00, // ld    t3, 0(t3)   (lw on riscv32)
+    0x67, 0x00, 0x0e, 0x00, // jalr  zero, 0(t3)
+};
+
+// Windows NT PowerPC import glue. Callers branch to "..name" and follow the
+// call with an IFGLUE nop that the linker turns into "lwz r2,4(r1)".
+static const uint32_t importThunkPPC[] = {
+    0x3d600000, // lis   r11, __imp_name@ha
+    0x816b0000, // lwz   r11, __imp_name@l(r11)
+    0x818b0000, // lwz   r12, 0(r11)
+    0x90410004, // stw   r2, 4(r1)
+    0x7d8903a6, // mtctr r12
+    0x804b0004, // lwz   r2, 4(r11)
+    0x4e800420, // bctr
+};
+
+// Code of a Windows NT PowerPC import descriptor. A caller that enters through
+// a descriptor has already saved its TOC: a pointer call keeps its own, and
+// glue in another image saved it at 4(r1). This code must not overwrite it.
+static const uint32_t importDescriptorThunkPPC[] = {
+    0x3d600000, // lis   r11, __imp_name@ha
+    0x816b0000, // lwz   r11, __imp_name@l(r11)
+    0x818b0000, // lwz   r12, 0(r11)
+    0x7d8903a6, // mtctr r12
+    0x804b0004, // lwz   r2, 4(r11)
+    0x4e800420, // bctr
 };
 
 static const uint8_t importThunkARM64EC[] = {
@@ -637,6 +661,34 @@ public:
 
 private:
   MachineTypes machine;
+};
+
+class ImportThunkChunkPPC : public ImportThunkChunk {
+public:
+  explicit ImportThunkChunkPPC(COFFLinkerContext &ctx, Defined *s)
+      : ImportThunkChunk(ctx, s) {
+    setAlignment(4);
+  }
+  size_t getSize() const override { return sizeof(importThunkPPC); }
+  void getBaserels(std::vector<Baserel> *res) override;
+  void writeTo(uint8_t *buf) const override;
+  MachineTypes getMachine() const override { return llvm::COFF::IMAGE_FILE_MACHINE_POWERPC; }
+};
+
+// The {code entry, TOC} descriptor that the plain function name denotes on
+// Windows NT PowerPC, followed by its code. It lets code take the address of an
+// imported function without dllimport, and it is what a DLL exports when it
+// re-exports an imported function.
+class ImportDescriptorChunkPPC : public ImportThunkChunk {
+public:
+  ImportDescriptorChunkPPC(COFFLinkerContext &ctx, Defined *s)
+      : ImportThunkChunk(ctx, s) {
+    setAlignment(4);
+  }
+  size_t getSize() const override { return 8 + sizeof(importDescriptorThunkPPC); }
+  void getBaserels(std::vector<Baserel> *res) override;
+  void writeTo(uint8_t *buf) const override;
+  MachineTypes getMachine() const override { return llvm::COFF::IMAGE_FILE_MACHINE_POWERPC; }
 };
 
 // ARM64EC __impchk_* thunk implementation.

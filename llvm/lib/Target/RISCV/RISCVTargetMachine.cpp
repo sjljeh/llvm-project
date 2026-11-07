@@ -125,6 +125,13 @@ RISCVTargetMachine::RISCVTargetMachine(const Target &T, const Triple &TT,
 
   LLT::setUseExtended(true);
 
+  if (getMCAsmInfo().usesWindowsCFI()) {
+    // Unwinding can get confused if the last instruction in an
+    // exception-handling region (function, funclet, try block, etc.)
+    // is a call, and an empty function has no address range to describe.
+    this->Options.TrapUnreachable = true;
+  }
+
   // RISC-V supports the MachineOutliner.
   setMachineOutliner(true);
   setSupportsDefaultOutlining(true);

@@ -43,7 +43,7 @@ struct __cxa_exception;
 _LIBCPP_OVERRIDABLE_FUNC_VIS __cxa_exception* __cxa_init_primary_exception(
     void*,
     std::type_info*,
-#    if defined(_WIN32)
+#    if defined(_WIN32) && (defined(__i386__) || defined(_M_IX86))
     void(__thiscall*)(void*)) throw();
 #    elif defined(__wasm__)
     // In Wasm, a destructor returns its argument

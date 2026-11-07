@@ -999,6 +999,9 @@ void WindowsResourceCOFFWriter::writeFirstSectionRelocations() {
     case Triple::mipsel:
       Reloc->Type = COFF::IMAGE_REL_MIPS_REFWORDNB;
       break;
+    case Triple::ppcle:
+      Reloc->Type = COFF::IMAGE_REL_PPC_ADDR32NB;
+      break;
     case Triple::alpha:
       Reloc->Type = COFF::IMAGE_REL_ALPHA_REFLONGNB;
       break;

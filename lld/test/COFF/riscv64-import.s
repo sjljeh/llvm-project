@@ -7,13 +7,14 @@
 # RUN: llvm-objdump -d --no-print-imm-hex --no-show-raw-insn -M no-aliases %t.exe | FileCheck %s
 # RUN: llvm-readobj --coff-imports %t.exe | FileCheck %s --check-prefix=IMPORTS
 
-# The import thunk loads the IAT slot PC-relatively and jumps through it.
+# The import thunk loads the IAT slot PC-relatively and jumps through t3, the
+# psABI PLT register: a jump through t0 would be a return-stack pop hint.
 # CHECK:      140001000: auipc ra, 0
 # CHECK-NEXT: 140001004: jalr ra, 12(ra)
 # CHECK-NEXT: 140001008: jalr zero, 0(ra)
-# CHECK-NEXT: 14000100c: auipc t0, 1
-# CHECK-NEXT: 140001010: ld t0, 44(t0)
-# CHECK-NEXT: 140001014: jalr zero, 0(t0)
+# CHECK-NEXT: 14000100c: auipc t3, 1
+# CHECK-NEXT: 140001010: ld t3, 44(t3)
+# CHECK-NEXT: 140001014: jalr zero, 0(t3)
 
 # IMPORTS:      Import {
 # IMPORTS-NEXT:   Name: lib.dll

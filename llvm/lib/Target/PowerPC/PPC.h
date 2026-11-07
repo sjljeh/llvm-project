@@ -213,6 +213,11 @@ class ModulePass;
 
     /// MO_GOT_PCREL_FLAG = MO_PCREL_FLAG | MO_GOT_FLAG
     MO_GOT_PCREL_FLAG,
+
+    /// MO_SECREL_LO, MO_SECREL_HA - lo16 and ha16 of the section-relative
+    /// offset of a Windows TLS variable.
+    MO_SECREL_LO,
+    MO_SECREL_HA,
   };
   } // end namespace PPCII
 

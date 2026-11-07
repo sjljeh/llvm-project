@@ -16,7 +16,9 @@
 
 ; ASM-LABEL: ..caller:
 ; ASM:      bl ..callee
+; ASM-NOT:  .znop ..callee
 ; ASM:      bl ..external
+; ASM-NEXT: .znop ..external
 
 ; An indirect call must consume only the two words present in a Windows PPC
 ; descriptor. In particular, it must not read the following word as the
@@ -33,6 +35,7 @@
 
 ; OBJ:      Section ({{[0-9]+}}) .text {
 ; OBJ:      IMAGE_REL_PPC_REL24 ..external
+; OBJ-NEXT: IMAGE_REL_PPC_IFGLUE ..external
 ; OBJ:      Section ({{[0-9]+}}) .rdata {
 ; OBJ:      IMAGE_REL_PPC_ADDR32 ..callee
 ; OBJ-NEXT: IMAGE_REL_PPC_ADDR32 .toc
@@ -45,7 +48,7 @@
 ; OBJ:      Name: ..external
 
 source_filename = "windows-function-descriptors.c"
-target datalayout = "e-m:e-p:32:32-Fn32-i64:64-n32"
+target datalayout = "e-m:w-p:32:32-Fn32-i64:64-n32"
 target triple = "powerpcle-pc-windows-msvc"
 
 define i32 @callee(i32 %x) {

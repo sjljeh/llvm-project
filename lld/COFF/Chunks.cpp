@@ -638,11 +638,46 @@ void ImportThunkChunkARM64::writeTo(uint8_t *buf) const {
   applyArm64Ldr(buf + 4, off);
 }
 
+void ImportThunkChunkPPC::getBaserels(std::vector<Baserel> *res) {
+  uint32_t va = impSymbol->getRVA() + ctx.config.imageBase;
+  res->emplace_back(rva, IMAGE_REL_BASED_HIGHADJ, va & 0xffff);
+  res->emplace_back(rva + 4, IMAGE_REL_BASED_LOW);
+}
+
+void ImportThunkChunkPPC::writeTo(uint8_t *buf) const {
+  uint32_t va = impSymbol->getRVA() + ctx.config.imageBase;
+  for (size_t i = 0; i != std::size(importThunkPPC); ++i)
+    writePPC32(buf + i * 4, importThunkPPC[i], true);
+  applyPPCImm16(buf, (va + 0x8000) >> 16, true);
+  applyPPCImm16(buf + 4, va & 0xffff, true);
+}
+
+void ImportDescriptorChunkPPC::getBaserels(std::vector<Baserel> *res) {
+  uint32_t va = impSymbol->getRVA() + ctx.config.imageBase;
+  res->emplace_back(rva, IMAGE_REL_BASED_HIGHLOW);
+  res->emplace_back(rva + 4, IMAGE_REL_BASED_HIGHLOW);
+  res->emplace_back(rva + 8, IMAGE_REL_BASED_HIGHADJ, va & 0xffff);
+  res->emplace_back(rva + 12, IMAGE_REL_BASED_LOW);
+}
+
+void ImportDescriptorChunkPPC::writeTo(uint8_t *buf) const {
+  write32le(buf, rva + 8 + ctx.config.imageBase);
+  uint64_t toc = 0;
+  if (auto *d = dyn_cast_or_null<Defined>(ctx.symtab.find(".toc")))
+    toc = d->getRVA() + ctx.config.imageBase;
+  write32le(buf + 4, toc);
+  uint32_t va = impSymbol->getRVA() + ctx.config.imageBase;
+  for (size_t i = 0; i != std::size(importDescriptorThunkPPC); ++i)
+    writePPC32(buf + 8 + i * 4, importDescriptorThunkPPC[i], true);
+  applyPPCImm16(buf + 8, (va + 0x8000) >> 16, true);
+  applyPPCImm16(buf + 12, va & 0xffff, true);
+}
+
 void ImportThunkChunkRISCV::writeTo(uint8_t *buf) const {
   memcpy(buf, importThunkRISCV, sizeof(importThunkRISCV));
   // The 32-bit thunk loads the IAT slot with LW instead of LD.
   if (machine == RISCV32)
-    write32le(buf + 4, 0x0002a283);
+    write32le(buf + 4, 0x000e2e03);
   int64_t offset = int64_t(impSymbol->getRVA()) - int64_t(rva);
   applyRISCVPCRelPair(buf, offset, "import thunk for " + impSymbol->getName());
 }

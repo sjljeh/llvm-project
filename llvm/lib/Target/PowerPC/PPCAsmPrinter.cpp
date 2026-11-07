@@ -344,6 +344,8 @@ public:
   }
   void emitFunctionEntryLabel() override;
   void emitFunctionDescriptor() override;
+  void emitGlobalAlias(const Module &M, const GlobalAlias &GA) override;
+  void emitEndOfAsmFile(Module &M) override;
 };
 
 } // end anonymous namespace
@@ -975,6 +977,22 @@ void PPCAsmPrinter::emitInstruction(const MachineInstr *MI) {
   // Lower multi-instruction pseudo operations.
   switch (MI->getOpcode()) {
   default: break;
+  case PPC::BL_NOP:
+  case PPC::BL_NOP_RM: {
+    if (!Subtarget->isWin32ABI())
+      break;
+    // The nop after a Windows call carries an IFGLUE relocation against the
+    // callee entry point. The linker replaces it with the TOC restore when
+    // the callee resolves to import glue.
+    MCInst TmpInst;
+    LowerPPCMachineInstrToMCInst(MI, TmpInst, *this);
+    TmpInst.setOpcode(PPC::BL);
+    EmitToStreamer(*OutStreamer, TmpInst);
+    const auto *Callee = dyn_cast<MCSymbolRefExpr>(TmpInst.getOperand(0).getExpr());
+    assert(Callee && "expected a symbolic Windows call target");
+    static_cast<PPCTargetStreamer *>(OutStreamer->getTargetStreamer())->emitIFGlueNop(Callee->getSymbol());
+    return;
+  }
   case PPC::SEH_PrologEnd:
     OutStreamer->emitWinCFIEndProlog();
     return;
@@ -2332,9 +2350,11 @@ void PPCWinCOFFAsmPrinter::emitFunctionEntryLabel() {
 void PPCWinCOFFAsmPrinter::emitFunctionDescriptor() {
   const unsigned PointerSize = getDataLayout().getPointerSize();
   MCSectionSubPair Current = OutStreamer->getCurrentSection();
-  MCSection *DescSection =
-      OutContext.getCOFFSection(".rdata", COFF::IMAGE_SCN_CNT_INITIALIZED_DATA |
-                                              COFF::IMAGE_SCN_MEM_READ);
+  // A COMDAT function section is keyed by the descriptor symbol, which must
+  // then be defined in that section so both are selected together.
+  MCSection *DescSection = Current.first;
+  if (!static_cast<const MCSectionCOFF *>(Current.first)->getCOMDATSymbol())
+    DescSection = OutContext.getCOFFSection(".rdata", COFF::IMAGE_SCN_CNT_INITIALIZED_DATA | COFF::IMAGE_SCN_MEM_READ);
 
   OutStreamer->switchSection(DescSection);
   OutStreamer->emitValueToAlignment(Align(PointerSize));
@@ -2345,6 +2365,38 @@ void PPCWinCOFFAsmPrinter::emitFunctionDescriptor() {
       MCSymbolRefExpr::create(OutContext.getOrCreateSymbol(".toc"), OutContext),
       PointerSize);
   OutStreamer->switchSection(Current.first, Current.second);
+}
+
+void PPCWinCOFFAsmPrinter::emitGlobalAlias(const Module &M, const GlobalAlias &GA) {
+  AsmPrinter::emitGlobalAlias(M, GA);
+
+  // The alias above names the descriptor. Direct calls reference the "..name"
+  // code entry, so a function alias needs a matching code entry alias.
+  const auto *Aliasee = dyn_cast<GlobalValue>(GA.getAliasee()->stripPointerCasts());
+  if (!Aliasee || !isa_and_nonnull<Function>(GA.getAliaseeObject()))
+    return;
+
+  MCSymbol *Entry = getFunctionEntryPointSymbol(&GA);
+  if (GA.hasExternalLinkage())
+    OutStreamer->emitSymbolAttribute(Entry, MCSA_Global);
+  else if (GA.hasWeakLinkage() || GA.hasLinkOnceLinkage())
+    OutStreamer->emitSymbolAttribute(Entry, MCSA_WeakReference);
+  emitVisibility(Entry, GA.getVisibility());
+  OutStreamer->emitAssignment(Entry, MCSymbolRefExpr::create(getFunctionEntryPointSymbol(Aliasee), OutContext));
+}
+
+void PPCWinCOFFAsmPrinter::emitEndOfAsmFile(Module &M) {
+  // The generic code marks the descriptor of an extern_weak function weak.
+  // Direct calls reference its "..name" code entry, which must be weak too.
+  for (const Function &F : M) {
+    if (!F.isDeclaration() || !F.hasExternalWeakLinkage())
+      continue;
+    SmallString<128> Name;
+    getObjFileLowering().getNameWithPrefix(Name, &F, TM);
+    if (MCSymbol *Entry = OutContext.lookupSymbol(Twine("..") + Name))
+      OutStreamer->emitSymbolAttribute(Entry, MCSA_WeakReference);
+  }
+  PPCAsmPrinter::emitEndOfAsmFile(M);
 }
 
 char PPCLinuxAsmPrinter::ID = 0;

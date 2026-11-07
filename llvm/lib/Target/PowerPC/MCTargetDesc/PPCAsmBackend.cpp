@@ -238,7 +238,7 @@ void PPCAsmBackend::applyFixup(const MCFragment &F, const MCFixup &Fixup,
     // following PAIR relocation. The instruction holds its high-adjusted
     // portion so that the linker can reconstruct the complete addend.
     if (TT.isOSBinFormatCOFF() && Kind == PPC::fixup_ppc_half16 &&
-        Target.getSpecifier() == PPC::S_HA)
+        (Target.getSpecifier() == PPC::S_HA || Target.getSpecifier() == PPC::S_SECREL_HA))
       Value = (Value + 0x8000) >> 16;
 
     // Microsoft PowerPC COFF branch relocations are relative to the start of

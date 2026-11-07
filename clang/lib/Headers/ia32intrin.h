@@ -268,7 +268,7 @@ __popcntq(unsigned long long __A)
 #endif /* __x86_64__ */
 
 #ifdef __x86_64__
-#if defined(_MSC_VER) && __has_builtin(__readeflags) &&                         \
+#if defined(_WIN32) && __has_builtin(__readeflags) && \
     __has_builtin(__writeeflags)
 #ifdef __cplusplus
 extern "C" {
@@ -310,7 +310,7 @@ __writeeflags(unsigned long long __f)
 #endif
 
 #else /* !__x86_64__ */
-#if defined(_MSC_VER) && __has_builtin(__readeflags) &&                         \
+#if defined(_WIN32) && __has_builtin(__readeflags) && \
     __has_builtin(__writeeflags)
 #ifdef __cplusplus
 extern "C" {

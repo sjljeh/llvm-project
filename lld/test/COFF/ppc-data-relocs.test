@@ -1,0 +1,51 @@
+# Copyright (c) 2026 Ahmed ARIF
+
+# REQUIRES: ppc
+# RUN: split-file %s %t
+# RUN: llvm-mc -triple=powerpcle-pc-windows -filetype=obj %t/rel.s -o %t/rel.obj
+# RUN: lld-link /nodefaultlib /entry:main /subsystem:console /out:%t/rel.exe %t/rel.obj
+# RUN: llvm-objdump -d --no-show-raw-insn %t/rel.exe | FileCheck %s --check-prefix=DISASM
+# RUN: llvm-objdump -s -j .data %t/rel.exe | FileCheck %s --check-prefix=DATA
+# RUN: llvm-readobj --coff-basereloc %t/rel.exe | FileCheck %s --check-prefix=BASEREL
+
+# IMAGE_REL_PPC_ADDR16 stores the low half of the target VA (0x403004) and is
+# rebased with a LOW base relocation. SECRELHI/SECRELLO rebuild the 0x9000
+# section offset of the TLS variable as ha/lo halves.
+# DISASM:      401000: li 3, 12292
+# DISASM-NEXT: 401004: lis 4, 1
+# DISASM-NEXT: 401008: addi 4, 4, -28672
+
+# DATA: 403000 00000000 01000000 0430
+
+# BASEREL:      Type: LOW
+# BASEREL-NEXT: Address: 0x1000
+# BASEREL:      Type: LOW
+# BASEREL-NEXT: Address: 0x3008
+
+#--- rel.s
+.text
+.globl ..main
+..main:
+  li 3, value
+  lis 4, tlsvar@secrel@ha
+  addi 4, 4, tlsvar@secrel@l
+  blr
+
+.data
+.globl value
+  .long 0
+value:
+  .long 1
+half:
+  .short value
+
+.section .tls$,"dw"
+  .space 0x9000
+tlsvar:
+  .long 7
+
+.section .rdata,"dr"
+.globl main
+main:
+  .long ..main
+  .long .toc

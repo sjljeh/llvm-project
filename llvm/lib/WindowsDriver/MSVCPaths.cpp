@@ -287,6 +287,8 @@ const char *llvm::archToWindowsSDKArch(Triple::ArchType Arch) {
     return "arm64";
   case Triple::ArchType::riscv64:
     return "riscv64";
+  case Triple::ArchType::ppcle:
+    return "ppc";
   default:
     return "";
   }
@@ -307,6 +309,8 @@ const char *llvm::archToLegacyVCArch(Triple::ArchType Arch) {
     return "arm64";
   case Triple::ArchType::riscv64:
     return "riscv64";
+  case Triple::ArchType::ppcle:
+    return "ppc";
   default:
     return "";
   }
@@ -325,6 +329,8 @@ const char *llvm::archToDevDivInternalArch(Triple::ArchType Arch) {
     return "arm64";
   case Triple::ArchType::riscv64:
     return "riscv64";
+  case Triple::ArchType::ppcle:
+    return "ppc";
   default:
     return "";
   }
