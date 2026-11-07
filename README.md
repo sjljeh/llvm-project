@@ -4,13 +4,13 @@ This is my LLVM fork in which I aim to improve compatibility with Microsoft tool
 Work is happening here on the main branch. I update the patch set when I see fit with upstream LLVM, which often sees fixes trickle in for the same work that happens here. A typical rebase averages 3 merge conflicts per week of upstream work.  
 
 ### Work items done:  
-* New program llvm-armasm64. Aims for compatibility with the Microsoft ARM64 assembler (armasm64.exe).  
+* New programs llvm-armasm, llvm-armasm64. Aims for compatibility with the Microsoft ARM and ARM64 assemblers.
 * New program llvm-asaxp. Aims for compatibility with the DEC Alpha assembler used by Microsoft (asaxp.exe).  
 * Much improved compatibility in llvm-mc with IBM's PowerPC assembler (pasm.exe).  
 * Much improved compatibility in llvm-ml64 with Microsoft's AMD64 assembler (ml64.exe). Same for IA32 llvm-ml.  
 * Well-featured C++ EH4 / FH4 support in AMD64.  
-* MSVC-flavored PowerPC, MIPS and Alpha Windows support.  
-* Windows PowerPC and Alpha have SEH and C++ EH support.  
+* MSVC-flavored PowerPC, MIPS, RISC-V and Alpha Windows support.  
+* Windows RISC-V, PowerPC and Alpha have SEH and C++ EH support.  
 * GNU-flavored PowerPC, MIPS and Alpha Windows assemblers.
 * Alpha Linux / NetBSD / OpenBSD targets.  
 * Broad lld-link compatibility fixes.  
@@ -32,7 +32,6 @@ Work is happening here on the main branch. I update the patch set when I see fit
 
 ### Items to be worked on in the future  
 * Improve MIPS support, i.e. C++ EH, SEH, assembler, further validate linker support.  
-* Build out hypothetical RISCV64 COFF target, then Windows target.  
 * Bring up ARMv7 Windows support.  
 * Anything else that comes up.
 

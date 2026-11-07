@@ -1643,20 +1643,21 @@ def GIBrindRegImm :
   GIComplexOperandMatcher<s32, "selectBrindRegImm">,
   GIComplexPatternEquiv<BrindRegImm>;
 
-/// ReactOS-private RISC-V64 RVUW state transitions. These pseudos are placed
-/// immediately after the machine instruction whose completed effect they
-/// describe, so their labels remain exact with mixed 16/32-bit instructions.
+/// ReactOS RISC-V64 RVUW state transitions. A rule pseudo is
+/// placed immediately after the machine instruction whose completed effect it
+/// describes, so its label remains exact with mixed 16/32-bit instructions.
 /// Treat metadata updates as side effects: hoisting an epilogue start out of
 /// two successors would merge their scopes while leaving two epilogue ends.
 let hasSideEffects = 1, mayLoad = 0, mayStore = 0, isCodeGenOnly = 1,
     Size = 0 in {
-def RVUW_SetCFA : Pseudo<(outs), (ins i32imm:$reg, i32imm:$offset), []>,
-                  Sched<[]>;
-def RVUW_SaveGPR : Pseudo<(outs), (ins i32imm:$reg, i32imm:$offset), []>,
-                   Sched<[]>;
-def RVUW_SameGPR : Pseudo<(outs), (ins i32imm:$reg), []>, Sched<[]>;
-def RVUW_GPRFromGPR : Pseudo<(outs), (ins i32imm:$reg, i32imm:$source), []>,
-                      Sched<[]>;
+// $opcode is a RISCVWinEH::UnwindOpcodes value, $reg an architectural
+// register number, $operand the fixed operand, and $scale the VLENB
+// multiplier of a scaled rule.
+def RVUW_Rule : Pseudo<(outs), (ins i32imm:$opcode, i32imm:$reg,
+                                    i64imm:$operand, i32imm:$scale), []>,
+                Sched<[]>;
+def RVUW_Establisher : Pseudo<(outs), (ins i32imm:$reg, i32imm:$offset), []>,
+                       Sched<[]>;
 def RVUW_PrologEnd : Pseudo<(outs), (ins), []>, Sched<[]>;
 def RVUW_EpilogStart : Pseudo<(outs), (ins), []>, Sched<[]>;
 def RVUW_EpilogEnd : Pseudo<(outs), (ins), []>, Sched<[]>;

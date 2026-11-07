@@ -42,5 +42,5 @@ void g() {
 // OBJ: UnwindInformation [
 // OBJ: RuntimeFunction {
 // OBJ: UnwindInfo {
-// OBJ: Version: 1
+// OBJ: HeaderSize: 32
 // OBJ-NOT: CSpecificScopeTable

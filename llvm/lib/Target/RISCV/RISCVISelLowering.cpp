@@ -13024,7 +13024,11 @@ SDValue RISCVTargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
     MachineFunction &MF = DAG.getMachineFunction();
     MachineFrameInfo &MFI = MF.getFrameInfo();
     MFI.setFrameAddressIsTaken(true);
-    Register FrameReg = Subtarget.getRegisterInfo()->getFrameRegister(MF);
+    // A realigned frame with funclets publishes BP as its establisher frame.
+    const RISCVRegisterInfo *TRI = Subtarget.getRegisterInfo();
+    Register FrameReg = MF.hasEHFunclets() && TRI->hasStackRealignment(MF)
+                            ? Register(RISCVABI::getBPReg())
+                            : TRI->getFrameRegister(MF);
     return DAG.getCopyFromReg(DAG.getEntryNode(), DL, FrameReg, Op.getSimpleValueType());
   }
   case Intrinsic::eh_recoverfp: {
@@ -13036,7 +13040,7 @@ SDValue RISCVTargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
       report_fatal_error("llvm.eh.recoverfp must take a function as the first argument");
 
     // The RISC-V64 dispatcher passes the parent's RVUW establisher frame,
-    // which is the same fixed frame value returned by llvm.localaddress.
+    // which is the same frame value returned by llvm.localaddress.
     return IncomingFPOp;
   }
   case Intrinsic::riscv_tuple_insert: {

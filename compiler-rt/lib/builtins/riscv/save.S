@@ -37,7 +37,111 @@ TEXT_SECTION
   DECLARE_FUNC_ENCODING \
   FUNC_SYMBOL(SYMBOL_NAME(name)):
 
-#if __riscv_xlen == 32
+#if defined(_WIN32) && __riscv_xlen == 64 && !defined(__riscv_abi_rve)
+
+// Windows (RVUW): each entry is a separate function with an exact unwind
+// record, because a shared tail would need entry-dependent unwind state. The
+// frame and register layout match the ELF entries below: ra at size-8 and
+// s<k> at size-16-8*k.
+//
+// The caller reaches each entry through a two-word `call t0, sym`. Until the
+// entry returns, the caller's registers are partly saved, so unwinding an
+// entry yields the caller at its jalr (t0 - 4), in its pre-call state.
+#define RISCV_WIN_SAVE_BEGIN(name, size)                                       \
+  DEFINE_COMPILERRT_FUNCTION(name) SEPARATOR                                   \
+  .seh_proc SYMBOL_NAME(name) SEPARATOR                                        \
+  .seh_return_from t0, -4 SEPARATOR                                            \
+  addi sp, sp, -size SEPARATOR                                                 \
+  .seh_set_cfa sp, size SEPARATOR                                              \
+  .seh_endprologue
+
+#define RISCV_WIN_SAVE_END                                                     \
+  jr t0 SEPARATOR                                                              \
+  .seh_endproc
+
+RISCV_WIN_SAVE_BEGIN(__riscv_save_12, 112)
+  sd s11, 8(sp)
+  sd s10, 16(sp)
+  sd s9, 24(sp)
+  sd s8, 32(sp)
+  sd s7, 40(sp)
+  sd s6, 48(sp)
+  sd s5, 56(sp)
+  sd s4, 64(sp)
+  sd s3, 72(sp)
+  sd s2, 80(sp)
+  sd s1, 88(sp)
+  sd s0, 96(sp)
+  sd ra, 104(sp)
+RISCV_WIN_SAVE_END
+
+RISCV_WIN_SAVE_BEGIN(__riscv_save_11, 96)
+DEFINE_COMPILERRT_FUNCTION_ALIAS(__riscv_save_10, __riscv_save_11)
+  sd s10, 0(sp)
+  sd s9, 8(sp)
+  sd s8, 16(sp)
+  sd s7, 24(sp)
+  sd s6, 32(sp)
+  sd s5, 40(sp)
+  sd s4, 48(sp)
+  sd s3, 56(sp)
+  sd s2, 64(sp)
+  sd s1, 72(sp)
+  sd s0, 80(sp)
+  sd ra, 88(sp)
+RISCV_WIN_SAVE_END
+
+RISCV_WIN_SAVE_BEGIN(__riscv_save_9, 80)
+DEFINE_COMPILERRT_FUNCTION_ALIAS(__riscv_save_8, __riscv_save_9)
+  sd s8, 0(sp)
+  sd s7, 8(sp)
+  sd s6, 16(sp)
+  sd s5, 24(sp)
+  sd s4, 32(sp)
+  sd s3, 40(sp)
+  sd s2, 48(sp)
+  sd s1, 56(sp)
+  sd s0, 64(sp)
+  sd ra, 72(sp)
+RISCV_WIN_SAVE_END
+
+RISCV_WIN_SAVE_BEGIN(__riscv_save_7, 64)
+DEFINE_COMPILERRT_FUNCTION_ALIAS(__riscv_save_6, __riscv_save_7)
+  sd s6, 0(sp)
+  sd s5, 8(sp)
+  sd s4, 16(sp)
+  sd s3, 24(sp)
+  sd s2, 32(sp)
+  sd s1, 40(sp)
+  sd s0, 48(sp)
+  sd ra, 56(sp)
+RISCV_WIN_SAVE_END
+
+RISCV_WIN_SAVE_BEGIN(__riscv_save_5, 48)
+DEFINE_COMPILERRT_FUNCTION_ALIAS(__riscv_save_4, __riscv_save_5)
+  sd s4, 0(sp)
+  sd s3, 8(sp)
+  sd s2, 16(sp)
+  sd s1, 24(sp)
+  sd s0, 32(sp)
+  sd ra, 40(sp)
+RISCV_WIN_SAVE_END
+
+RISCV_WIN_SAVE_BEGIN(__riscv_save_3, 32)
+DEFINE_COMPILERRT_FUNCTION_ALIAS(__riscv_save_2, __riscv_save_3)
+  sd s2, 0(sp)
+  sd s1, 8(sp)
+  sd s0, 16(sp)
+  sd ra, 24(sp)
+RISCV_WIN_SAVE_END
+
+RISCV_WIN_SAVE_BEGIN(__riscv_save_1, 16)
+DEFINE_COMPILERRT_FUNCTION_ALIAS(__riscv_save_0, __riscv_save_1)
+  sd s0, 0(sp)
+  sd ra, 8(sp)
+RISCV_WIN_SAVE_END
+
+#elif __riscv_xlen == 32
 
 #ifndef __riscv_abi_rve
 

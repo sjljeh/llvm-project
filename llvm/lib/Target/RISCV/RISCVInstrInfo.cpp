@@ -36,6 +36,7 @@
 #include "llvm/MC/MCInstBuilder.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/RISCVWinEH.h"
 
 using namespace llvm;
 
@@ -3795,6 +3796,12 @@ static bool isMIModifiesReg(const MachineInstr &MI,
          MI.getDesc().hasImplicitDefOfPhysReg(RegNo);
 }
 
+/// Returns true when RVUW describes MF's unwinding (see RISCVFrameLowering).
+static bool isRVUWFunction(const MachineFunction &MF) {
+  const Triple &TT = MF.getTarget().getTargetTriple();
+  return TT.isRISCV64() && TT.isOSBinFormatCOFF() && MF.needsWinCFI();
+}
+
 static bool cannotInsertTailCall(const MachineBasicBlock &MBB) {
   if (!MBB.back().isReturn())
     return true;
@@ -3996,6 +4003,24 @@ RISCVInstrInfo::getOutliningTypeImpl(const MachineModuleInfo &MMI,
       MBB->getParent()->getSubtarget().getRegisterInfo();
   const auto &F = MI.getMF()->getFunction();
 
+  // RVUW rules name exact code offsets of the function they describe, and
+  // the frame setup and teardown they describe must stay in that function.
+  if (isRVUWFunction(*MI.getMF())) {
+    switch (MI.getOpcode()) {
+    case RISCV::RVUW_Rule:
+    case RISCV::RVUW_Establisher:
+    case RISCV::RVUW_PrologEnd:
+    case RISCV::RVUW_EpilogStart:
+    case RISCV::RVUW_EpilogEnd:
+      return outliner::InstrType::Illegal;
+    default:
+      break;
+    }
+    if (MI.getFlag(MachineInstr::FrameSetup) ||
+        MI.getFlag(MachineInstr::FrameDestroy))
+      return outliner::InstrType::Illegal;
+  }
+
   // We can only outline CFI instructions if we will tail call the outlined
   // function, or fix up the CFI offsets. Currently, CFI instructions are
   // outlined only if in a tail call.
@@ -4026,6 +4051,22 @@ RISCVInstrInfo::getOutliningTypeImpl(const MachineModuleInfo &MMI,
 void RISCVInstrInfo::buildOutlinedFrame(
     MachineBasicBlock &MBB, MachineFunction &MF,
     const outliner::OutlinedFunction &OF) const {
+
+  // Give an RVUW outlined body its own record. It has no frame; a body
+  // reached through `call t0` returns through t0 rather than ra.
+  if (isRVUWFunction(MF)) {
+    MF.setHasWinCFI(true);
+    MachineBasicBlock::iterator Start = MBB.begin();
+    if (OF.FrameConstructionID != MachineOutlinerTailCall)
+      BuildMI(MBB, Start, DebugLoc(), get(RISCV::RVUW_Rule))
+          .addImm(RISCVWinEH::UOP_ReturnFromGPR)
+          .addImm(5)
+          .addImm(0)
+          .addImm(0)
+          .setMIFlag(MachineInstr::FrameSetup);
+    BuildMI(MBB, Start, DebugLoc(), get(RISCV::RVUW_PrologEnd))
+        .setMIFlag(MachineInstr::FrameSetup);
+  }
 
   if (OF.FrameConstructionID == MachineOutlinerTailCall)
     return;

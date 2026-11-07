@@ -41,6 +41,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/RISCVAttributes.h"
+#include "llvm/Support/RISCVWinEH.h"
 #include "llvm/TargetParser/RISCVISAInfo.h"
 
 #include <limits>
@@ -254,7 +255,7 @@ class RISCVAsmParser : public MCTargetAsmParser {
   bool parseDirectiveAttribute();
   bool parseDirectiveInsn(SMLoc L);
   bool parseDirectiveVariantCC();
-  bool parseDirectiveRVUW(StringRef Directive, SMLoc Loc);
+  ParseStatus parseDirectiveRVUW(StringRef Directive, SMLoc Loc);
 
   /// Helper to reset target features for a new arch string. It
   /// also records the new arch string that is expanded by RISCVISAInfo
@@ -3255,58 +3256,128 @@ ParseStatus RISCVAsmParser::parseDirective(AsmToken DirectiveID) {
     return parseDirectiveInsn(DirectiveID.getLoc());
   if (IDVal == ".variant_cc")
     return parseDirectiveVariantCC();
-  if (IDVal == ".seh_set_cfa" || IDVal == ".seh_save_gpr" ||
-      IDVal == ".seh_same_gpr" || IDVal == ".seh_gpr_from_gpr")
-    return parseDirectiveRVUW(IDVal, DirectiveID.getLoc());
+  if (IDVal.starts_with(".seh_")) {
+    ParseStatus Status = parseDirectiveRVUW(IDVal, DirectiveID.getLoc());
+    if (!Status.isNoMatch())
+      return Status;
+  }
 
   return ParseStatus::NoMatch;
 }
 
-bool RISCVAsmParser::parseDirectiveRVUW(StringRef Directive, SMLoc Loc) {
+ParseStatus RISCVAsmParser::parseDirectiveRVUW(StringRef Directive, SMLoc Loc) {
+  using namespace RISCVWinEH;
+  enum OperandKind { None, GPR, FPR, VR, Imm };
+  struct RVUWDirective {
+    StringRef Name;
+    unsigned Opcode; // 0 for .seh_establisher.
+    OperandKind Reg;
+    OperandKind Second;
+    bool HasScale;
+  };
+  static const RVUWDirective Directives[] = {
+      {".seh_set_cfa", UOP_SetCFA, GPR, Imm, false},
+      {".seh_set_cfa_scaled", UOP_SetCFAScaled, GPR, Imm, true},
+      {".seh_save_gpr", UOP_SaveGPR, GPR, Imm, false},
+      {".seh_same_gpr", UOP_SameGPR, GPR, None, false},
+      {".seh_gpr_from_gpr", UOP_GPRFromGPR, GPR, GPR, false},
+      {".seh_save_fpr", UOP_SaveFPR, FPR, Imm, false},
+      {".seh_same_fpr", UOP_SameFPR, FPR, None, false},
+      {".seh_fpr_from_fpr", UOP_FPRFromFPR, FPR, FPR, false},
+      {".seh_save_fcsr", UOP_SaveFCSR, None, Imm, false},
+      {".seh_same_fcsr", UOP_SameFCSR, None, None, false},
+      {".seh_save_vr", UOP_SaveVR, VR, Imm, true},
+      {".seh_same_vr", UOP_SameVR, VR, None, false},
+      {".seh_return_from", UOP_ReturnFromGPR, GPR, None, false},
+      {".seh_machine_frame", UOP_MachineFrame, None, Imm, false},
+      {".seh_trap_frame", UOP_TrapFrame, None, Imm, false},
+      {".seh_context", UOP_Context, None, Imm, false},
+      {".seh_establisher", 0, GPR, Imm, false},
+  };
+  const RVUWDirective *D = nullptr;
+  for (const RVUWDirective &Candidate : Directives)
+    if (Candidate.Name == Directive)
+      D = &Candidate;
+  if (!D)
+    return ParseStatus::NoMatch;
+
   const Triple &TT = getSTI().getTargetTriple();
   if (!TT.isRISCV64() || !TT.isOSBinFormatCOFF())
     return Error(Loc, Directive + " is only supported by the RISC-V64 COFF target");
-  if (getSTI().hasFeature(RISCV::FeatureRelax))
-    return Error(Loc, Directive + " requires linker relaxation to be disabled");
 
-  auto ParseGPR = [&](unsigned &Encoding) {
+  auto ParseReg = [&](OperandKind Kind, unsigned &Encoding) -> bool {
     MCRegister Reg;
     SMLoc StartLoc;
     SMLoc EndLoc;
     if (parseRegister(Reg, StartLoc, EndLoc))
       return true;
-    if (!getRISCVMCRegisterClass(RISCV::GPRRegClassID).contains(Reg))
-      return Error(StartLoc, "RVUW operand must be an integer register");
+    bool Matches = false;
+    switch (Kind) {
+    case GPR:
+      Matches = getRISCVMCRegisterClass(RISCV::GPRRegClassID).contains(Reg);
+      break;
+    case FPR:
+      Matches = getRISCVMCRegisterClass(RISCV::FPR64RegClassID).contains(Reg) ||
+                getRISCVMCRegisterClass(RISCV::FPR32RegClassID).contains(Reg) ||
+                getRISCVMCRegisterClass(RISCV::FPR16RegClassID).contains(Reg);
+      break;
+    case VR:
+      Matches = getRISCVMCRegisterClass(RISCV::VRRegClassID).contains(Reg);
+      break;
+    default:
+      llvm_unreachable("not a register operand");
+    }
+    if (!Matches)
+      return Error(StartLoc, Kind == GPR ? "expected an integer register"
+                             : Kind == FPR
+                                 ? "expected a floating-point register"
+                                 : "expected a vector register");
     Encoding = getContext().getRegisterInfo()->getEncodingValue(Reg);
     return false;
   };
 
-  unsigned Register;
-  if (ParseGPR(Register))
-    return true;
-
-  int64_t Offset = 0;
-  unsigned Source = 0;
-  if (Directive == ".seh_set_cfa" || Directive == ".seh_save_gpr") {
-    if (getParser().parseComma() || getParser().parseAbsoluteExpression(Offset))
-      return true;
-  } else if (Directive == ".seh_gpr_from_gpr") {
-    if (getParser().parseComma() || ParseGPR(Source))
-      return true;
+  unsigned Register = 0;
+  int64_t Operand = 0;
+  int64_t Scale = 0;
+  if (D->Reg != None && ParseReg(D->Reg, Register))
+    return ParseStatus::Failure;
+  if (D->Second != None) {
+    if (D->Reg != None && getParser().parseComma())
+      return ParseStatus::Failure;
+    if (D->Second == Imm) {
+      if (getParser().parseAbsoluteExpression(Operand))
+        return ParseStatus::Failure;
+    } else {
+      unsigned Source;
+      if (ParseReg(D->Second, Source))
+        return ParseStatus::Failure;
+      Operand = Source;
+    }
+  } else if (D->Opcode == UOP_ReturnFromGPR && getLexer().is(AsmToken::Comma)) {
+    // An optional even adjustment of the link value.
+    if (getParser().parseComma() ||
+        getParser().parseAbsoluteExpression(Operand))
+      return ParseStatus::Failure;
   }
-
+  if (D->HasScale &&
+      (getParser().parseComma() || getParser().parseAbsoluteExpression(Scale)))
+    return ParseStatus::Failure;
   if (getParser().parseEOL("unexpected token in RVUW directive"))
-    return true;
+    return ParseStatus::Failure;
 
-  if (Directive == ".seh_set_cfa")
-    getTargetStreamer().emitRVUWSetCFA(Register, Offset);
-  else if (Directive == ".seh_save_gpr")
-    getTargetStreamer().emitRVUWSaveGPR(Register, Offset);
-  else if (Directive == ".seh_same_gpr")
-    getTargetStreamer().emitRVUWSameGPR(Register);
-  else
-    getTargetStreamer().emitRVUWGPRFromGPR(Register, Source);
-  return false;
+  if (!D->Opcode) {
+    if (!isEstablisherRegister(Register))
+      return Error(Loc, "the establisher must be sp or a nonvolatile register");
+    if (!isInt<32>(Operand))
+      return Error(Loc, "establisher offset is out of range");
+    getTargetStreamer().emitRVUWEstablisher(Register, Operand);
+    return ParseStatus::Success;
+  }
+  if (StringRef Message = validateRule(D->Opcode, Register, Operand, Scale);
+      !Message.empty())
+    return Error(Loc, Message);
+  getTargetStreamer().emitRVUWRule(D->Opcode, Register, Operand, Scale);
+  return ParseStatus::Success;
 }
 
 bool RISCVAsmParser::resetToArch(StringRef Arch, SMLoc Loc, std::string &Result,

@@ -460,17 +460,14 @@ void RISCVAsmPrinter::emitInstruction(const MachineInstr *MI) {
       EmitToStreamer(*OutStreamer, Inst);
     return;
   }
-  case RISCV::RVUW_SetCFA:
-    getTargetStreamer().emitRVUWSetCFA(MI->getOperand(0).getImm(), MI->getOperand(1).getImm());
+  case RISCV::RVUW_Rule:
+    getTargetStreamer().emitRVUWRule(
+        MI->getOperand(0).getImm(), MI->getOperand(1).getImm(),
+        MI->getOperand(2).getImm(), MI->getOperand(3).getImm());
     return;
-  case RISCV::RVUW_SaveGPR:
-    getTargetStreamer().emitRVUWSaveGPR(MI->getOperand(0).getImm(), MI->getOperand(1).getImm());
-    return;
-  case RISCV::RVUW_SameGPR:
-    getTargetStreamer().emitRVUWSameGPR(MI->getOperand(0).getImm());
-    return;
-  case RISCV::RVUW_GPRFromGPR:
-    getTargetStreamer().emitRVUWGPRFromGPR(MI->getOperand(0).getImm(), MI->getOperand(1).getImm());
+  case RISCV::RVUW_Establisher:
+    getTargetStreamer().emitRVUWEstablisher(MI->getOperand(0).getImm(),
+                                            MI->getOperand(1).getImm());
     return;
   case RISCV::RVUW_PrologEnd:
     getTargetStreamer().emitRVUWPrologEnd();

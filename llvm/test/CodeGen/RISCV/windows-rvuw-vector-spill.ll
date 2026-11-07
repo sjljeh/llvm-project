@@ -2,28 +2,28 @@
 ; RUN: llc -mtriple=riscv64-w64-windows-gnu -mattr=+m,+a,+f,+d,+c,+v,-relax -target-abi=lp64d -filetype=obj < %s -o %t.obj
 ; RUN: llvm-readobj --unwind %t.obj | FileCheck %s --check-prefix=UNWIND
 ;
-; RVUW cannot describe an SP offset that scales with VLENB. A function that
-; spills vector registers keeps its CFA on s0 instead, so the scalable part of
-; the frame never enters the unwind description, and rebuilds SP from s0 in
-; its epilogue. Vector registers are caller-saved: no vector state is unwound.
-; A function without vector code keeps its frame-pointer-free frame.
+; RVUW describes an SP offset that scales with VLENB (SET_CFA_SCALED), so a
+; function with RVV stack objects needs no frame pointer: its CFA follows SP
+; through the scalable allocation and back. A riscv_vector_cc function
+; describes its callee-saved vector registers with SAVE_VR/SAME_VR.
 
 target triple = "riscv64-w64-windows-gnu"
 
 declare void @clobber()
 
 ; CHECK-LABEL: vector_spill:
-; CHECK:         addi s0, sp, {{[0-9]+}}
-; CHECK-NEXT:    .seh_set_cfa x8, 0
+; CHECK-NOT:     s0
+; CHECK:         .seh_set_cfa x2, [[SIZE:[0-9]+]]
 ; CHECK:         csrr {{[a-z0-9]+}}, vlenb
 ; CHECK:         sub sp, sp, {{[a-z0-9]+}}
-; CHECK:         .seh_endprologue
+; CHECK-NEXT:    .seh_set_cfa_scaled x2, [[SIZE]], 2
+; CHECK-NEXT:    .seh_endprologue
 ; CHECK:         vs1r.v
 ; CHECK:         call clobber
 ; CHECK:         vl1r.v
 ; CHECK:         .seh_startepilogue
-; CHECK-NEXT:    addi sp, s0, -{{[0-9]+}}
-; CHECK-NEXT:    .seh_set_cfa x2, {{[0-9]+}}
+; CHECK:         add sp, sp, {{[a-z0-9]+}}
+; CHECK-NEXT:    .seh_set_cfa x2, [[SIZE]]
 ; CHECK:         .seh_endepilogue
 define <vscale x 2 x i32> @vector_spill(<vscale x 2 x i32> %a, <vscale x 2 x i32> %b) uwtable {
 entry:
@@ -88,11 +88,33 @@ ehcleanup:
   cleanupret from %cp unwind to caller
 }
 
+; CHECK-LABEL: vector_cc_saves:
+; CHECK:         .seh_set_cfa_scaled x2, {{[0-9]+}}, {{[0-9]+}}
+; CHECK:         vs1r.v v1,
+; CHECK:         .seh_save_vr v1, -{{[0-9]+}}, -{{[0-9]+}}
+; CHECK:         .seh_save_vr v24, -{{[0-9]+}}, -{{[0-9]+}}
+; CHECK:         .seh_endprologue
+; CHECK:         .seh_startepilogue
+; CHECK:         vl1r.v v1,
+; CHECK:         .seh_same_vr v1
+; CHECK:         .seh_same_vr v31
+; CHECK-NEXT:    csrr
+; CHECK:         .seh_endepilogue
+define riscv_vector_cc <vscale x 2 x i32> @vector_cc_saves(<vscale x 2 x i32> %a) uwtable {
+entry:
+  call void asm sideeffect "", "~{v1},~{v24}"()
+  call void @clobber()
+  ret <vscale x 2 x i32> %a
+}
+
 ; UNWIND:      RuntimeFunction {
+; UNWIND:        RequiredState: 0x5
 ; UNWIND:        PrologCodes [
 ; UNWIND:          Opcode: SET_CFA
 ; UNWIND-NEXT:     Register: x2 (2)
-; UNWIND-NEXT:     Operand: 32
-; UNWIND:          Opcode: SET_CFA
-; UNWIND-NEXT:     Register: x8 (8)
-; UNWIND-NEXT:     Operand: 0
+; UNWIND:          Opcode: SET_CFA_SCALED
+; UNWIND-NEXT:     Register: x2 (2)
+; UNWIND-NEXT:     Operand: [[#SIZE:]]
+; UNWIND-NEXT:     VLENBMultiplier: 2
+; UNWIND-NEXT:     OpInfo:
+; UNWIND-NEXT:     Slots: 2

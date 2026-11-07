@@ -20,6 +20,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/RISCVAttributes.h"
+#include "llvm/Support/RISCVWinEH.h"
 #include "llvm/TargetParser/RISCVISAInfo.h"
 
 using namespace llvm;
@@ -166,23 +167,71 @@ void RISCVTargetAsmStreamer::emitDirectiveVariantCC(MCSymbol &Symbol) {
   OS << "\t.variant_cc\t" << Symbol.getName() << "\n";
 }
 
-void RISCVTargetAsmStreamer::emitRVUWSetCFA(unsigned Register,
-                                            int64_t Offset) {
-  OS << "\t.seh_set_cfa\tx" << Register << ", " << Offset << "\n";
+void RISCVTargetAsmStreamer::emitRVUWRule(unsigned Opcode, unsigned Register,
+                                          int64_t Operand, int64_t Scale) {
+  using namespace RISCVWinEH;
+  switch (Opcode) {
+  case UOP_SetCFA:
+    OS << "\t.seh_set_cfa\tx" << Register << ", " << Operand << "\n";
+    return;
+  case UOP_SetCFAScaled:
+    OS << "\t.seh_set_cfa_scaled\tx" << Register << ", " << Operand << ", "
+       << Scale << "\n";
+    return;
+  case UOP_SaveGPR:
+    OS << "\t.seh_save_gpr\tx" << Register << ", " << Operand << "\n";
+    return;
+  case UOP_SameGPR:
+    OS << "\t.seh_same_gpr\tx" << Register << "\n";
+    return;
+  case UOP_GPRFromGPR:
+    OS << "\t.seh_gpr_from_gpr\tx" << Register << ", x" << Operand << "\n";
+    return;
+  case UOP_SaveFPR:
+    OS << "\t.seh_save_fpr\tf" << Register << ", " << Operand << "\n";
+    return;
+  case UOP_SameFPR:
+    OS << "\t.seh_same_fpr\tf" << Register << "\n";
+    return;
+  case UOP_FPRFromFPR:
+    OS << "\t.seh_fpr_from_fpr\tf" << Register << ", f" << Operand << "\n";
+    return;
+  case UOP_SaveFCSR:
+    OS << "\t.seh_save_fcsr\t" << Operand << "\n";
+    return;
+  case UOP_SameFCSR:
+    OS << "\t.seh_same_fcsr\n";
+    return;
+  case UOP_SaveVR:
+    OS << "\t.seh_save_vr\tv" << Register << ", " << Operand << ", " << Scale
+       << "\n";
+    return;
+  case UOP_SameVR:
+    OS << "\t.seh_same_vr\tv" << Register << "\n";
+    return;
+  case UOP_ReturnFromGPR:
+    OS << "\t.seh_return_from\tx" << Register;
+    if (Operand)
+      OS << ", " << Operand;
+    OS << "\n";
+    return;
+  case UOP_MachineFrame:
+    OS << "\t.seh_machine_frame\t" << Operand << "\n";
+    return;
+  case UOP_TrapFrame:
+    OS << "\t.seh_trap_frame\t" << Operand << "\n";
+    return;
+  case UOP_Context:
+    OS << "\t.seh_context\t" << Operand << "\n";
+    return;
+  default:
+    llvm_unreachable("unknown RVUW rule opcode");
+  }
 }
 
-void RISCVTargetAsmStreamer::emitRVUWSaveGPR(unsigned Register,
-                                             int64_t Offset) {
-  OS << "\t.seh_save_gpr\tx" << Register << ", " << Offset << "\n";
-}
-
-void RISCVTargetAsmStreamer::emitRVUWSameGPR(unsigned Register) {
-  OS << "\t.seh_same_gpr\tx" << Register << "\n";
-}
-
-void RISCVTargetAsmStreamer::emitRVUWGPRFromGPR(unsigned Register,
-                                                unsigned Source) {
-  OS << "\t.seh_gpr_from_gpr\tx" << Register << ", x" << Source << "\n";
+void RISCVTargetAsmStreamer::emitRVUWEstablisher(unsigned Register,
+                                                 int64_t Offset) {
+  OS << "\t.seh_establisher\tx" << Register << ", " << Offset << "\n";
 }
 
 void RISCVTargetAsmStreamer::emitRVUWPrologEnd() {
