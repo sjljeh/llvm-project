@@ -1,0 +1,351 @@
+# REQUIRES: arm
+## ARMNT relocations as link.exe applies them; every value below matches
+## link.exe for the same object.
+##
+## main.yaml: .text is Thumb code (IMAGE_SCN_MEM_16BIT); .armcode is not.
+##   0x04 ADDR32 todd       Thumb bit is added, not ORed: odd 0x41 -> 0x42.
+##   0x08 ADDR32 armfn      no Thumb bit outside IMAGE_SCN_MEM_16BIT sections.
+##   0x0c REL32 tfunc
+##   0x10 B.W tfunc         encoded addend +4 is ORed into the offset, which
+##                          already has that bit set: still tfunc.
+##   0x14 BL armfn          becomes BLX, relative to Align(PC, 4).
+##   0x18 BEQ.W tfar        bits 18 and 19 of the offset differ (J1 != J2).
+##   0x1c SECREL tfunc      gets the Thumb bit outside of debug info.
+##   0x20 ADDR32NB tfunc
+##   0x24 MOV32T todd
+##   0x2c B.W armfn         accepted only with /opt:noref, encoded as is.
+##   0x30 ABSOLUTE          no-op.
+
+# RUN: split-file %s %t.dir
+# RUN: yaml2obj %t.dir/main.yaml -o %t.main.obj
+# RUN: lld-link /out:%t.exe /entry:main /subsystem:console /opt:noref %t.main.obj
+# RUN: llvm-objdump -s --section=.text %t.exe | FileCheck %s --check-prefix=TEXT
+# RUN: llvm-objdump -d --no-show-raw-insn %t.exe | FileCheck %s --check-prefix=DISASM
+# RUN: llvm-readobj --file-headers %t.exe | FileCheck %s --check-prefix=HEADER
+
+# TEXT:      401000 704700bf 42104000 00204000 51000000
+# TEXT-NEXT: 401010 00f026b8 00f0f4ef 07f0f2a7 61000000
+# TEXT-NEXT: 401020 61100000 41f24200 c0f24000 00f0e8bf
+# TEXT-NEXT: 401030 11223344
+
+# DISASM:      401010: b.w 0x401060
+# DISASM-NEXT: 401014: blx 0x402000
+# DISASM-NEXT: 401018: beq.w 0x449000
+# DISASM:      40102c: b.w 0x402000
+
+## The entry point is in Thumb code. ARM images default to version 6.02 and
+## are large address aware; BaseOfData is the first non-code section.
+# HEADER:      IMAGE_FILE_LARGE_ADDRESS_AWARE
+# HEADER:      AddressOfEntryPoint: 0x1001
+# HEADER:      BaseOfData: 0x3000
+# HEADER:      MajorOperatingSystemVersion: 6
+# HEADER-NEXT: MinorOperatingSystemVersion: 2
+# HEADER:      MajorSubsystemVersion: 6
+# HEADER-NEXT: MinorSubsystemVersion: 2
+
+## With /opt:ref, as link.exe does, a B.W to ARM code is an error.
+# RUN: not lld-link /out:%t.exe /entry:main /subsystem:console %t.main.obj 2>&1 | FileCheck %s --check-prefix=REF
+# REF: error: {{.*}}main.obj: IMAGE_REL_ARM_BRANCH24T relocation targets 'armfn', which is not in a Thumb (IMAGE_SCN_MEM_16BIT) section
+# REF-NOT: error:
+
+## Absolute targets of image- or PC-relative relocations, and a BLX to a
+## misaligned ARM target, are errors.
+# RUN: yaml2obj %t.dir/err.yaml -o %t.err.obj
+# RUN: not lld-link /out:%t.exe /entry:main /subsystem:console %t.err.obj 2>&1 | FileCheck %s --check-prefix=ERR
+# ERR:      absolute symbol 'abs' cannot be the target of an IMAGE_REL_ARM_ADDR32NB relocation
+# ERR-NEXT: absolute symbol 'abs' cannot be the target of an IMAGE_REL_ARM_REL32 relocation
+# ERR-NEXT: absolute symbol 'abs' cannot be the target of an IMAGE_REL_ARM_BRANCH24T relocation
+# ERR-NEXT: absolute symbol 'abs' cannot be the target of an IMAGE_REL_ARM_BRANCH20T relocation
+# ERR-NEXT: absolute symbol 'abs' cannot be the target of an IMAGE_REL_ARM_BLX23T relocation
+# ERR-NEXT: IMAGE_REL_ARM_BLX23T relocation target 'armodd' is not 4-byte aligned
+
+## Exports of Thumb code have the Thumb bit even when exported as DATA; other
+## exports, including code outside IMAGE_SCN_MEM_16BIT sections, do not.
+# RUN: yaml2obj %t.dir/dll.yaml -o %t.dll.obj
+# RUN: lld-link /out:%t.dll /dll /entry:DllMain /export:tf /export:af /export:dv /export:tf2,DATA %t.dll.obj
+# RUN: llvm-objdump -p %t.dll | FileCheck %s --check-prefix=EXPORT
+# EXPORT:      Ordinal      RVA  Name
+# EXPORT-NEXT:       1   0x{{[0-9a-f]*[02468ace]}}  af
+# EXPORT-NEXT:       2   0x{{[0-9a-f]*[02468ace]}}  dv
+# EXPORT-NEXT:       3   0x1005  tf
+# EXPORT-NEXT:       4   0x1001  tf2
+
+#--- main.yaml
+--- !COFF
+header:
+  Machine:         IMAGE_FILE_MACHINE_ARMNT
+  TimeDateStamp:   0
+  Characteristics: [  ]
+sections:
+  - Name:            .text
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_PURGEABLE, IMAGE_SCN_MEM_16BIT, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     704700BF00000000000000000000000000F002B800F000F800F00080000000000000000040F20000C0F2000000F000B81122334400BF00BF00BF00BF00BF00BF00BF00BF00BF00BF00BF00BF00BF00BF00BF00BF00BF00BF00BF00BF00BF00BF704700BF
+    SizeOfRawData:   100
+    Relocations:
+      - VirtualAddress:  4
+        SymbolName:      todd
+        Type:            IMAGE_REL_ARM_ADDR32
+      - VirtualAddress:  8
+        SymbolName:      armfn
+        Type:            IMAGE_REL_ARM_ADDR32
+      - VirtualAddress:  12
+        SymbolName:      tfunc
+        Type:            IMAGE_REL_ARM_REL32
+      - VirtualAddress:  16
+        SymbolName:      tfunc
+        Type:            IMAGE_REL_ARM_BRANCH24T
+      - VirtualAddress:  20
+        SymbolName:      armfn
+        Type:            IMAGE_REL_ARM_BLX23T
+      - VirtualAddress:  24
+        SymbolName:      tfar
+        Type:            IMAGE_REL_ARM_BRANCH20T
+      - VirtualAddress:  28
+        SymbolName:      tfunc
+        Type:            IMAGE_REL_ARM_SECREL
+      - VirtualAddress:  32
+        SymbolName:      tfunc
+        Type:            IMAGE_REL_ARM_ADDR32NB
+      - VirtualAddress:  36
+        SymbolName:      todd
+        Type:            IMAGE_REL_ARM_MOV32T
+      - VirtualAddress:  44
+        SymbolName:      armfn
+        Type:            IMAGE_REL_ARM_BRANCH24T
+      - VirtualAddress:  48
+        SymbolName:      tfunc
+        Type:            IMAGE_REL_ARM_ABSOLUTE
+  - Name:            .armcode
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     1EFF2FE11EFF2FE1
+    SizeOfRawData:   8
+symbols:
+  - Name:            .text
+    Value:           0
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_STATIC
+    SectionDefinition:
+      Length:          100
+      NumberOfRelocations: 11
+      NumberOfLinenumbers: 0
+      CheckSum:        0
+      Number:          0
+  - Name:            .armcode
+    Value:           0
+    SectionNumber:   2
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_STATIC
+    SectionDefinition:
+      Length:          8
+      NumberOfRelocations: 0
+      NumberOfLinenumbers: 0
+      CheckSum:        0
+      Number:          0
+  - Name:            main
+    Value:           0
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_FUNCTION
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+  - Name:            todd
+    Value:           65
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_FUNCTION
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+  - Name:            tfunc
+    Value:           96
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_FUNCTION
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+  - Name:            tfar
+    Value:           294912
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_FUNCTION
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+  - Name:            armfn
+    Value:           0
+    SectionNumber:   2
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_FUNCTION
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+...
+
+#--- err.yaml
+--- !COFF
+header:
+  Machine:         IMAGE_FILE_MACHINE_ARMNT
+  TimeDateStamp:   0
+  Characteristics: [  ]
+sections:
+  - Name:            .text
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_PURGEABLE, IMAGE_SCN_MEM_16BIT, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     704700BF000000000000000000F000B800F0008000F000F800F000F8
+    SizeOfRawData:   28
+    Relocations:
+      - VirtualAddress:  4
+        SymbolName:      abs
+        Type:            IMAGE_REL_ARM_ADDR32NB
+      - VirtualAddress:  8
+        SymbolName:      abs
+        Type:            IMAGE_REL_ARM_REL32
+      - VirtualAddress:  12
+        SymbolName:      abs
+        Type:            IMAGE_REL_ARM_BRANCH24T
+      - VirtualAddress:  16
+        SymbolName:      abs
+        Type:            IMAGE_REL_ARM_BRANCH20T
+      - VirtualAddress:  20
+        SymbolName:      abs
+        Type:            IMAGE_REL_ARM_BLX23T
+      - VirtualAddress:  24
+        SymbolName:      armodd
+        Type:            IMAGE_REL_ARM_BLX23T
+  - Name:            .armcode
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     '0000000000000000'
+    SizeOfRawData:   8
+symbols:
+  - Name:            .text
+    Value:           0
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_STATIC
+    SectionDefinition:
+      Length:          28
+      NumberOfRelocations: 6
+      NumberOfLinenumbers: 0
+      CheckSum:        0
+      Number:          0
+  - Name:            .armcode
+    Value:           0
+    SectionNumber:   2
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_STATIC
+    SectionDefinition:
+      Length:          8
+      NumberOfRelocations: 0
+      NumberOfLinenumbers: 0
+      CheckSum:        0
+      Number:          0
+  - Name:            main
+    Value:           0
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_FUNCTION
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+  - Name:            abs
+    Value:           4660
+    SectionNumber:   -1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_FUNCTION
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+  - Name:            armodd
+    Value:           2
+    SectionNumber:   2
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_FUNCTION
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+...
+
+#--- dll.yaml
+--- !COFF
+header:
+  Machine:         IMAGE_FILE_MACHINE_ARMNT
+  TimeDateStamp:   0
+  Characteristics: [  ]
+sections:
+  - Name:            .text
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_PURGEABLE, IMAGE_SCN_MEM_16BIT, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     704700BF704700BF
+    SizeOfRawData:   8
+  - Name:            .armcode
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     '00000000'
+    SizeOfRawData:   4
+  - Name:            .data
+    Characteristics: [ IMAGE_SCN_CNT_INITIALIZED_DATA, IMAGE_SCN_MEM_READ, IMAGE_SCN_MEM_WRITE ]
+    Alignment:       4
+    SectionData:     '00000000'
+    SizeOfRawData:   4
+symbols:
+  - Name:            .text
+    Value:           0
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_STATIC
+    SectionDefinition:
+      Length:          8
+      NumberOfRelocations: 0
+      NumberOfLinenumbers: 0
+      CheckSum:        0
+      Number:          0
+  - Name:            .armcode
+    Value:           0
+    SectionNumber:   2
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_STATIC
+    SectionDefinition:
+      Length:          4
+      NumberOfRelocations: 0
+      NumberOfLinenumbers: 0
+      CheckSum:        0
+      Number:          0
+  - Name:            .data
+    Value:           0
+    SectionNumber:   3
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_STATIC
+    SectionDefinition:
+      Length:          4
+      NumberOfRelocations: 0
+      NumberOfLinenumbers: 0
+      CheckSum:        0
+      Number:          0
+  - Name:            DllMain
+    Value:           0
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_FUNCTION
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+  - Name:            tf
+    Value:           4
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_FUNCTION
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+  - Name:            af
+    Value:           0
+    SectionNumber:   2
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_FUNCTION
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+  - Name:            dv
+    Value:           0
+    SectionNumber:   3
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+  - Name:            tf2
+    Value:           0
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_FUNCTION
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+...

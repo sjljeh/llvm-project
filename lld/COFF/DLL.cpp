@@ -294,10 +294,13 @@ static const uint8_t tailMergeX86[] = {
     0xFF, 0xE0,        // jmp   eax
 };
 
+// As link.exe does, jump to the tail merge through a literal, which needs a
+// word-aligned thunk and a base relocation.
 static const uint8_t thunkARM[] = {
     0x40, 0xf2, 0x00, 0x0c, // mov.w   ip, #0 __imp_<FUNCNAME>
     0xc0, 0xf2, 0x00, 0x0c, // mov.t   ip, #0 __imp_<FUNCNAME>
-    0x00, 0xf0, 0x00, 0xb8, // b.w     __tailMerge_<lib>
+    0xdf, 0xf8, 0x00, 0xf0, // ldr.w   pc, [pc, #0]
+    0x00, 0x00, 0x00, 0x00, // .word   __tailMerge_<lib> + 1
 };
 
 static const uint8_t tailMergeARM[] = {
@@ -534,7 +537,7 @@ class ThunkChunkARM : public NonSectionCodeChunk {
 public:
   ThunkChunkARM(COFFLinkerContext &ctx, Defined *i, Chunk *tm)
       : imp(i), tailMerge(tm), ctx(ctx) {
-    setAlignment(2);
+    setAlignment(4);
   }
 
   size_t getSize() const override { return sizeof(thunkARM); }
@@ -543,11 +546,12 @@ public:
   void writeTo(uint8_t *buf) const override {
     memcpy(buf, thunkARM, sizeof(thunkARM));
     applyMOV32T(buf + 0, imp->getRVA() + ctx.config.imageBase);
-    applyBranch24T(buf + 8, tailMerge->getRVA() - rva - 12);
+    write32le(buf + 12, tailMerge->getRVA() + ctx.config.imageBase + 1);
   }
 
   void getBaserels(std::vector<Baserel> *res) override {
     res->emplace_back(rva + 0, IMAGE_REL_BASED_ARM_MOV32T);
+    res->emplace_back(rva + 12, IMAGE_REL_BASED_HIGHLOW);
   }
 
   Defined *imp = nullptr;
@@ -750,16 +754,16 @@ public:
       assert(e.ordinal >= baseOrdinal && "Export symbol has invalid ordinal");
       // Subtract the OrdinalBase to get the index.
       uint8_t *p = buf + (e.ordinal - baseOrdinal) * 4;
-      uint32_t bit = 0;
-      // Pointer to thumb code must have the LSB set, so adjust it.
-      if (symtab.machine == ARMNT && !e.data)
-        bit = 1;
       if (e.forwardChunk) {
-        write32le(p, e.forwardChunk->getRVA() | bit);
+        // The RVA of a forwarder's name string.
+        write32le(p, e.forwardChunk->getRVA());
       } else {
-        assert(cast<Defined>(e.sym)->getRVA() != 0 &&
-               "Exported symbol unmapped");
-        write32le(p, cast<Defined>(e.sym)->getRVA() | bit);
+        auto *sym = cast<Defined>(e.sym);
+        assert(sym->getRVA() != 0 && "Exported symbol unmapped");
+        // Exports of Thumb code have the LSB set. Like link.exe, this follows
+        // the defining section rather than whether the export is DATA.
+        write32le(p, symtab.machine == ARMNT ? getARMTargetRVA(sym)
+                                             : sym->getRVA());
       }
     }
   }

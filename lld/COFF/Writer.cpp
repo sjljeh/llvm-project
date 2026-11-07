@@ -17,6 +17,7 @@
 #include "PDB.h"
 #include "SymbolTable.h"
 #include "Symbols.h"
+#include "Target.h"
 #include "lld/Common/ErrorHandler.h"
 #include "lld/Common/Memory.h"
 #include "lld/Common/Timer.h"
@@ -231,6 +232,17 @@ private:
            Defined *target, int64_t addend, uint64_t p, uint16_t type,
            int margin, MachineTypes machine);
   bool createThunks(OutputSection *os, int margin);
+  // Whether thunks are added like link.exe does: only for branches that are
+  // out of range, keeping the thunks of earlier passes (ARMNT).
+  bool useExactThunks() const { return ctx.config.machine == ARMNT; }
+  struct RangeThunk {
+    Defined *sym;
+    Defined *target;
+    int64_t addend;
+  };
+  // Thunks created so far, kept across passes with useExactThunks().
+  DenseMap<Chunk *, RangeThunk> rangeThunks;
+  DenseMap<std::pair<ObjFile *, Defined *>, uint32_t> rangeThunkSymtabIndices;
   bool verifyRanges(const std::vector<Chunk *> chunks);
   void createECCodeMap();
   void finalizeAddresses();
@@ -431,7 +443,8 @@ bool Writer::isInRange(uint16_t relType, uint64_t s, uint64_t p, int margin,
     diff += diff < 0 ? -margin : margin;
     return isInt<23>(diff);
   } else if (machine == ARMNT) {
-    int64_t diff = AbsoluteDifference(s, p + 4) + margin;
+    int64_t diff = static_cast<int64_t>(s) - static_cast<int64_t>(p + 4);
+    diff += diff < 0 ? -margin : margin;
     switch (relType) {
     case IMAGE_REL_ARM_BRANCH20T:
       return isInt<21>(diff);
@@ -520,8 +533,11 @@ Writer::getThunk(DenseMap<std::pair<uint64_t, int64_t>, Defined *> &lastThunks,
 // the previously created thunks) and retry with a wider margin.
 bool Writer::createThunks(OutputSection *os, int margin) {
   bool addressesChanged = false;
+  bool exact = useExactThunks();
   DenseMap<std::pair<uint64_t, int64_t>, Defined *> lastThunks;
-  DenseMap<std::pair<ObjFile *, Defined *>, uint32_t> thunkSymtabIndices;
+  DenseMap<std::pair<ObjFile *, Defined *>, uint32_t> localSymtabIndices;
+  auto &thunkSymtabIndices =
+      exact ? rangeThunkSymtabIndices : localSymtabIndices;
   size_t thunksSize = 0;
   // Recheck Chunks.size() each iteration, since we can insert more
   // elements into it.
@@ -537,6 +553,19 @@ bool Writer::createThunks(OutputSection *os, int margin) {
     }
     MachineTypes machine = sc->getMachine();
     size_t thunkInsertionSpot = i + 1;
+
+    // link.exe shares a thunk only among the branches of the section it
+    // follows. Those include the thunks this section got in earlier passes.
+    if (exact) {
+      lastThunks.clear();
+      for (size_t j = i + 1; j != os->chunks.size(); ++j) {
+        auto it = rangeThunks.find(os->chunks[j]);
+        if (it == rangeThunks.end())
+          break;
+        lastThunks[{it->second.target->getRVA(), it->second.addend}] =
+            it->second.sym;
+      }
+    }
 
     // Try to get a good enough estimate of where new thunks will be placed.
     // Offset this by the size of the new thunks added so far, to make the
@@ -567,6 +596,9 @@ bool Writer::createThunks(OutputSection *os, int margin) {
       Defined *sym = dyn_cast_or_null<Defined>(relocTarget);
       if (!sym)
         continue;
+      // Thumb branches to absolute symbols are diagnosed when relocating.
+      if (machine == ARMNT && isa<DefinedAbsolute>(sym))
+        continue;
 
       int64_t addend = 0;
       if (machine == IMAGE_FILE_MACHINE_ALPHA &&
@@ -585,6 +617,8 @@ bool Writer::createThunks(OutputSection *os, int margin) {
           getThunk(lastThunks, sym, addend, p, rel.Type, margin, machine);
       if (wasNew) {
         Chunk *thunkChunk = thunk->getChunk();
+        if (exact)
+          rangeThunks[thunkChunk] = {thunk, sym, addend};
         thunkChunk->setRVA(
             thunkInsertionRVA); // Estimate of where it will be located.
         os->chunks.insert(os->chunks.begin() + thunkInsertionSpot, thunkChunk);
@@ -704,6 +738,8 @@ bool Writer::verifyRanges(const std::vector<Chunk *> chunks) {
       Defined *sym = dyn_cast_or_null<Defined>(relocTarget);
       if (!sym)
         continue;
+      if (machine == ARMNT && isa<DefinedAbsolute>(sym))
+        continue;
 
       uint64_t p = sc->getRVA() + rel.VirtualAddress;
       int64_t addend = 0;
@@ -730,14 +766,20 @@ void Writer::finalizeAddresses() {
       ctx.config.machine != IMAGE_FILE_MACHINE_POWERPC)
     return;
 
+  // Base relocation blocks are laid out with the other sections and may grow
+  // as thunks are added; leave them out of the thunk count.
   size_t origNumChunks = 0;
   for (OutputSection *sec : ctx.outputSections) {
     sec->origChunks = sec->chunks;
-    origNumChunks += sec->chunks.size();
+    if (sec != relocSec)
+      origNumChunks += sec->chunks.size();
   }
 
   int pass = 0;
-  int margin = 1024 * 100;
+  // link.exe only adds thunks for branches that are out of range; when the
+  // added thunks push further branches out of range, it adds more. Elsewhere,
+  // thunks are added with a margin and the margin grows if that fails.
+  int margin = useExactThunks() ? 0 : 1024 * 100;
   while (true) {
     llvm::TimeTraceScope timeScope2("Add thunks pass");
 
@@ -752,7 +794,8 @@ void Writer::finalizeAddresses() {
           rangesOk = false;
           break;
         }
-        numChunks += sec->chunks.size();
+        if (sec != relocSec)
+          numChunks += sec->chunks.size();
       }
     }
     if (rangesOk) {
@@ -766,7 +809,7 @@ void Writer::finalizeAddresses() {
       Fatal(ctx) << "adding thunks hasn't converged after " << pass
                  << " passes";
 
-    if (pass > 0) {
+    if (pass > 0 && !useExactThunks()) {
       // If the previous pass didn't work out, reset everything back to the
       // original conditions before retrying with a wider margin. This should
       // ideally never happen under real circumstances.
@@ -2152,10 +2195,10 @@ template <typename PEHeaderTy> void Writer::writeHeader() {
   pe->SizeOfHeaders = sizeOfHeaders;
   if (!config->noEntry) {
     Defined *entry = cast<Defined>(symtab.entry);
-    pe->AddressOfEntryPoint = entry->getRVA();
-    // Pointer to thumb code must have the LSB set, so adjust it.
-    if (config->machine == ARMNT)
-      pe->AddressOfEntryPoint |= 1;
+    // An entry point in Thumb code must have the LSB set.
+    pe->AddressOfEntryPoint = config->machine == ARMNT
+                                  ? getARMTargetRVA(entry)
+                                  : entry->getRVA();
   }
   pe->SizeOfStackReserve = config->stackReserve;
   pe->SizeOfStackCommit = config->stackCommit;
@@ -2184,9 +2227,26 @@ template <typename PEHeaderTy> void Writer::writeHeader() {
   if (config->terminalServerAware)
     pe->DLLCharacteristics |= IMAGE_DLL_CHARACTERISTICS_TERMINAL_SERVER_AWARE;
   pe->NumberOfRvaAndSize = numberOfDataDirectory;
-  if (textSec->getVirtualSize()) {
-    pe->BaseOfCode = textSec->getRVA();
-    pe->SizeOfCode = textSec->getRawSize();
+  // Like link.exe, SizeOfCode covers every code section, BaseOfCode is the
+  // first of them and the PE32 BaseOfData is the first section after code
+  // (or the end of the image if there is none).
+  for (OutputSection *sec : ctx.outputSections) {
+    if (!(sec->header.Characteristics & IMAGE_SCN_CNT_CODE) ||
+        !sec->getVirtualSize())
+      continue;
+    if (!pe->SizeOfCode)
+      pe->BaseOfCode = sec->getRVA();
+    pe->SizeOfCode += sec->getRawSize();
+  }
+  if constexpr (std::is_same_v<PEHeaderTy, pe32_header>) {
+    pe->BaseOfData = sizeOfImage;
+    for (OutputSection *sec : ctx.outputSections) {
+      if (!(sec->header.Characteristics & IMAGE_SCN_CNT_CODE) &&
+          sec->getVirtualSize()) {
+        pe->BaseOfData = sec->getRVA();
+        break;
+      }
+    }
   }
   pe->SizeOfInitializedData = getSizeOfInitializedData();
 

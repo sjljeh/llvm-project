@@ -1377,6 +1377,8 @@ void SymbolTable::parseModuleDefs(StringRef path) {
     ctx.config.majorOSVersion = m.MajorOSVersion;
   if (m.MinorOSVersion)
     ctx.config.minorOSVersion = m.MinorOSVersion;
+  if (m.MajorOSVersion || m.MinorOSVersion)
+    ctx.config.osVersionSet = true;
 
   for (COFFShortExport e1 : m.Exports) {
     Export e2;

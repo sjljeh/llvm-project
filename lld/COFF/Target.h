@@ -18,6 +18,7 @@
 namespace lld::coff {
 
 class COFFLinkerContext;
+class Defined;
 class OutputSection;
 class SectionChunk;
 
@@ -60,6 +61,15 @@ std::unique_ptr<TargetInfo> createTargetInfo(COFFLinkerContext &ctx,
 
 void applyMOV32T(uint8_t *off, uint32_t v);
 void applyBranch24T(uint8_t *off, int32_t v);
+
+// Whether an ARMNT address of sym refers to Thumb code. Like link.exe, this
+// follows the IMAGE_SCN_MEM_16BIT flag of the section defining sym; synthetic
+// code (thunks) is Thumb, and absolute symbols never are.
+bool isARMThumbTarget(Defined *sym);
+
+// The address of sym as an ARMNT pointer, relocation target or entry point:
+// link.exe adds (rather than ORs) the Thumb bit to the RVA of Thumb code.
+uint64_t getARMTargetRVA(Defined *sym);
 
 void writePPC32(uint8_t *off, uint32_t v, bool isLE);
 

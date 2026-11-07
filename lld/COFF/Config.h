@@ -329,6 +329,10 @@ struct Configuration {
   uint32_t minorOSVersion = 0;
   uint32_t majorSubsystemVersion = 6;
   uint32_t minorSubsystemVersion = 0;
+  // Whether the versions above were given explicitly (/subsystem:x,ver,
+  // /osversion or a module-definition file) rather than defaulted.
+  bool subsystemVersionSet = false;
+  bool osVersionSet = false;
   uint32_t timestamp = 0;
   uint32_t functionPadMin = 0;
   uint32_t timeTraceGranularity = 0;

@@ -2,9 +2,13 @@
 // RUN: llvm-mc -filetype=obj -triple=thumbv7-windows %s -o %t.obj
 // RUN: lld-link -entry:main -subsystem:console %t.obj -out:%t.exe -verbose 2>&1 | FileCheck -check-prefix=VERBOSE %s
 // RUN: llvm-objdump --no-print-imm-hex -d %t.exe --start-address=0x403000 --stop-address=0x403008 | FileCheck --check-prefix=FUNC01 %s
-// RUN: llvm-objdump --no-print-imm-hex -d %t.exe --start-address=0x404ffa --stop-address=0x405012 | FileCheck --check-prefix=FUNC01-THUNKS %s
+// RUN: llvm-objdump --no-print-imm-hex -d %t.exe --start-address=0x404ffa --stop-address=0x405014 | FileCheck --check-prefix=FUNC01-THUNKS %s
 
-// VERBOSE: Added {{.*}} thunks with margin 204800 in 2 passes
+// As in link.exe, thunks are added without a margin: the first pass only
+// adds thunks for the far_func branches, which pushes some func_within_margin
+// branches out of range, so a second pass adds thunks for those after the
+// thunks from the first pass are kept.
+// VERBOSE: Added {{.*}} thunks with margin 0 in 2 passes
 
     .syntax unified
     .globl main
@@ -51,20 +55,20 @@ far_func\i:
 .endr
     bx lr
 
-// FUNC01: 403000:       f041 87fc       bne.w   0x404ffc <.text+0x3ffc>
-// FUNC01: 403004:       f041 87ff       bne.w   0x405006 <.text+0x4006>
+// FUNC01: 403000:       f042 8002       bne.w   0x405008 <.text+0x4008>
+// FUNC01: 403004:       f041 87fa       bne.w   0x404ffc <.text+0x3ffc>
 
-// Check that we only have two thunks here, even if we created the first
-// thunk twice (once in the first pass, then thrown away and recreated
-// in the second pass).
+// Check that we only have two thunks here; the second pass inserts its thunk
+// directly after the section, before the thunk from the first pass.
 
 // FUNC01-THUNKS: 404ffa:       0000            movs    r0,  r0
 // The instruction above is padding from the .space
-// FUNC01-THUNKS: 404ffc:       f247 0c1e       movw    r12, #28702
-// FUNC01-THUNKS: 405000:       f2c0 0c20       movt    r12, #32
-// FUNC01-THUNKS: 405004:       44e7            add     pc,  r12
-// FUNC01-THUNKS: 405006:       f646 7cf0       movw    r12, #28656
-// FUNC01-THUNKS: 40500a:       f2c0 0c10       movt    r12, #16
-// FUNC01-THUNKS: 40500e:       44e7            add     pc, r12
+// FUNC01-THUNKS: 404ffc:       f24c 0c03       movw    r12, #49155
+// FUNC01-THUNKS: 405000:       f2c0 0c50       movt    r12, #80
+// FUNC01-THUNKS: 405004:       4760            bx      r12
+// FUNC01-THUNKS: 405006:       0000            movs    r0, r0
+// FUNC01-THUNKS: 405008:       f24c 0c27       movw    r12, #49191
+// FUNC01-THUNKS: 40500c:       f2c0 0c60       movt    r12, #96
+// FUNC01-THUNKS: 405010:       4760            bx      r12
 // The instruction below is padding from the .balign
-// FUNC01-THUNKS: 405010:       0000            movs    r0, r0
+// FUNC01-THUNKS: 405012:       0000            movs    r0, r0

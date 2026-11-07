@@ -687,6 +687,7 @@ void LinkerDriver::parseDirectives(InputFile *file) {
       if (gotVersion) {
         ctx.config.majorOSVersion = ctx.config.majorSubsystemVersion;
         ctx.config.minorOSVersion = ctx.config.minorSubsystemVersion;
+        ctx.config.subsystemVersionSet = true;
       }
       break;
     }
@@ -2033,12 +2034,14 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   if (auto *arg = args.getLastArg(OPT_subsystem))
     parseSubsystem(arg->getValue(), &config->subsystem,
                    &config->majorSubsystemVersion,
-                   &config->minorSubsystemVersion);
+                   &config->minorSubsystemVersion,
+                   &config->subsystemVersionSet);
 
   // Handle /osversion
   if (auto *arg = args.getLastArg(OPT_osversion)) {
     parseVersion(arg->getValue(), &config->majorOSVersion,
                  &config->minorOSVersion);
+    config->osVersionSet = true;
   } else {
     config->majorOSVersion = config->majorSubsystemVersion;
     config->minorOSVersion = config->minorSubsystemVersion;
@@ -2530,9 +2533,21 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
         createResponseFile(args, ArrayRef<StringRef>(searchPaths).slice(1)));
   }
 
-  // Handle /largeaddressaware
-  config->largeAddressAware = args.hasFlag(
-      OPT_largeaddressaware, OPT_largeaddressaware_no, config->is64());
+  // Handle /largeaddressaware. link.exe sets it by default for ARM images too.
+  config->largeAddressAware =
+      args.hasFlag(OPT_largeaddressaware, OPT_largeaddressaware_no,
+                   config->is64() || config->machine == ARMNT);
+
+  // link.exe defaults ARM and ARM64 images to OS and subsystem version 6.02.
+  if (!config->mingw && !config->subsystemVersionSet &&
+      (config->machine == ARMNT || config->machine == ARM64)) {
+    config->majorSubsystemVersion = 6;
+    config->minorSubsystemVersion = 2;
+    if (!config->osVersionSet) {
+      config->majorOSVersion = 6;
+      config->minorOSVersion = 2;
+    }
+  }
 
   // Handle /highentropyva
   config->highEntropyVA =

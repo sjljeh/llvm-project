@@ -666,10 +666,12 @@ class RangeExtensionThunkARM : public NonSectionCodeChunk {
 public:
   explicit RangeExtensionThunkARM(COFFLinkerContext &ctx, Defined *t)
       : target(t), ctx(ctx) {
-    setAlignment(2);
+    // link.exe word-aligns its ARM thunks.
+    setAlignment(4);
   }
   size_t getSize() const override;
   void writeTo(uint8_t *buf) const override;
+  void getBaserels(std::vector<Baserel> *res) override;
   MachineTypes getMachine() const override { return ARMNT; }
 
   Defined *target;

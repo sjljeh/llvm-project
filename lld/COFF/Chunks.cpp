@@ -623,11 +623,14 @@ void ImportThunkChunkRISCV::writeTo(uint8_t *buf) const {
   applyRISCVPCRelPair(buf, offset, "import thunk for " + impSymbol->getName());
 }
 
-// A Thumb2, PIC, non-interworking range extension thunk.
+// A Thumb-2 range extension thunk. This is the absolute form link.exe uses,
+// padded to a word as link.exe pads it; it needs an
+// IMAGE_REL_BASED_ARM_MOV32T base relocation.
 const uint8_t armThunk[] = {
-    0x40, 0xf2, 0x00, 0x0c, // P:  movw ip,:lower16:S - (P + (L1-P) + 4)
-    0xc0, 0xf2, 0x00, 0x0c, //     movt ip,:upper16:S - (P + (L1-P) + 4)
-    0xe7, 0x44,             // L1: add  pc, ip
+    0x40, 0xf2, 0x00, 0x0c, // movw ip, :lower16:S
+    0xc0, 0xf2, 0x00, 0x0c, // movt ip, :upper16:S
+    0x60, 0x47,             // bx   ip
+    0x00, 0x00,             // padding
 };
 
 size_t RangeExtensionThunkARM::getSize() const {
@@ -638,9 +641,12 @@ size_t RangeExtensionThunkARM::getSize() const {
 
 void RangeExtensionThunkARM::writeTo(uint8_t *buf) const {
   assert(ctx.config.machine == ARMNT);
-  uint64_t offset = target->getRVA() - rva - 12;
   memcpy(buf, armThunk, sizeof(armThunk));
-  applyMOV32T(buf, uint32_t(offset));
+  applyMOV32T(buf, uint32_t(getARMTargetRVA(target) + ctx.config.imageBase));
+}
+
+void RangeExtensionThunkARM::getBaserels(std::vector<Baserel> *res) {
+  res->emplace_back(rva, IMAGE_REL_BASED_ARM_MOV32T);
 }
 
 // A position independent ARM64 adrp+add thunk, with a maximum range of
@@ -737,14 +743,12 @@ void LocalImportChunk::writeTo(uint8_t *buf) const {
   if (ctx.config.is64()) {
     write64le(buf, sym->getRVA() + ctx.config.imageBase);
   } else {
-    uint32_t bit = 0;
-    // Pointer to thumb code must have the LSB set, so adjust it. Only code is
-    // adjusted: dllimport of a locally defined variable is valid, and the
-    // pointer to such a variable must stay unmodified.
-    if (ctx.config.machine == ARMNT && sym->getChunk() &&
-        (sym->getChunk()->getOutputCharacteristics() & IMAGE_SCN_MEM_EXECUTE))
-      bit = 1;
-    write32le(buf, (sym->getRVA() + ctx.config.imageBase) | bit);
+    // A pointer to Thumb code must have the LSB set. Only code is adjusted:
+    // dllimport of a locally defined variable is valid, and the pointer to such
+    // a variable must stay unmodified.
+    uint64_t rva = ctx.config.machine == ARMNT ? getARMTargetRVA(sym)
+                                                : sym->getRVA();
+    write32le(buf, rva + ctx.config.imageBase);
   }
 }
 

@@ -35,12 +35,12 @@
 # BASEREL-NEXT:     Address: 0x100C
 # BASEREL-NEXT:   }
 # BASEREL-NEXT:   Entry {
-# BASEREL-NEXT:     Type: ARM_MOV32(T)
-# BASEREL-NEXT:     Address: 0x1026
+# BASEREL-NEXT:     Type: HIGHLOW
+# BASEREL-NEXT:     Address: 0x1018
 # BASEREL-NEXT:   }
 # BASEREL-NEXT:   Entry {
-# BASEREL-NEXT:     Type: ABSOLUTE
-# BASEREL-NEXT:     Address: 0x1000
+# BASEREL-NEXT:     Type: ARM_MOV32(T)
+# BASEREL-NEXT:     Address: 0x102A
 # BASEREL-NEXT:   }
 # BASEREL-NEXT:   Entry {
 # BASEREL-NEXT:     Type: HIGHLOW
@@ -53,16 +53,20 @@
 # BASEREL-NEXT: ]
 #
 # DISASM:    00401000 <.text>:
+## As in link.exe, the delay-load thunk reaches the tail merge through a
+## literal holding its address.
 # DISASM:      40100c:       f243 0c10       movw r12, #12304
 # DISASM-NEXT:               f2c0 0c40       movt    r12, #64
-# DISASM-NEXT:               f000 b800       b.w     {{.+}} @ imm = #0
+# DISASM-NEXT:               f8df f000       ldr.w   pc, [pc, #0]
+# DISASM-NEXT:      401018:  101d
+# DISASM-NEXT:               0040
 # DISASM-NEXT:               e92d 480f       push.w  {r0, r1, r2, r3, r11, lr}
 # DISASM-NEXT:               f20d 0b10       addw    r11, sp, #16
 # DISASM-NEXT:               ed2d 0b10       vpush   {d0, d1, d2, d3, d4, d5, d6, d7}
 # DISASM-NEXT:               4661            mov     r1, r12
 # DISASM-NEXT:               f242 0004       movw r0, #8196
 # DISASM-NEXT:               f2c0 0040       movt    r0, #64
-# DISASM-NEXT:               f7ff ffe7       bl      0x401000 <.text>
+# DISASM-NEXT:               f7ff ffe5       bl      0x401000 <.text>
 # DISASM-NEXT:               4684            mov     r12, r0
 # DISASM-NEXT:               ecbd 0b10       vpop    {d0, d1, d2, d3, d4, d5, d6, d7}
 # DISASM-NEXT:               e8bd 480f       pop.w   {r0, r1, r2, r3, r11, lr}

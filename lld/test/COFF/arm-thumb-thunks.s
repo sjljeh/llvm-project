@@ -1,11 +1,14 @@
 // REQUIRES: arm
 // RUN: llvm-mc -filetype=obj -triple=thumbv7-windows %s -o %t.obj
 // RUN: lld-link -entry:main -subsystem:console %t.obj -out:%t.exe -map -verbose 2>&1 | FileCheck -check-prefix=VERBOSE %s
-// RUN: llvm-objdump --no-print-imm-hex -d %t.exe --start-address=0x401000 --stop-address=0x401022 | FileCheck --check-prefix=MAIN %s
-// RUN: llvm-objdump --no-print-imm-hex -d %t.exe --start-address=0x501022 --stop-address=0x501032 | FileCheck --check-prefix=FUNC1 %s
-// RUN: llvm-objdump --no-print-imm-hex -d %t.exe --start-address=0x601032 | FileCheck --check-prefix=FUNC2 %s
+// RUN: llvm-objdump --no-print-imm-hex -d %t.exe --start-address=0x401000 --stop-address=0x401026 | FileCheck --check-prefix=MAIN %s
+// RUN: llvm-objdump --no-print-imm-hex -d %t.exe --start-address=0x501028 --stop-address=0x50103a | FileCheck --check-prefix=FUNC1 %s
+// RUN: llvm-objdump --no-print-imm-hex -d %t.exe --start-address=0x60103c | FileCheck --check-prefix=FUNC2 %s
+// RUN: llvm-readobj --coff-basereloc %t.exe | FileCheck --check-prefix=BASEREL %s
 
-// VERBOSE: Added 3 thunks with margin {{.*}} in 1 passes
+// Like link.exe, thunks are only added for branches that are out of range
+// (more passes add more if needed) and are word aligned.
+// VERBOSE: Added 3 thunks with margin 0 in {{.*}} passes
 
     .syntax unified
     .globl main
@@ -48,28 +51,37 @@ func2:
 "??_C@string2":
     .asciz "bar"
 
-// MAIN:    401000:       f040 8005       bne.w   0x40100e <.text+0xe>
-// MAIN:    401004:       f040 8008       bne.w   0x401018 <.text+0x18>
-// MAIN:    401008:       f040 8001       bne.w   0x40100e <.text+0xe>
+// MAIN:    401000:       f040 8006       bne.w   0x401010 <.text+0x10>
+// MAIN:    401004:       f040 800a       bne.w   0x40101c <.text+0x1c>
+// MAIN:    401008:       f040 8002       bne.w   0x401010 <.text+0x10>
 // MAIN:    40100c:       4770            bx      lr
+// Like link.exe's, the thunks load the absolute address of the target, with
+// the Thumb bit set, and need base relocations.
 // func1 thunk
-// MAIN:    40100e:       f240 0c08       movw    r12, #8
-// MAIN:    401012:       f2c0 0c10       movt    r12, #16
-// MAIN:    401016:       44e7            add     pc,  r12
+// MAIN:    401010:       f241 0c29       movw    r12, #4137
+// MAIN:    401014:       f2c0 0c50       movt    r12, #80
+// MAIN:    401018:       4760            bx      r12
 // func2 thunk
-// MAIN:    401018:       f240 0c0e       movw    r12, #14
-// MAIN:    40101c:       f2c0 0c20       movt    r12, #32
-// MAIN:    401020:       44e7            add     pc,  r12
+// MAIN:    40101c:       f241 0c3d       movw    r12, #4157
+// MAIN:    401020:       f2c0 0c60       movt    r12, #96
+// MAIN:    401024:       4760            bx      r12
 
-// FUNC1:   501022:       f040 8001       bne.w   0x501028 <.text+0x100028>
-// FUNC1:   501026:       4770            bx      lr
+// FUNC1:   501028:       f040 8002       bne.w   0x501030 <.text+0x100030>
+// FUNC1:   50102c:       4770            bx      lr
 // func2 thunk
-// FUNC1:   501028:       f64f 7cfe       movw    r12, #65534
-// FUNC1:   50102c:       f2c0 0c0f       movt    r12, #15
-// FUNC1:   501030:       44e7            add     pc,  r12
+// FUNC1:   501030:       f241 0c3d       movw    r12, #4157
+// FUNC1:   501034:       f2c0 0c60       movt    r12, #96
+// FUNC1:   501038:       4760            bx      r12
 
-// FUNC2:   601032:       f242 0000       movw    r0, #8192
-// FUNC2:   601036:       f2c0 0060       movt    r0, #96
-// FUNC2:   60103a:       f242 0103       movw    r1, #8195
-// FUNC2:   60103e:       f2c0 0160       movt    r1, #96
-// FUNC2:   601042:       4770            bx      lr
+// FUNC2:   60103c:       f242 0000       movw    r0, #8192
+// FUNC2:   601040:       f2c0 0060       movt    r0, #96
+// FUNC2:   601044:       f242 0103       movw    r1, #8195
+// FUNC2:   601048:       f2c0 0160       movt    r1, #96
+// FUNC2:   60104c:       4770            bx      lr
+
+// BASEREL:      Type: ARM_MOV32(T)
+// BASEREL-NEXT: Address: 0x1010
+// BASEREL:      Type: ARM_MOV32(T)
+// BASEREL-NEXT: Address: 0x101C
+// BASEREL:      Type: ARM_MOV32(T)
+// BASEREL-NEXT: Address: 0x101030

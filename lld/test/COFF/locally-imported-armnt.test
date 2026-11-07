@@ -1,4 +1,6 @@
-## On ARMNT a locally imported function pointer must have its low bit set; a data pointer must not.
+## On ARMNT a locally imported pointer to Thumb code (a section marked
+## IMAGE_SCN_MEM_16BIT, as link.exe checks) must have its low bit set; a data
+## pointer must not.
 
 # RUN: split-file %s %t.dir
 
@@ -42,7 +44,7 @@ header:
   Characteristics: []
 sections:
   - Name:            .text
-    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_16BIT, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
     Alignment:       4
     SectionData:     704700BF00000000
     Relocations:
@@ -71,7 +73,7 @@ header:
   Characteristics: []
 sections:
   - Name:            .text
-    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_16BIT, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
     Alignment:       4
     SectionData:     704700BF00000000
     Relocations:
