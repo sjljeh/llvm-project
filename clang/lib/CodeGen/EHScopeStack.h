@@ -172,7 +172,7 @@ public:
         F_IsForEH = 0x1,
         F_IsNormalCleanupKind = 0x2,
         F_IsEHCleanupKind = 0x4,
-        F_HasExitSwitch = 0x8,
+        F_HasNormalCleanupDest = 0x8,
       };
       unsigned flags = 0;
 
@@ -192,8 +192,12 @@ public:
       bool isEHCleanupKind() const { return flags & F_IsEHCleanupKind; }
       void setIsEHCleanupKind() { flags |= F_IsEHCleanupKind; }
 
-      bool hasExitSwitch() const { return flags & F_HasExitSwitch; }
-      void setHasExitSwitch() { flags |= F_HasExitSwitch; }
+      /// The normal cleanup destination slot describes this exit, including
+      /// branches through an enclosing cleanup that do not need a switch.
+      bool hasNormalCleanupDest() const {
+        return flags & F_HasNormalCleanupDest;
+      }
+      void setHasNormalCleanupDest() { flags |= F_HasNormalCleanupDest; }
     };
 
     /// Emit the cleanup.  For normal cleanups, this is run in the

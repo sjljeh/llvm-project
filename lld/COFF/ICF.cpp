@@ -163,8 +163,12 @@ bool ICF::sectionsEqual(const SectionChunk *a, const SectionChunk *b) {
     if constexpr (constant)
       if (r1.Type != r2.Type || r1.VirtualAddress != r2.VirtualAddress)
         return false;
-    return eqSym(a->file->getSymbol(r1.SymbolTableIndex),
-                 b->file->getSymbol(r2.SymbolTableIndex));
+    Symbol *b1 = a->file->getSymbol(r1.SymbolTableIndex);
+    Symbol *b2 = b->file->getSymbol(r2.SymbolTableIndex);
+    // PAIR relocations carry an addend in the symbol index field.
+    if (!b1 || !b2)
+      return b1 == b2 && r1.SymbolTableIndex == r2.SymbolTableIndex;
+    return eqSym(b1, b2);
   };
   if (!llvm::equal(a->getRelocs(), b->getRelocs(), eqReloc))
     return false;

@@ -2543,6 +2543,9 @@ ResourceSectionRef::getContents(const coff_resource_data_entry &Entry) {
     case Triple::mipsel:
       RVAReloc = COFF::IMAGE_REL_MIPS_REFWORDNB;
       break;
+    case Triple::ppcle:
+      RVAReloc = COFF::IMAGE_REL_PPC_ADDR32NB;
+      break;
     default:
       return createStringError(object_error::parse_failed,
                                "unsupported architecture");

@@ -1502,13 +1502,13 @@ def DYNALLOC : PPCEmitTimePseudo<(outs gprc:$result), (ins gprc:$negsize, memri:
 def DYNAREAOFFSET : PPCEmitTimePseudo<(outs i32imm:$result), (ins memri:$fpsi), "#DYNAREAOFFSET",
                        [(set i32:$result, (PPCdynareaoffset iaddr:$fpsi))]>;
 
-let isCodeGenOnly = 1, hasSideEffects = 1, hasNoSchedulingInfo = 1 in
+let isCodeGenOnly = 1, hasSideEffects = 1, hasNoSchedulingInfo = 1, Size = 0 in
 def SEH_PrologEnd : PPCEmitTimePseudo<(outs), (ins), "#SEH_PrologEnd", []>;
 
 def PPCLocalRecover : SDNode<"ISD::LOCAL_RECOVER",
                              SDTypeProfile<1, 1, [SDTCisSameAs<0, 1>,
                                                   SDTCisInt<1>]>>;
-let isCodeGenOnly = 1, hasSideEffects = 0, hasNoSchedulingInfo = 1 in
+let isCodeGenOnly = 1, hasSideEffects = 0, hasNoSchedulingInfo = 1, Size = 8 in
 def SEH_RecoverFrameOffset : PPCEmitTimePseudo<
     (outs gprc:$dst), (ins i32imm:$offset), "#SEH_RecoverFrameOffset",
     [(set i32:$dst, (PPCLocalRecover mcsym:$offset))]>;
@@ -1518,7 +1518,7 @@ let isTerminator = 1, hasSideEffects = 1, isBarrier = 1, hasCtrlDep = 1,
     hasNoSchedulingInfo = 1, Uses = [LR, RM] in {
   def CLEANUPRET : PPCEmitTimePseudo<(outs), (ins), "#CLEANUPRET",
                                      [(cleanupret bb)]>;
-  let Defs = [R3] in
+  let Defs = [R3], Size = 12 in
   def CATCHRET : PPCEmitTimePseudo<
       (outs), (ins directbrtarget:$dst, directbrtarget:$from), "#CATCHRET $dst",
       [(catchret bb:$dst, bb:$from)]>;
@@ -3451,6 +3451,9 @@ def : Pat<(PPCcall_nop (i32 mcsym:$dst)),
 def : Pat<(PPCcall_nop (i32 texternalsym:$dst)),
           (BL_NOP texternalsym:$dst)>;
 
+def : Pat<(PPCcall_nop (i32 tglobaladdr:$dst)),
+          (BL_NOP tglobaladdr:$dst)>;
+
 let Predicates = [IsAIX] in {
   def : Pat<(PPCbl_load_toc (i32 texternalsym:$dst)),
             (BL_LWZinto_toc texternalsym:$dst)>;
@@ -3467,6 +3470,9 @@ def : Pat<(PPCcall_nop_rm (i32 mcsym:$dst)),
 
 def : Pat<(PPCcall_nop_rm (i32 texternalsym:$dst)),
           (BL_NOP_RM texternalsym:$dst)>;
+
+def : Pat<(PPCcall_nop_rm (i32 tglobaladdr:$dst)),
+          (BL_NOP_RM tglobaladdr:$dst)>;
 
 
 def : Pat<(PPCtc_return (i32 tglobaladdr:$dst),  imm:$imm),
@@ -3503,6 +3509,14 @@ def : Pat<(add i32:$in, (PPChi tjumptable:$g, 0)),
           (ADDIS $in, tjumptable:$g)>;
 def : Pat<(add i32:$in, (PPChi tblockaddress:$g, 0)),
           (ADDIS $in, tblockaddress:$g)>;
+
+// Windows NT PowerPC addresses __imp_ IAT slots and _tls_index by name.
+def : Pat<(PPChi texternalsym:$in, 0), (LIS texternalsym:$in)>;
+def : Pat<(PPClo texternalsym:$in, 0), (LI texternalsym:$in)>;
+def : Pat<(add i32:$in, (PPChi texternalsym:$g, 0)),
+          (ADDIS $in, texternalsym:$g)>;
+def : Pat<(add i32:$in, (PPClo texternalsym:$g, 0)),
+          (ADDI $in, texternalsym:$g)>;
 
 // Support for thread-local storage.
 def PPC32GOT: PPCEmitTimePseudo<(outs gprc:$rD), (ins), "#PPC32GOT",

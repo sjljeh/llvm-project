@@ -1515,6 +1515,8 @@ PPCTargetLowering::PPCTargetLowering(const PPCTargetMachine &TM,
   setMinFunctionAlignment(Align(4));
   setMinCmpXchgSizeInBits(Subtarget.hasPartwordAtomics() ? 8 : 32);
 
+  setMaxDivRemBitWidthSupported(Subtarget.isPPC64() ? 128 : 64);
+
   auto CPUDirective = Subtarget.getCPUDirective();
   switch (CPUDirective) {
   default: break;
@@ -2727,7 +2729,8 @@ bool PPCTargetLowering::SelectAddressRegImm(
       assert(Disp.getOpcode() == ISD::TargetGlobalAddress ||
              Disp.getOpcode() == ISD::TargetGlobalTLSAddress ||
              Disp.getOpcode() == ISD::TargetConstantPool ||
-             Disp.getOpcode() == ISD::TargetJumpTable);
+             Disp.getOpcode() == ISD::TargetJumpTable ||
+             Disp.getOpcode() == ISD::TargetExternalSymbol);
       Base = N.getOperand(0);
       return true;  // [&g+r]
     }
@@ -3253,7 +3256,37 @@ SDValue PPCTargetLowering::LowerGlobalTLSAddress(SDValue Op,
   if (Subtarget.isAIXABI())
     return LowerGlobalTLSAddressAIX(Op, DAG);
 
+  if (Subtarget.isWin32ABI())
+    return LowerGlobalTLSAddressWindows(Op, DAG);
+
   return LowerGlobalTLSAddressLinux(Op, DAG);
+}
+
+SDValue PPCTargetLowering::LowerGlobalTLSAddressWindows(SDValue Op, SelectionDAG &DAG) const {
+  // Windows NT keeps the TEB in r13. TEB->ThreadLocalStoragePointer at offset
+  // 0x2C holds the per-image TLS blocks, indexed by the loader-assigned
+  // _tls_index. The variable lives at its .tls section offset in that block.
+  GlobalAddressSDNode *GA = cast<GlobalAddressSDNode>(Op);
+  const GlobalValue *GV = GA->getGlobal();
+  SDLoc DL(GA);
+  EVT PtrVT = getPointerTy(DAG.getDataLayout());
+  SDValue Chain = DAG.getEntryNode();
+
+  SDValue TEB = DAG.getRegister(PPC::R13, PtrVT);
+  SDValue TLSArrayAddr = DAG.getNode(ISD::ADD, DL, PtrVT, TEB, DAG.getConstant(0x2C, DL, PtrVT));
+  SDValue TLSArray = DAG.getLoad(PtrVT, DL, Chain, TLSArrayAddr, MachinePointerInfo());
+
+  SDValue IndexHi = DAG.getTargetExternalSymbol("_tls_index", PtrVT, PPCII::MO_HA);
+  SDValue IndexLo = DAG.getTargetExternalSymbol("_tls_index", PtrVT, PPCII::MO_LO);
+  SDValue IndexAddr = LowerLabelRef(IndexHi, IndexLo, false, DAG);
+  SDValue Index = DAG.getLoad(MVT::i32, DL, Chain, IndexAddr, MachinePointerInfo());
+  SDValue Slot = DAG.getNode(ISD::SHL, DL, PtrVT, Index, DAG.getConstant(2, DL, PtrVT));
+  SDValue TLSBlock = DAG.getLoad(PtrVT, DL, Chain, DAG.getNode(ISD::ADD, DL, PtrVT, TLSArray, Slot), MachinePointerInfo());
+
+  SDValue OffsetHi = DAG.getTargetGlobalAddress(GV, DL, PtrVT, GA->getOffset(), PPCII::MO_SECREL_HA);
+  SDValue OffsetLo = DAG.getTargetGlobalAddress(GV, DL, PtrVT, GA->getOffset(), PPCII::MO_SECREL_LO);
+  SDValue Offset = LowerLabelRef(OffsetHi, OffsetLo, false, DAG);
+  return DAG.getNode(ISD::ADD, DL, PtrVT, TLSBlock, Offset);
 }
 
 /// updateForAIXShLibTLSModelOpt - Helper to initialize TLS model opt settings,
@@ -3602,6 +3635,21 @@ SDValue PPCTargetLowering::LowerGlobalAddress(SDValue Op,
     setUsesTOCBasePtr(DAG);
     SDValue GA = DAG.getTargetGlobalAddress(GV, DL, PtrVT, GSDN->getOffset());
     return getTOCEntry(DAG, DL, GA);
+  }
+
+  // A dllimport reference loads the address from the __imp_ IAT slot. For a
+  // function that address is the descriptor exported by the other image.
+  if (Subtarget.isWin32ABI() && GV->hasDLLImportStorageClass()) {
+    SmallString<128> Name("__imp_");
+    Name += getTargetMachine().getSymbol(GV)->getName();
+    const char *ImpName = DAG.getMachineFunction().createExternalSymbolName(Name);
+    SDValue ImpHi = DAG.getTargetExternalSymbol(ImpName, PtrVT, PPCII::MO_HA);
+    SDValue ImpLo = DAG.getTargetExternalSymbol(ImpName, PtrVT, PPCII::MO_LO);
+    SDValue ImpAddr = LowerLabelRef(ImpHi, ImpLo, false, DAG);
+    SDValue Addr = DAG.getLoad(PtrVT, DL, DAG.getEntryNode(), ImpAddr, MachinePointerInfo::getGOT(DAG.getMachineFunction()));
+    if (GSDN->getOffset())
+      Addr = DAG.getNode(ISD::ADD, DL, PtrVT, Addr, DAG.getConstant(GSDN->getOffset(), DL, PtrVT));
+    return Addr;
   }
 
   unsigned MOHiFlag, MOLoFlag;
@@ -5133,6 +5181,11 @@ bool PPCTargetLowering::IsEligibleForTailCallOptimization(
   if (isVarArg)
     return false;
 
+  // A Windows callee outside this module may be import glue, which needs the
+  // caller's TOC restore after the call.
+  if (Subtarget.isWin32ABI() && (!CalleeGV || CalleeGV->isDeclarationForLinker()))
+    return false;
+
   if (CalleeCC == CallingConv::Fast && CallerCC == CalleeCC) {
     // Functions containing by val parameters are not supported.
     if (any_of(Ins, [](const ISD::InputArg &IA) { return IA.Flags.isByVal(); }))
@@ -5474,6 +5527,13 @@ static unsigned getCallOpcode(PPCTargetLowering::CallFlags CFlags,
     const GlobalValue *GV = G ? G->getGlobal() : nullptr;
     RetOpc =
         callsShareTOCBase(&Caller, GV, TM) ? PPCISD::CALL : PPCISD::CALL_NOP;
+  } else if (Subtarget.isWin32ABI()) {
+    // A callee that is not defined in this module may resolve to import glue
+    // that switches to the TOC of another image. The call is followed by an
+    // IFGLUE nop that the linker turns into the TOC restore in that case.
+    auto *G = dyn_cast<GlobalAddressSDNode>(Callee);
+    const GlobalValue *GV = G ? G->getGlobal() : nullptr;
+    RetOpc = GV && !GV->isDeclarationForLinker() ? PPCISD::CALL : PPCISD::CALL_NOP;
   } else
     RetOpc = PPCISD::CALL;
   if (IsStrictFPCall) {
@@ -5979,6 +6039,12 @@ PPCTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
   if (Subtarget.useLongCalls() && isa<GlobalAddressSDNode>(Callee) &&
       !isTailCall)
     Callee = LowerGlobalAddress(Callee, DAG);
+
+  // Windows dllimport calls go through the imported function descriptor.
+  if (Subtarget.isWin32ABI() && !isTailCall)
+    if (auto *G = dyn_cast<GlobalAddressSDNode>(Callee))
+      if (G->getGlobal()->hasDLLImportStorageClass())
+        Callee = LowerGlobalAddress(Callee, DAG);
 
   CallFlags CFlags(
       CallConv, isTailCall, isVarArg, isPatchPoint,
@@ -21091,7 +21157,8 @@ PPC::AddrMode PPCTargetLowering::SelectOptimalAddrMode(const SDNode *Parent,
       assert(Disp.getOpcode() == ISD::TargetGlobalAddress ||
              Disp.getOpcode() == ISD::TargetGlobalTLSAddress ||
              Disp.getOpcode() == ISD::TargetConstantPool ||
-             Disp.getOpcode() == ISD::TargetJumpTable);
+             Disp.getOpcode() == ISD::TargetJumpTable ||
+             Disp.getOpcode() == ISD::TargetExternalSymbol);
       Base = N.getOperand(0);
       break;
     }

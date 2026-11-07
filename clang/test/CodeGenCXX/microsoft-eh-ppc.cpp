@@ -30,12 +30,14 @@ void g() {
 // IR-SAME: personality ptr @__CxxFrameHandler
 // IR: declare dso_local i32 @__CxxFrameHandler(...)
 
-// The parent saves its TOC where the VC4 runtime expects it. The catch funclet
-// receives the parent's incoming SP in r2, derives the parent frame pointer,
-// restores the real TOC, and returns the continuation address in r3.
+// The parent leaves the TOC word of its caller's frame header to import glue
+// and saves LR at 8(entry SP). The catch funclet receives the parent's incoming
+// SP in r2, derives the parent frame pointer, materializes its image's TOC, and
+// returns the continuation address in r3.
 // ASM: .seh_handler __CxxFrameHandler, @unwind, @except
-// ASM: stw 2, 8(1)
+// ASM-NOT: stw 2,
 // ASM: stwu 1, -64(1)
+// ASM: stw 0, 72(1)
 // ASM: .seh_endprologue
 // ASM: "$cppxdata$?g@@YAXXZ":
 // ASM-NEXT: .long 429065504{{.*}}# MagicNumber
@@ -50,7 +52,8 @@ void g() {
 // ASM-NOT: .seh_handler
 // ASM: stwu 1, -64(1)
 // ASM: addi 31, 2, -64
-// ASM-NEXT: lwz 2, 8(2)
+// ASM-NEXT: lis 2, .toc@ha
+// ASM-NEXT: addi 2, 2, .toc@l
 // ASM-NEXT: .seh_endprologue
 // ASM: lwz 3, 60(31)
 // ASM: lis 3, .LBB0_1@ha
@@ -86,13 +89,13 @@ void g() {
 // OBJ: 0x00000040 00000000 00000000 fcffffff 00000000
 // OBJ: Hex dump of section '.pdata':
 // OBJ-NEXT: 0x00000000 00000000 3c000000 00000000 00000000
-// OBJ-NEXT: 0x00000010 18000000 3c000000 78000000 00000000
-// OBJ-NEXT: 0x00000020 00000000 54000000
+// OBJ-NEXT: 0x00000010 14000000 3c000000 80000000 00000000
+// OBJ-NEXT: 0x00000020 00000000 58000000
 
 // ROUNDTRIP: Section {{.*}} .pdata {
 // ROUNDTRIP: 0x8 IMAGE_REL_PPC_ADDR32 __CxxFrameHandler
 // ROUNDTRIP-NEXT: 0xC IMAGE_REL_PPC_ADDR32 .xdata
 // ROUNDTRIP: Hex dump of section '.pdata':
 // ROUNDTRIP-NEXT: 0x00000000 00000000 3c000000 00000000 00000000
-// ROUNDTRIP-NEXT: 0x00000010 18000000 3c000000 78000000 00000000
-// ROUNDTRIP-NEXT: 0x00000020 00000000 54000000
+// ROUNDTRIP-NEXT: 0x00000010 14000000 3c000000 80000000 00000000
+// ROUNDTRIP-NEXT: 0x00000020 00000000 58000000

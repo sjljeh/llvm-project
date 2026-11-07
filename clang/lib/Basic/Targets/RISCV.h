@@ -242,6 +242,8 @@ public:
   BuiltinVaListKind getBuiltinVaListKind() const override {
     return TargetInfo::CharPtrBuiltinVaList;
   }
+
+  CallingConvCheckResult checkCallingConvention(CallingConv CC) const override;
 };
 
 class LLVM_LIBRARY_VISIBILITY WindowsRISCV64TargetInfo
@@ -255,6 +257,8 @@ public:
   BuiltinVaListKind getBuiltinVaListKind() const override {
     return TargetInfo::CharPtrBuiltinVaList;
   }
+
+  CallingConvCheckResult checkCallingConvention(CallingConv CC) const override;
 };
 } // namespace targets
 } // namespace clang

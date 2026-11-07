@@ -43,6 +43,12 @@ MIPS-SAME: -machine:mips
 MIPS-SAME: -alternatename:__image_base__=__ImageBase
 MIPS-SAME: foo.o
 
+RUN: ld.lld -### foo.o -m ppcpe 2>&1 | FileCheck -check-prefix=PPC %s
+PPC:      -out:a.exe
+PPC-SAME: -machine:ppc
+PPC-SAME: -alternatename:__image_base__=__ImageBase
+PPC-SAME: foo.o
+
 RUN: ld.lld -### foo.o -m i386pep -shared 2>&1 | FileCheck -check-prefix=SHARED %s
 RUN: ld.lld -### foo.o -m i386pep --shared 2>&1 | FileCheck -check-prefix=SHARED %s
 RUN: ld.lld -### foo.o -m i386pep --dll 2>&1 | FileCheck -check-prefix=SHARED %s

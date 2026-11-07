@@ -1232,13 +1232,15 @@ static bool isSignedCharDefault(const llvm::Triple &Triple) {
       return true;
     return false;
 
+  case llvm::Triple::ppcle:
+  case llvm::Triple::riscv32:
+  case llvm::Triple::riscv64:
+    return Triple.isOSWindows();
+
   case llvm::Triple::csky:
   case llvm::Triple::hexagon:
   case llvm::Triple::msp430:
-  case llvm::Triple::ppcle:
   case llvm::Triple::ppc64le:
-  case llvm::Triple::riscv32:
-  case llvm::Triple::riscv64:
   case llvm::Triple::riscv32be:
   case llvm::Triple::riscv64be:
   case llvm::Triple::systemz:
@@ -3877,6 +3879,19 @@ static void RenderSSPOptions(const Driver &D, const ToolChain &TC,
 static void RenderSCPOptions(const ToolChain &TC, const ArgList &Args,
                              ArgStringList &CmdArgs) {
   const llvm::Triple &EffectiveTriple = TC.getEffectiveTriple();
+
+  if (EffectiveTriple.isOSWindows() &&
+      (EffectiveTriple.getArch() == llvm::Triple::riscv64 || EffectiveTriple.getArch() == llvm::Triple::ppcle)) {
+    // Windows guard pages require every page of a growing stack to be touched.
+    // RISC-V and PowerPC use inline probes instead of a __chkstk helper.
+    bool Enable = Args.hasFlag(options::OPT_fstack_clash_protection,
+                               options::OPT_fno_stack_clash_protection, true);
+    Enable &= Args.hasFlag(options::OPT_mstack_arg_probe,
+                           options::OPT_mno_stack_arg_probe, true);
+    if (Enable)
+      CmdArgs.push_back("-fstack-clash-protection");
+    return;
+  }
 
   if (!EffectiveTriple.isOSFreeBSD() && !EffectiveTriple.isOSLinux() &&
       !EffectiveTriple.isOSFuchsia())

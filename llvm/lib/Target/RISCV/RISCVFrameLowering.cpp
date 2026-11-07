@@ -514,6 +514,13 @@ bool RISCVFrameLowering::hasFPImpl(const MachineFunction &MF) const {
       MFI.isFrameAddressTaken())
     return true;
 
+  // RVUW cannot express an SP offset that scales with VLENB. Keep the CFA on
+  // the frame pointer in any function that may get RVV stack objects; vector
+  // registers are caller-saved, so the unwinder needs no vector state.
+  if (needsRVUW(MF) &&
+      MF.getInfo<RISCVMachineFunctionInfo>()->usesVectorRegisters())
+    return true;
+
   // With large callframes around we may need to use FP to access the scavenging
   // emergency spillslot.
   //
@@ -1121,12 +1128,11 @@ void RISCVFrameLowering::emitPrologue(MachineFunction &MF,
 
   if (NeedsRVUW) {
     MF.setHasWinCFI(true);
-    if (MF.hasEHFunclets() &&
-        (RI->hasStackRealignment(MF) || !hasReservedCallFrame(MF)))
-      report_fatal_error("RISC-V64 SEH funclets require a fixed, aligned frame");
+    if (MF.hasEHFunclets() && RI->hasStackRealignment(MF))
+      report_fatal_error("RISC-V64 SEH funclets require an aligned frame");
     if (STI.enableLinkerRelax())
       MF.getFunction().getContext().diagnose(DiagnosticInfoUnsupported{ MF.getFunction(), "RISC-V64 RVUW version 1 requires linker relaxation to be " "disabled"});
-    else if (RVVStackSize || !RVVCSI.empty())
+    else if (!RVVCSI.empty() || (RVVStackSize && !hasFP(MF)))
       MF.getFunction().getContext().diagnose(DiagnosticInfoUnsupported{ MF.getFunction(), "RISC-V64 RVUW version 1 does not support vector frame state"});
     else if (RVFI->useQCIInterrupt(MF))
       MF.getFunction().getContext().diagnose(DiagnosticInfoUnsupported{ MF.getFunction(), "RISC-V64 RVUW does not support QCI interrupt frames"});
@@ -1303,7 +1309,7 @@ void RISCVFrameLowering::emitPrologue(MachineFunction &MF,
                   MachineInstr::FrameSetup);
   }
 
-  if (RVVStackSize) {
+  if (RVVStackSize && !IsFunclet) {
     if (NeedProbe) {
       allocateAndProbeStackForRVV(MF, MBB, MBBI, DL, RVVStackSize,
                                   MachineInstr::FrameSetup,
@@ -1464,9 +1470,14 @@ void RISCVFrameLowering::emitEpilogue(MachineFunction &MF,
   uint64_t FPOffset = RealStackSize - RVFI->getVarArgsSaveSize();
   uint64_t RVVStackSize = RVFI->getRVVStackSize();
 
-  bool RestoreSPFromFP = RI->hasStackRealignment(MF) ||
-                         MFI.hasVarSizedObjects() || !hasReservedCallFrame(MF);
-  if (RVVStackSize) {
+  MachineBasicBlock::iterator TermI = MBB.getFirstTerminator();
+  bool IsFuncletReturn =
+      TermI != MBB.end() && (TermI->getOpcode() == RISCV::CATCHRET ||
+                             TermI->getOpcode() == RISCV::CLEANUPRET);
+  bool RestoreSPFromFP = !IsFuncletReturn &&
+                         (RI->hasStackRealignment(MF) ||
+                          MFI.hasVarSizedObjects() || !hasReservedCallFrame(MF));
+  if (RVVStackSize && !IsFuncletReturn) {
     // If RestoreSPFromFP the stack pointer will be restored using the frame
     // pointer value.
     if (!RestoreSPFromFP)
@@ -1840,16 +1851,22 @@ RISCVFrameLowering::getFrameIndexReference(const MachineFunction &MF, int FI,
 
   if (MF.hasEHFunclets()) {
     // Parent locals are shared by all funclets. Register-allocation spill
-    // slots belong to the currently executing frame instead. In particular,
-    // never choose an SP-relative compressed access for an escaped local.
-    assert(!RI->hasStackRealignment(MF) && hasReservedCallFrame(MF) &&
-           "unsupported variable SEH frame");
-    if (MFI.isSpillSlotObjectIndex(FI)) {
+    // slots belong to the currently executing frame instead, unless SP moves
+    // in the body (variable-sized objects or RVV stack): then every frame
+    // that runs this code reaches them through the parent frame in s0, as on
+    // AArch64 and x86-64, and funclets allocate no RVV area of their own. In
+    // particular, never choose an SP-relative compressed access for an
+    // escaped local.
+    assert(!RI->hasStackRealignment(MF) && "unsupported realigned SEH frame");
+    if (MFI.isSpillSlotObjectIndex(FI) && hasReservedCallFrame(MF)) {
       FrameReg = SPReg;
       return Offset + StackOffset::getFixed(getStackSizeWithRVVPadding(MF));
     }
     FrameReg = FPReg;
-    return Offset + StackOffset::getFixed(RVFI->getVarArgsSaveSize());
+    Offset += StackOffset::getFixed(RVFI->getVarArgsSaveSize());
+    if (StackID == TargetStackID::ScalableVector)
+      Offset -= StackOffset::getFixed(getStackSizeWithRVVPadding(MF));
+    return Offset;
   }
 
   if (RI->hasStackRealignment(MF) && !MFI.isFixedObjectIndex(FI)) {
@@ -2400,7 +2417,8 @@ bool RISCVFrameLowering::hasReservedCallFrame(const MachineFunction &MF) const {
   // an otherwise scalar funclet merely because its subtarget enables V.
   if (MF.hasEHFunclets() &&
       MF.getSubtarget<RISCVSubtarget>().getTargetTriple().isOSWindows())
-    return !MF.getFrameInfo().hasVarSizedObjects();
+    return !MF.getFrameInfo().hasVarSizedObjects() &&
+           !MF.getInfo<RISCVMachineFunctionInfo>()->usesVectorRegisters();
 
   return !MF.getFrameInfo().hasVarSizedObjects() &&
          !(hasFP(MF) && hasRVVFrameObject(MF));
@@ -2746,9 +2764,13 @@ bool RISCVFrameLowering::spillCalleeSavedRegisters(
       // Insert the spill to the stack frame.
       MCRegister Reg = CS.getReg();
       const TargetRegisterClass *RC = TRI->getMinimalPhysRegClass(Reg);
-      TII.storeRegToStackSlot(MBB, MI, Reg, !MBB.isLiveIn(Reg),
-                              CS.getFrameIdx(), RC, Register(),
-                              MachineInstr::FrameSetup);
+      bool IsKill = !MBB.isLiveIn(Reg);
+      // PEI marks callee-saved registers live only from the function's save
+      // point; a funclet entry saves the values its caller passed in.
+      if (IsKill && MBB.isEHFuncletEntry() && !MF->getRegInfo().isReserved(Reg))
+        MBB.addLiveIn(Reg);
+      TII.storeRegToStackSlot(MBB, MI, Reg, IsKill, CS.getFrameIdx(), RC,
+                              Register(), MachineInstr::FrameSetup);
     }
   };
   storeRegsToStackSlots(UnmanagedCSI);

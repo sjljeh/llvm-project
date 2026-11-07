@@ -74,6 +74,7 @@ bool isARMThumbTarget(Defined *sym);
 uint64_t getARMTargetRVA(Defined *sym);
 
 void writePPC32(uint8_t *off, uint32_t v, bool isLE);
+void applyPPCImm16(uint8_t *off, uint16_t v, bool isLE);
 
 void applyArm64Addr(uint8_t *off, uint64_t s, uint64_t p, int shift);
 void applyArm64Imm(uint8_t *off, uint64_t imm, uint32_t rangeLimit);

@@ -433,6 +433,8 @@ bool link(ArrayRef<const char *> argsArr, llvm::raw_ostream &stdoutOS,
       add("-machine:riscv32");
     else if (s == "riscv64pe")
       add("-machine:riscv64");
+    else if (s == "ppcpe")
+      add("-machine:ppc");
     else
       error("unknown parameter: -m" + s);
   }

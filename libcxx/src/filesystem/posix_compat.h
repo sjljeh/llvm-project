@@ -239,8 +239,7 @@ inline int remove(const wchar_t* path) {
   detail::WinHandle h(path, DELETE, FILE_FLAG_OPEN_REPARSE_POINT);
   if (!h)
     return -1;
-  FILE_DISPOSITION_INFO info;
-  info.DeleteFile = TRUE;
+  FILE_DISPOSITION_INFO info = {TRUE};
   if (!SetFileInformationByHandle(h, FileDispositionInfo, &info, sizeof(info)))
     return -1;
   return 0;

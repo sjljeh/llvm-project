@@ -45,7 +45,7 @@
 # CODE-NEXT: 1400010a0: addi a0, a0, -156
 # CODE-NEXT: 1400010a4: auipc ra, 0
 # CODE-NEXT: 1400010a8: jalr ra, -144(ra)
-# CODE-NEXT: 1400010ac: addi t0, a0, 0
+# CODE-NEXT: 1400010ac: addi t1, a0, 0
 # CODE-NEXT: 1400010b0: ld a0, 0(sp)
 # CODE-NEXT: 1400010b4: ld a1, 8(sp)
 # CODE-NEXT: 1400010b8: ld a2, 16(sp)
@@ -64,7 +64,7 @@
 # CODE-NEXT: 1400010ec: fld fa7, 128(sp)
 # CODE-NEXT: 1400010f0: ld ra, 64(sp)
 # CODE-NEXT: 1400010f4: addi sp, sp, 144
-# CODE-NEXT: 1400010f8: jalr zero, 0(t0)
+# CODE-NEXT: 1400010f8: jalr zero, 0(t1)
 # TABLES: DelayImport {
 # TABLES: Name: lib.dll
 # TABLES: Symbol: func (0)

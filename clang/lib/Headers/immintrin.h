@@ -147,7 +147,7 @@ _rdpid_u32(void) {
 /// \param __p
 ///    A pointer to a 16-bit memory location to place the random value.
 /// \returns 1 if the value was successfully generated, 0 otherwise.
-#if defined(_MSC_VER) && __has_builtin(_rdrand16_step)
+#if defined(_WIN32) && __has_builtin(_rdrand16_step)
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -172,7 +172,7 @@ _rdrand16_step(unsigned short *__p)
 /// \param __p
 ///    A pointer to a 32-bit memory location to place the random value.
 /// \returns 1 if the value was successfully generated, 0 otherwise.
-#if defined(_MSC_VER) && __has_builtin(_rdrand32_step)
+#if defined(_WIN32) && __has_builtin(_rdrand32_step)
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -197,7 +197,7 @@ _rdrand32_step(unsigned int *__p)
 /// \param __p
 ///    A pointer to a 64-bit memory location to place the random value.
 /// \returns 1 if the value was successfully generated, 0 otherwise.
-#if defined(_MSC_VER) && defined(__x86_64__) && \
+#if defined(_WIN32) && defined(__x86_64__) && \
     __has_builtin(_rdrand64_step)
 #ifdef __cplusplus
 extern "C" {

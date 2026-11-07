@@ -360,7 +360,7 @@ static const uint8_t tailMergeRISCV64[] = {
     0x13, 0x05, 0x05, 0x00, // addi a0, a0, 0
     0x97, 0x00, 0x00, 0x00, // auipc ra, 0    __delayLoadHelper2
     0xe7, 0x80, 0x00, 0x00, // jalr ra
-    0x93, 0x02, 0x05, 0x00, // mv   t0, a0
+    0x13, 0x03, 0x05, 0x00, // mv   t1, a0
     0x03, 0x35, 0x01, 0x00, // ld   a0, 0(sp)
     0x83, 0x35, 0x81, 0x00, // ld   a1, 8(sp)
     0x03, 0x36, 0x01, 0x01, // ld   a2, 16(sp)
@@ -379,7 +379,7 @@ static const uint8_t tailMergeRISCV64[] = {
     0x87, 0x38, 0x01, 0x08, // fld  fa7, 128(sp)
     0x83, 0x30, 0x01, 0x04, // ld   ra, 64(sp)
     0x13, 0x01, 0x01, 0x09, // addi sp, sp, 144
-    0x67, 0x80, 0x02, 0x00, // jr   t0
+    0x67, 0x00, 0x03, 0x00, // jr   t1
 };
 
 static const uint8_t tailMergeARM64[] = {
@@ -413,6 +413,21 @@ static const uint8_t tailMergeARM64[] = {
     0xfd, 0x7b, 0xce, 0xa8, // ldp     x29, x30, [sp], #224
     0x00, 0x02, 0x1f, 0xd6, // br      x16
 };
+
+// See
+// https://learn.microsoft.com/en-us/cpp/build/arm64-exception-handling#xdata-records
+static const uint8_t tailMergeUnwindInfoARM64[] = {
+    0x1d, 0x00, 0x40, 0x30, // FunctionLength=29, EpilogCount=1, CodeWords=6
+    0x12, 0x00, 0x00, 0x03, // Epilog at instruction 18, codes at index 12
+    0xe3, 0xe3, 0xe3, 0xe3, // nop x4 (stp q6..q0)
+    0xe3, 0xe3, 0xe3, 0xe3, // nop x4 (str x8, stp x6..x2)
+    0xe3, 0xe1, 0x9b, 0xe4, // nop (stp x0, x1), set_fp, save_fplr_x #224, end
+    0xe3, 0xe3, 0xe3, 0xe3, // nop x4 (ldp q6..q0)
+    0xe3, 0xe3, 0xe3, 0xe3, // nop x4 (ldr x8, ldp x6..x2)
+    0xe3, 0x9b, 0xe4, 0xe3, // nop (ldp x0, x1), save_fplr_x #224, end, padding
+};
+static_assert(sizeof(tailMergeARM64) == 29 * 4,
+              "tailMergeUnwindInfoARM64 describes 29 instructions");
 
 // A chunk for the delay import thunk.
 class ThunkChunkX64 : public NonSectionCodeChunk {
@@ -693,9 +708,9 @@ public:
 
 // Packed unwind data for the short form of TailMergeChunkARM64, as written
 // by link.exe: a 108-byte function with a 224-byte frame record (CR=3).
-class TailMergePDataChunkARM64 : public NonSectionChunk {
+class TailMergePackedPDataChunkARM64 : public NonSectionChunk {
 public:
-  TailMergePDataChunkARM64(Chunk *tm) : tm(tm) { setAlignment(4); }
+  TailMergePackedPDataChunkARM64(Chunk *tm) : tm(tm) { setAlignment(4); }
   size_t getSize() const override { return 2 * sizeof(uint32_t); }
   MachineTypes getMachine() const override { return ARM64; }
 
@@ -706,6 +721,38 @@ public:
   }
 
   Chunk *tm;
+};
+
+class TailMergePDataChunkARM64 : public NonSectionChunk {
+public:
+  TailMergePDataChunkARM64(Chunk *tm, Chunk *unwind) : tm(tm), unwind(unwind) {
+    // See
+    // https://learn.microsoft.com/en-us/cpp/build/arm64-exception-handling#pdata-records
+    setAlignment(4);
+  }
+
+  size_t getSize() const override { return 2 * sizeof(uint32_t); }
+  MachineTypes getMachine() const override { return ARM64; }
+
+  void writeTo(uint8_t *buf) const override {
+    write32le(buf + 0, tm->getRVA());     // TailMergeChunk start RVA
+    write32le(buf + 4, unwind->getRVA()); // UnwindInfo RVA
+  }
+
+  Chunk *tm = nullptr;
+  Chunk *unwind = nullptr;
+};
+
+class TailMergeUnwindInfoARM64 : public NonSectionChunk {
+public:
+  TailMergeUnwindInfoARM64() { setAlignment(4); }
+
+  size_t getSize() const override { return sizeof(tailMergeUnwindInfoARM64); }
+  MachineTypes getMachine() const override { return ARM64; }
+
+  void writeTo(uint8_t *buf) const override {
+    memcpy(buf, tailMergeUnwindInfoARM64, sizeof(tailMergeUnwindInfoARM64));
+  }
 };
 
 class ThunkChunkRISCV64 : public NonSectionCodeChunk {
@@ -724,6 +771,128 @@ public:
 
   Defined *imp = nullptr;
   Chunk *tailMerge = nullptr;
+};
+
+// Windows NT PowerPC IAT slots hold function descriptors, so each delay-load
+// thunk starts with its own {code, TOC} descriptor. The code loads the IAT
+// slot address into r12 and branches to the shared tail merge.
+static void writePPCHaLo(uint8_t *buf, uint32_t va) {
+  write16le(buf, (va + 0x8000) >> 16);
+  write16le(buf + 4, va & 0xffff);
+}
+
+static void addPPCHaLoBaserels(std::vector<Baserel> *res, uint32_t rva, uint32_t va) {
+  res->emplace_back(rva, IMAGE_REL_BASED_HIGHADJ, va & 0xffff);
+  res->emplace_back(rva + 4, IMAGE_REL_BASED_LOW);
+}
+
+static uint32_t getPPCTocVA(COFFLinkerContext &ctx) {
+  if (auto *d = dyn_cast_or_null<Defined>(ctx.symtab.find(".toc")))
+    return d->getRVA() + ctx.config.imageBase;
+  return 0;
+}
+
+class ThunkChunkPPC : public NonSectionCodeChunk {
+public:
+  ThunkChunkPPC(COFFLinkerContext &ctx, Defined *i, Chunk *tm) : imp(i), tailMerge(tm), ctx(ctx) {
+    setAlignment(4);
+  }
+  size_t getSize() const override { return 20; }
+  MachineTypes getMachine() const override { return IMAGE_FILE_MACHINE_POWERPC; }
+
+  void writeTo(uint8_t *buf) const override {
+    uint32_t base = ctx.config.imageBase;
+    write32le(buf, rva + 8 + base);
+    write32le(buf + 4, getPPCTocVA(ctx));
+    write32le(buf + 8, 0x3d800000);  // lis   r12, __imp_x@ha
+    write32le(buf + 12, 0x398c0000); // addi  r12, r12, __imp_x@l
+    writePPCHaLo(buf + 8, imp->getRVA() + base);
+    int32_t disp = int32_t(tailMerge->getRVA()) - int32_t(rva + 16);
+    if (!isInt<26>(disp))
+      error("PowerPC delay-load tail merge is out of branch range");
+    write32le(buf + 16, 0x48000000 | (disp & 0x03fffffc)); // b tailMerge
+  }
+
+  void getBaserels(std::vector<Baserel> *res) override {
+    res->emplace_back(rva, IMAGE_REL_BASED_HIGHLOW);
+    res->emplace_back(rva + 4, IMAGE_REL_BASED_HIGHLOW);
+    addPPCHaLoBaserels(res, rva + 8, imp->getRVA() + ctx.config.imageBase);
+  }
+
+  Defined *imp = nullptr;
+  Chunk *tailMerge = nullptr;
+  COFFLinkerContext &ctx;
+};
+
+// Calls __delayLoadHelper2(descriptor, IAT slot) through the helper's
+// descriptor, preserving the argument registers r3-r10 and f1-f13, then
+// jumps through the returned function descriptor. The caller's TOC was saved
+// at 4(r1) by the import glue or indirect-call sequence that reached us.
+class TailMergeChunkPPC : public NonSectionCodeChunk {
+public:
+  static constexpr uint32_t frameSize = 192;
+  static constexpr uint32_t gprSave = 56;
+  static constexpr uint32_t fprSave = 88;
+
+  TailMergeChunkPPC(COFFLinkerContext &ctx, Chunk *d, Defined *h) : desc(d), helper(h), ctx(ctx) {
+    setAlignment(4);
+  }
+  MachineTypes getMachine() const override { return IMAGE_FILE_MACHINE_POWERPC; }
+  size_t getSize() const override { return getCode().size() * 4; }
+
+  std::vector<uint32_t> getCode() const {
+    std::vector<uint32_t> code;
+    code.push_back(0x7c0802a6);                      // mflr  r0
+    code.push_back(0x90010008);                      // stw   r0, 8(r1)
+    code.push_back(0x94210000 | (-frameSize & 0xffff)); // stwu r1, -frameSize(r1)
+    for (uint32_t r = 3; r <= 10; ++r)               // stw   rN, save(r1)
+      code.push_back(0x90010000 | r << 21 | (gprSave + (r - 3) * 4));
+    for (uint32_t f = 1; f <= 13; ++f)               // stfd  fN, save(r1)
+      code.push_back(0xd8010000 | f << 21 | (fprSave + (f - 1) * 8));
+    code.push_back(0x7d846378);                      // mr    r4, r12
+    code.push_back(0x3c600000);                      // lis   r3, desc@ha
+    code.push_back(0x38630000);                      // addi  r3, r3, desc@l
+    code.push_back(0x3d600000);                      // lis   r11, helper@ha
+    code.push_back(0x396b0000);                      // addi  r11, r11, helper@l
+    code.push_back(0x800b0000);                      // lwz   r0, 0(r11)
+    code.push_back(0x7c0903a6);                      // mtctr r0
+    code.push_back(0x4e800421);                      // bctrl
+    code.push_back(0x7c6b1b78);                      // mr    r11, r3
+    for (uint32_t r = 3; r <= 10; ++r)               // lwz   rN, save(r1)
+      code.push_back(0x80010000 | r << 21 | (gprSave + (r - 3) * 4));
+    for (uint32_t f = 1; f <= 13; ++f)               // lfd   fN, save(r1)
+      code.push_back(0xc8010000 | f << 21 | (fprSave + (f - 1) * 8));
+    code.push_back(0x38210000 | frameSize);          // addi  r1, r1, frameSize
+    code.push_back(0x80010008);                      // lwz   r0, 8(r1)
+    code.push_back(0x7c0803a6);                      // mtlr  r0
+    code.push_back(0x800b0000);                      // lwz   r0, 0(r11)
+    code.push_back(0x804b0004);                      // lwz   r2, 4(r11)
+    code.push_back(0x7c0903a6);                      // mtctr r0
+    code.push_back(0x4e800420);                      // bctr
+    return code;
+  }
+
+  // Offset of "lis r3, desc@ha"; the helper's lis/addi pair follows it.
+  static constexpr uint32_t descOffset = (3 + 8 + 13 + 1) * 4;
+
+  void writeTo(uint8_t *buf) const override {
+    std::vector<uint32_t> code = getCode();
+    for (size_t i = 0; i != code.size(); ++i)
+      write32le(buf + i * 4, code[i]);
+    writePPCHaLo(buf + descOffset, desc->getRVA() + ctx.config.imageBase);
+    if (helper)
+      writePPCHaLo(buf + descOffset + 8, helper->getRVA() + ctx.config.imageBase);
+  }
+
+  void getBaserels(std::vector<Baserel> *res) override {
+    addPPCHaLoBaserels(res, rva + descOffset, desc->getRVA() + ctx.config.imageBase);
+    if (helper)
+      addPPCHaLoBaserels(res, rva + descOffset + 8, helper->getRVA() + ctx.config.imageBase);
+  }
+
+  Chunk *desc = nullptr;
+  Defined *helper = nullptr;
+  COFFLinkerContext &ctx;
 };
 
 class TailMergeChunkRISCV64 : public NonSectionCodeChunk {
@@ -1415,6 +1584,8 @@ Chunk *DelayLoadContents::newTailMergeChunk(SymbolTable &symtab, Chunk *dir) {
         dir, helper, ctx.config.linkExeLayout() && !ctx.hybridSymtab);
   case RISCV64:
     return make<TailMergeChunkRISCV64>(dir, helper);
+  case IMAGE_FILE_MACHINE_POWERPC:
+    return make<TailMergeChunkPPC>(ctx, dir, helper);
   default:
     fatal("delay loading is not supported for this machine type");
   }
@@ -1429,9 +1600,13 @@ Chunk *DelayLoadContents::newTailMergePDataChunk(SymbolTable &symtab,
       symtab.tailMergeUnwindInfoChunk = make<TailMergeUnwindInfoX64>();
     return make<TailMergePDataChunkX64>(tm, symtab.tailMergeUnwindInfoChunk);
   case ARM64:
+    // The short form written for link.exe-compatible layouts is described by
+    // link.exe's packed unwind data; the long form needs an .xdata record.
     if (cast<TailMergeChunkARM64>(tm)->shortCall)
-      return make<TailMergePDataChunkARM64>(tm);
-    return nullptr;
+      return make<TailMergePackedPDataChunkARM64>(tm);
+    if (!symtab.tailMergeUnwindInfoChunk)
+      symtab.tailMergeUnwindInfoChunk = make<TailMergeUnwindInfoARM64>();
+    return make<TailMergePDataChunkARM64>(tm, symtab.tailMergeUnwindInfoChunk);
   case ARMNT:
     // Like link.exe, describe how to unwind through the tail-merge code.
     if (!ctx.config.linkExeLayout())
@@ -1459,6 +1634,8 @@ Chunk *DelayLoadContents::newThunkChunk(DefinedImportData *s,
     return make<ThunkChunkARM64>(s, tailMerge);
   case RISCV64:
     return make<ThunkChunkRISCV64>(s, tailMerge);
+  case IMAGE_FILE_MACHINE_POWERPC:
+    return make<ThunkChunkPPC>(ctx, s, tailMerge);
   default:
     fatal("delay loading is not supported for this machine type");
   }

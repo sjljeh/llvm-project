@@ -663,8 +663,6 @@ void PPCFrameLowering::emitPrologue(MachineFunction &MF,
   bool MustSaveLR = FI->mustSaveLR();
   bool MustSaveTOC = FI->mustSaveTOC();
   const bool IsWinEHFunclet = Subtarget.isWin32ABI() && MBB.isEHFuncletEntry();
-  const bool IsWinEHParent =
-      Subtarget.isWin32ABI() && MF.hasEHFunclets() && !MBB.isEHFuncletEntry();
   const SmallVectorImpl<Register> &MustSaveCRs = FI->getMustSaveCRs();
   bool MustSaveCR = !MustSaveCRs.empty();
   // Do we have a frame pointer and/or base pointer for this function?
@@ -706,9 +704,16 @@ void PPCFrameLowering::emitPrologue(MachineFunction &MF,
   auto EmitPrologEnd = [&]() {
     if (Subtarget.isWin32ABI() && MF.usesWindowsUnwindInfo() &&
         (MF.hasWinCFI() || MF.hasEHFunclets() ||
-         MF.getFunction().needsUnwindTableEntry()))
-      BuildMI(MBB, MBBI, dl, TII.get(PPC::SEH_PrologEnd))
+         MF.getFunction().needsUnwindTableEntry())) {
+      // The generic callee saves were inserted before emitPrologue. Include
+      // them in the range decoded by the NT PowerPC unwinder.
+      auto PrologEnd = MBBI;
+      while (PrologEnd != MBB.end() &&
+             PrologEnd->getFlag(MachineInstr::FrameSetup))
+        ++PrologEnd;
+      BuildMI(MBB, PrologEnd, dl, TII.get(PPC::SEH_PrologEnd))
           .setMIFlag(MachineInstr::FrameSetup);
+    }
   };
 
   // Regarding this assert: Even though LR is saved in the caller's frame (i.e.,
@@ -853,15 +858,6 @@ void PPCFrameLowering::emitPrologue(MachineFunction &MF,
 
   if (MustSaveCR && !(SingleScratchReg && MustSaveLR))
     BuildMoveFromCR();
-
-  // _CallSettingFrame passes an EH funclet's parent incoming SP in r2 and
-  // restores the real TOC from offset 8. Preserve that slot in every parent.
-  if (IsWinEHParent)
-    BuildMI(MBB, MBBI, dl, StoreInst)
-        .addReg(TOCReg)
-        .addImm(TOCSaveOffset)
-        .addReg(SPReg)
-        .setMIFlag(MachineInstr::FrameSetup);
 
   if (HasRedZone) {
     if (HasFP)
@@ -1212,21 +1208,39 @@ void PPCFrameLowering::emitPrologue(MachineFunction &MF,
   if (HasFP) {
     if (IsWinEHFunclet) {
       MBB.addLiveIn(PPC::R2);
+      Register ParentSP = PPC::R2;
+      if (HasBP && MaxAlign > 1) {
+        // The parent aligned its incoming SP before allocating its frame.
+        // Reproduce that alignment before addressing its escaped locals.
+        BuildMI(MBB, MBBI, dl, TII.get(PPC::RLWINM), FPReg)
+            .addReg(ParentSP)
+            .addImm(0)
+            .addImm(0)
+            .addImm(31 - Log2(MaxAlign))
+            .setMIFlag(MachineInstr::FrameSetup);
+        ParentSP = FPReg;
+      }
       if (isInt<16>(NegFrameSize)) {
         BuildMI(MBB, MBBI, dl, TII.get(PPC::ADDI), FPReg)
-            .addReg(PPC::R2)
+            .addReg(ParentSP)
             .addImm(NegFrameSize)
             .setMIFlag(MachineInstr::FrameSetup);
       } else {
         TII.materializeImmPostRA(MBB, MBBI, dl, ScratchReg, NegFrameSize);
         BuildMI(MBB, MBBI, dl, TII.get(PPC::ADD4), FPReg)
-            .addReg(PPC::R2)
+            .addReg(ParentSP)
             .addReg(ScratchReg)
             .setMIFlag(MachineInstr::FrameSetup);
       }
-      BuildMI(MBB, MBBI, dl, TII.get(PPC::LWZ), PPC::R2)
-          .addImm(TOCSaveOffset)
+      // The incoming r2 is the parent frame pointer, not a TOC. Materialize
+      // this image's TOC directly. Saving it in the parent's incoming linkage
+      // area would overwrite a cross-image caller's TOC at 4(r1).
+      BuildMI(MBB, MBBI, dl, TII.get(PPC::LIS), PPC::R2)
+          .addExternalSymbol(".toc", PPCII::MO_HA)
+          .setMIFlag(MachineInstr::FrameSetup);
+      BuildMI(MBB, MBBI, dl, TII.get(PPC::ADDI), PPC::R2)
           .addReg(PPC::R2)
+          .addExternalSymbol(".toc", PPCII::MO_LO)
           .setMIFlag(MachineInstr::FrameSetup);
     } else {
       BuildMI(MBB, MBBI, dl, OrInst, FPReg).addReg(SPReg).addReg(SPReg);
@@ -1610,6 +1624,13 @@ void PPCFrameLowering::emitEpilogue(MachineFunction &MF,
   MachineBasicBlock::iterator MBBI = MBB.getFirstTerminator();
   DebugLoc dl;
 
+  // Funclet return blocks need not be their entry blocks. The terminator,
+  // rather than isEHFuncletEntry(), identifies the epilogue's frame owner.
+  const bool IsWinEHFuncletEpilogue =
+      Subtarget.isWin32ABI() && MBBI != MBB.end() &&
+      (MBBI->getOpcode() == PPC::CLEANUPRET ||
+       MBBI->getOpcode() == PPC::CATCHRET);
+
   if (MBBI != MBB.end())
     dl = MBBI->getDebugLoc();
 
@@ -1789,7 +1810,12 @@ void PPCFrameLowering::emitEpilogue(MachineFunction &MF,
     // enabled (=> hasFastCall()==true) the fastcc call might contain a tail
     // call which invalidates the stack pointer value in SP(0). So we use the
     // value of R31 in this case. Similar situation exists with setjmp.
-    else if (FI->hasFastCall() || MF.exposesReturnsTwice()) {
+    // A Windows funclet addresses escaped parent locals through FP, but its
+    // own stack frame is still rooted at SP. In particular, a setjmp in the
+    // parent marks the whole MachineFunction returns-twice; restoring a
+    // funclet's SP from its parent-relative FP skips the active unwind.
+    else if ((FI->hasFastCall() || MF.exposesReturnsTwice()) &&
+             !IsWinEHFuncletEpilogue) {
       assert(HasFP && "Expecting a valid frame pointer.");
       if (!HasRedZone)
         RBReg = FPReg;
@@ -2531,6 +2557,7 @@ bool PPCFrameLowering::spillCalleeSavedRegisters(
   bool CRSpilled = false;
   MachineInstrBuilder CRMIB;
   BitVector Spilled(TRI->getNumRegs());
+  auto BeforeSpills = MI == MBB.begin() ? MBB.end() : std::prev(MI);
 
   VSRContainingGPRs.clear();
 
@@ -2638,6 +2665,12 @@ bool PPCFrameLowering::spillCalleeSavedRegisters(
                                   Register());
       }
     }
+  }
+  if (Subtarget.isWin32ABI()) {
+    auto FirstSpill =
+        BeforeSpills == MBB.end() ? MBB.begin() : std::next(BeforeSpills);
+    for (auto I = FirstSpill; I != MI; ++I)
+      I->setFlag(MachineInstr::FrameSetup);
   }
   return true;
 }

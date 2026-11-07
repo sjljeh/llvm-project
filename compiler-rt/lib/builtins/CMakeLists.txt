@@ -346,13 +346,19 @@ option(COMPILER_RT_EXCLUDE_LIBC_PROVIDED_ARM_AEABI_BUILTINS
   "Skip the standard C library provided arm aeabi builtins from compiler-rt)"
   Off)
 
+option(COMPILER_RT_EXCLUDE_EMUTLS
+  "Skip the emulated TLS runtime, for targets that never use emulated TLS"
+  Off)
+
 if(NOT FUCHSIA AND NOT COMPILER_RT_BAREMETAL_BUILD AND NOT COMPILER_RT_GPU_BUILD)
   set(GENERIC_SOURCES
     ${GENERIC_SOURCES}
-    emutls.c
     enable_execute_stack.c
     eprintf.c
   )
+  if(NOT COMPILER_RT_EXCLUDE_EMUTLS)
+    list(APPEND GENERIC_SOURCES emutls.c)
+  endif()
 endif()
 
 option(COMPILER_RT_LIBATOMIC_USE_PTHREAD
@@ -984,6 +990,9 @@ set(powerpc_SOURCES ${GENERIC_SOURCES})
 
 set(powerpcspe_SOURCES ${GENERIC_SOURCES})
 
+# Windows NT PowerPC (little-endian, 32-bit PE/COFF).
+set(powerpcle_SOURCES ${GENERIC_SOURCES})
+
 set(powerpc64_SOURCES
   ppc/divtc3.c
   ppc/fixtfdi.c
@@ -1021,19 +1030,20 @@ set(powerpc64le_SOURCES ${powerpc64_SOURCES})
 set(riscv_SOURCES
   cpu_model/riscv.c
   riscv/fp_mode.c
-  riscv/save.S
-  riscv/restore.S
   ${GENERIC_SOURCES}
   ${GENERIC_TF_SOURCES}
 )
-set(riscv32_SOURCES
-  riscv/mulsi3.S
-  ${riscv_SOURCES}
-)
-set(riscv64_SOURCES
-  riscv/muldi3.S
-  ${riscv_SOURCES}
-)
+# Windows/RVUW requires inline frame saves and restores; its code generator
+# rejects the ELF save/restore-libcall convention.
+if(NOT WIN32)
+  list(APPEND riscv_SOURCES riscv/save.S riscv/restore.S)
+endif()
+set(riscv32_SOURCES ${riscv_SOURCES})
+set(riscv64_SOURCES ${riscv_SOURCES})
+if(NOT WIN32)
+  list(APPEND riscv32_SOURCES riscv/mulsi3.S)
+  list(APPEND riscv64_SOURCES riscv/muldi3.S)
+endif()
 
 set(sparc_SOURCES ${GENERIC_SOURCES} ${GENERIC_TF_SOURCES})
 set(sparcv9_SOURCES ${GENERIC_SOURCES} ${GENERIC_TF_SOURCES})

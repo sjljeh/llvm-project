@@ -201,46 +201,296 @@ define <3 x i1> @test_urem_vec(<3 x i11> %X) nounwind {
 
 define i1 @test_urem_oversized(i66 %X) nounwind {
 ; PPC-LABEL: test_urem_oversized:
-; PPC:       # %bb.0:
-; PPC-NEXT:    lis 6, -12795
-; PPC-NEXT:    ori 6, 6, 40665
-; PPC-NEXT:    mulhwu 8, 5, 6
-; PPC-NEXT:    lis 9, 12057
-; PPC-NEXT:    ori 9, 9, 37186
-; PPC-NEXT:    mullw 11, 4, 6
-; PPC-NEXT:    addc 8, 11, 8
-; PPC-NEXT:    lis 11, -5526
-; PPC-NEXT:    ori 11, 11, 61135
-; PPC-NEXT:    mulhwu 7, 4, 6
-; PPC-NEXT:    addze 7, 7
-; PPC-NEXT:    mulhwu 10, 5, 9
-; PPC-NEXT:    mullw 4, 4, 9
-; PPC-NEXT:    mullw 9, 5, 9
-; PPC-NEXT:    addc 8, 9, 8
-; PPC-NEXT:    adde 7, 7, 10
-; PPC-NEXT:    add 4, 4, 7
-; PPC-NEXT:    rotlwi 9, 8, 31
-; PPC-NEXT:    mullw 3, 3, 6
-; PPC-NEXT:    mullw 6, 5, 6
-; PPC-NEXT:    slwi 5, 5, 1
-; PPC-NEXT:    add 3, 5, 3
-; PPC-NEXT:    rotlwi 5, 6, 31
-; PPC-NEXT:    add 3, 4, 3
-; PPC-NEXT:    rlwimi 5, 8, 31, 0, 0
-; PPC-NEXT:    rlwimi 9, 3, 31, 0, 0
-; PPC-NEXT:    cmplw 5, 11
-; PPC-NEXT:    cmplwi 1, 9, 13
-; PPC-NEXT:    rlwinm 3, 3, 31, 31, 31
-; PPC-NEXT:    crandc 20, 4, 6
-; PPC-NEXT:    crand 21, 6, 0
-; PPC-NEXT:    rlwimi. 3, 6, 1, 30, 30
+; PPC:       # %bb.0: # %_udiv-special-cases
+; PPC-NEXT:    stwu 1, -208(1)
+; PPC-NEXT:    clrlwi 6, 3, 30
+; PPC-NEXT:    rotlwi 7, 4, 30
+; PPC-NEXT:    or 8, 5, 6
+; PPC-NEXT:    rotlwi 9, 5, 30
+; PPC-NEXT:    rlwimi. 7, 3, 30, 0, 1
+; PPC-NEXT:    or 10, 8, 4
+; PPC-NEXT:    rlwimi 9, 4, 30, 0, 1
+; PPC-NEXT:    stw 16, 144(1) # 4-byte Folded Spill
+; PPC-NEXT:    stw 17, 148(1) # 4-byte Folded Spill
+; PPC-NEXT:    stw 18, 152(1) # 4-byte Folded Spill
+; PPC-NEXT:    stw 19, 156(1) # 4-byte Folded Spill
+; PPC-NEXT:    stw 20, 160(1) # 4-byte Folded Spill
+; PPC-NEXT:    stw 21, 164(1) # 4-byte Folded Spill
+; PPC-NEXT:    stw 22, 168(1) # 4-byte Folded Spill
+; PPC-NEXT:    stw 23, 172(1) # 4-byte Folded Spill
+; PPC-NEXT:    stw 24, 176(1) # 4-byte Folded Spill
+; PPC-NEXT:    stw 25, 180(1) # 4-byte Folded Spill
+; PPC-NEXT:    stw 26, 184(1) # 4-byte Folded Spill
+; PPC-NEXT:    stw 27, 188(1) # 4-byte Folded Spill
+; PPC-NEXT:    stw 28, 192(1) # 4-byte Folded Spill
+; PPC-NEXT:    stw 29, 196(1) # 4-byte Folded Spill
+; PPC-NEXT:    stw 30, 200(1) # 4-byte Folded Spill
+; PPC-NEXT:    bne 0, .LBB5_2
+; PPC-NEXT:  # %bb.1: # %_udiv-special-cases
+; PPC-NEXT:    cntlzw 8, 9
+; PPC-NEXT:    addi 8, 8, 32
+; PPC-NEXT:    b .LBB5_3
+; PPC-NEXT:  .LBB5_2:
+; PPC-NEXT:    cntlzw 8, 7
+; PPC-NEXT:  .LBB5_3: # %_udiv-special-cases
+; PPC-NEXT:    rlwinm. 11, 5, 30, 0, 1
+; PPC-NEXT:    cmpwi 1, 10, 0
+; PPC-NEXT:    bne 0, .LBB5_5
+; PPC-NEXT:  # %bb.4: # %_udiv-special-cases
+; PPC-NEXT:    li 10, 64
+; PPC-NEXT:    b .LBB5_6
+; PPC-NEXT:  .LBB5_5:
+; PPC-NEXT:    cntlzw 10, 11
+; PPC-NEXT:  .LBB5_6: # %_udiv-special-cases
+; PPC-NEXT:    or. 7, 9, 7
+; PPC-NEXT:    li 7, 0
+; PPC-NEXT:    bne 0, .LBB5_8
+; PPC-NEXT:  # %bb.7: # %_udiv-special-cases
+; PPC-NEXT:    addi 8, 10, 64
+; PPC-NEXT:  .LBB5_8: # %_udiv-special-cases
+; PPC-NEXT:    subfic 11, 8, 35
+; PPC-NEXT:    subfze. 10, 7
+; PPC-NEXT:    cmplwi 5, 11, 65
+; PPC-NEXT:    subfze 9, 7
+; PPC-NEXT:    cmplwi 6, 10, 0
+; PPC-NEXT:    crnor 20, 2, 26
+; PPC-NEXT:    andi. 12, 9, 3
+; PPC-NEXT:    crand 21, 26, 21
 ; PPC-NEXT:    cror 20, 21, 20
-; PPC-NEXT:    crnand 20, 2, 20
-; PPC-NEXT:    li 3, 0
-; PPC-NEXT:    bclr 12, 20, 0
-; PPC-NEXT:  # %bb.1:
-; PPC-NEXT:    li 3, 1
+; PPC-NEXT:    cmplwi 6, 12, 0
+; PPC-NEXT:    xori 8, 11, 65
+; PPC-NEXT:    crand 20, 26, 20
+; PPC-NEXT:    crnor 21, 2, 26
+; PPC-NEXT:    or 8, 8, 12
+; PPC-NEXT:    cror 20, 20, 21
+; PPC-NEXT:    cror 20, 6, 20
+; PPC-NEXT:    or 9, 8, 10
+; PPC-NEXT:    li 8, 0
+; PPC-NEXT:    bc 12, 20, .LBB5_10
+; PPC-NEXT:  # %bb.9: # %_udiv-special-cases
+; PPC-NEXT:    mr 8, 5
+; PPC-NEXT:  .LBB5_10: # %_udiv-special-cases
+; PPC-NEXT:    cmpwi 9, 0
+; PPC-NEXT:    li 9, 0
+; PPC-NEXT:    bc 12, 20, .LBB5_12
+; PPC-NEXT:  # %bb.11: # %_udiv-special-cases
+; PPC-NEXT:    mr 9, 4
+; PPC-NEXT:  .LBB5_12: # %_udiv-special-cases
+; PPC-NEXT:    lis 0, 18838
+; PPC-NEXT:    bc 12, 20, .LBB5_14
+; PPC-NEXT:  # %bb.13: # %_udiv-special-cases
+; PPC-NEXT:    mr 7, 3
+; PPC-NEXT:  .LBB5_14: # %_udiv-special-cases
+; PPC-NEXT:    cror 20, 20, 2
+; PPC-NEXT:    ori 3, 0, 722
+; PPC-NEXT:    bc 12, 20, .LBB5_20
+; PPC-NEXT:  # %bb.15: # %udiv-bb1
+; PPC-NEXT:    li 0, 65
+; PPC-NEXT:    addic 9, 11, 1
+; PPC-NEXT:    sub 11, 0, 11
+; PPC-NEXT:    li 7, 0
+; PPC-NEXT:    addi 30, 1, 112
+; PPC-NEXT:    clrlwi 0, 11, 27
+; PPC-NEXT:    rlwinm 11, 11, 29, 28, 29
+; PPC-NEXT:    stw 6, 116(1)
+; PPC-NEXT:    add 11, 30, 11
+; PPC-NEXT:    stw 4, 120(1)
+; PPC-NEXT:    addze 10, 10
+; PPC-NEXT:    stw 5, 124(1)
+; PPC-NEXT:    addze 12, 12
+; PPC-NEXT:    stw 7, 140(1)
+; PPC-NEXT:    clrlwi 12, 12, 30
+; PPC-NEXT:    stw 7, 136(1)
+; PPC-NEXT:    subfic 28, 0, 32
+; PPC-NEXT:    stw 7, 132(1)
+; PPC-NEXT:    or 27, 9, 12
+; PPC-NEXT:    stw 7, 128(1)
+; PPC-NEXT:    or. 27, 27, 10
+; PPC-NEXT:    stw 7, 112(1)
+; PPC-NEXT:    li 8, 1
+; PPC-NEXT:    lwz 30, 12(11)
+; PPC-NEXT:    lwz 29, 8(11)
+; PPC-NEXT:    lwz 11, 4(11)
+; PPC-NEXT:    srw 27, 30, 28
+; PPC-NEXT:    slw 26, 29, 0
+; PPC-NEXT:    srw 29, 29, 28
+; PPC-NEXT:    slw 11, 11, 0
+; PPC-NEXT:    or 11, 11, 29
+; PPC-NEXT:    slw 0, 30, 0
+; PPC-NEXT:    or 30, 26, 27
+; PPC-NEXT:    clrlwi 29, 11, 30
+; PPC-NEXT:    not 11, 8
+; PPC-NEXT:    beq- 0, .LBB5_21
+; PPC-NEXT:  # %bb.16: # %udiv-preheader
+; PPC-NEXT:    rlwinm 28, 9, 29, 28, 29
+; PPC-NEXT:    addi 27, 1, 96
+; PPC-NEXT:    stw 6, 100(1)
+; PPC-NEXT:    sub 28, 27, 28
+; PPC-NEXT:    stw 4, 104(1)
+; PPC-NEXT:    clrlwi 25, 9, 27
+; PPC-NEXT:    stw 5, 108(1)
+; PPC-NEXT:    subfic 23, 25, 32
+; PPC-NEXT:    stw 7, 96(1)
+; PPC-NEXT:    stw 7, 92(1)
+; PPC-NEXT:    stw 7, 88(1)
+; PPC-NEXT:    stw 7, 84(1)
+; PPC-NEXT:    stw 7, 80(1)
+; PPC-NEXT:    lwz 27, 12(28)
+; PPC-NEXT:    lwz 26, 8(28)
+; PPC-NEXT:    lwz 24, 4(28)
+; PPC-NEXT:    srw 27, 27, 25
+; PPC-NEXT:    lwz 28, 0(28)
+; PPC-NEXT:    slw 22, 26, 23
+; PPC-NEXT:    srw 20, 24, 25
+; PPC-NEXT:    srw 21, 26, 25
+; PPC-NEXT:    slw 28, 28, 23
+; PPC-NEXT:    slw 24, 24, 23
+; PPC-NEXT:    lis 26, 18838
+; PPC-NEXT:    or 28, 28, 20
+; PPC-NEXT:    or 25, 22, 27
+; PPC-NEXT:    li 27, 3
+; PPC-NEXT:    ori 26, 26, 721
+; PPC-NEXT:    or 24, 24, 21
+; PPC-NEXT:    clrlwi 23, 28, 30
+; PPC-NEXT:    li 28, 0
+; PPC-NEXT:  .LBB5_17: # %udiv-do-while
+; PPC-NEXT:    #
+; PPC-NEXT:    srwi 21, 25, 31
+; PPC-NEXT:    slwi 20, 23, 1
+; PPC-NEXT:    slwi 23, 25, 1
+; PPC-NEXT:    clrlwi 18, 29, 30
+; PPC-NEXT:    li 25, 8
+; PPC-NEXT:    addi 17, 1, 64
+; PPC-NEXT:    slwi 22, 24, 1
+; PPC-NEXT:    stw 7, 64(1)
+; PPC-NEXT:    srwi 19, 24, 1
+; PPC-NEXT:    stw 7, 60(1)
+; PPC-NEXT:    clrlwi 24, 11, 27
+; PPC-NEXT:    stw 7, 56(1)
+; PPC-NEXT:    or 22, 22, 21
+; PPC-NEXT:    stw 7, 52(1)
+; PPC-NEXT:    srw 19, 19, 24
+; PPC-NEXT:    stw 7, 48(1)
+; PPC-NEXT:    or 20, 20, 19
+; PPC-NEXT:    stw 30, 72(1)
+; PPC-NEXT:    slwi 29, 29, 1
+; PPC-NEXT:    stw 0, 76(1)
+; PPC-NEXT:    stw 18, 68(1)
+; PPC-NEXT:    sub 18, 17, 25
+; PPC-NEXT:    lwz 17, 12(18)
+; PPC-NEXT:    lwz 21, 8(18)
+; PPC-NEXT:    lwz 16, 4(18)
+; PPC-NEXT:    lwz 19, 0(18)
+; PPC-NEXT:    srwi 18, 17, 1
+; PPC-NEXT:    slwi 17, 21, 31
+; PPC-NEXT:    srwi 21, 21, 1
+; PPC-NEXT:    or 18, 17, 18
+; PPC-NEXT:    slwi 17, 16, 31
+; PPC-NEXT:    or 21, 17, 21
+; PPC-NEXT:    srwi 16, 16, 1
+; PPC-NEXT:    slwi 19, 19, 31
+; PPC-NEXT:    or 23, 23, 18
+; PPC-NEXT:    or 19, 19, 16
+; PPC-NEXT:    or 22, 22, 21
+; PPC-NEXT:    subc 21, 26, 23
+; PPC-NEXT:    or 20, 20, 19
+; PPC-NEXT:    subfze 18, 22
+; PPC-NEXT:    stw 21, 44(1)
+; PPC-NEXT:    subfze 21, 20
+; PPC-NEXT:    slwi 21, 21, 30
+; PPC-NEXT:    srwi 16, 0, 31
+; PPC-NEXT:    slwi 0, 0, 1
+; PPC-NEXT:    addi 19, 1, 32
+; PPC-NEXT:    stw 18, 40(1)
+; PPC-NEXT:    srawi 18, 21, 30
+; PPC-NEXT:    srawi 21, 21, 31
+; PPC-NEXT:    stw 18, 36(1)
+; PPC-NEXT:    or 0, 28, 0
+; PPC-NEXT:    stw 21, 32(1)
+; PPC-NEXT:    sub 28, 19, 25
+; PPC-NEXT:    stw 21, 28(1)
+; PPC-NEXT:    srwi 17, 30, 1
+; PPC-NEXT:    stw 21, 24(1)
+; PPC-NEXT:    srw 24, 17, 24
+; PPC-NEXT:    stw 21, 20(1)
+; PPC-NEXT:    or 29, 29, 24
+; PPC-NEXT:    stw 21, 16(1)
+; PPC-NEXT:    slwi 30, 30, 1
+; PPC-NEXT:    lwz 25, 12(28)
+; PPC-NEXT:    or 30, 30, 16
+; PPC-NEXT:    lwz 28, 8(28)
+; PPC-NEXT:    or 29, 7, 29
+; PPC-NEXT:    srwi 25, 25, 1
+; PPC-NEXT:    or 30, 7, 30
+; PPC-NEXT:    slwi 28, 28, 31
+; PPC-NEXT:    or 28, 28, 25
+; PPC-NEXT:    and 25, 28, 3
+; PPC-NEXT:    subc 25, 23, 25
+; PPC-NEXT:    subfe 24, 7, 22
+; PPC-NEXT:    subfe 23, 7, 20
+; PPC-NEXT:    addic 9, 9, -1
+; PPC-NEXT:    addme 10, 10
+; PPC-NEXT:    adde 12, 12, 27
+; PPC-NEXT:    clrlwi 12, 12, 30
+; PPC-NEXT:    or 22, 9, 12
+; PPC-NEXT:    clrlwi 29, 29, 30
+; PPC-NEXT:    or. 22, 22, 10
+; PPC-NEXT:    and 28, 28, 8
+; PPC-NEXT:    clrlwi 23, 23, 30
+; PPC-NEXT:    bne+ 0, .LBB5_17
+; PPC-NEXT:  .LBB5_18: # %udiv-loop-exit
+; PPC-NEXT:    srwi 9, 30, 1
+; PPC-NEXT:    clrlwi 10, 11, 27
+; PPC-NEXT:    slwi 8, 29, 1
+; PPC-NEXT:    slwi 11, 30, 1
+; PPC-NEXT:    srw 9, 9, 10
+; PPC-NEXT:    srwi 10, 0, 31
+; PPC-NEXT:    or 10, 11, 10
+; PPC-NEXT:    or 8, 8, 9
+; PPC-NEXT:    slwi 12, 0, 1
+; PPC-NEXT:    or 9, 7, 10
+; PPC-NEXT:    or 7, 7, 8
+; PPC-NEXT:    clrlwi 7, 7, 30
+; PPC-NEXT:    or 8, 28, 12
+; PPC-NEXT:  .LBB5_19: # %udiv-end
+; PPC-NEXT:    mulhwu 10, 3, 9
+; PPC-NEXT:    lwz 30, 200(1) # 4-byte Folded Reload
+; PPC-NEXT:    lwz 29, 196(1) # 4-byte Folded Reload
+; PPC-NEXT:    lwz 28, 192(1) # 4-byte Folded Reload
+; PPC-NEXT:    mulhwu 11, 3, 8
+; PPC-NEXT:    lwz 27, 188(1) # 4-byte Folded Reload
+; PPC-NEXT:    lwz 26, 184(1) # 4-byte Folded Reload
+; PPC-NEXT:    lwz 25, 180(1) # 4-byte Folded Reload
+; PPC-NEXT:    mullw 9, 3, 9
+; PPC-NEXT:    addc 9, 9, 11
+; PPC-NEXT:    lwz 24, 176(1) # 4-byte Folded Reload
+; PPC-NEXT:    lwz 23, 172(1) # 4-byte Folded Reload
+; PPC-NEXT:    mullw 7, 7, 3
+; PPC-NEXT:    adde 7, 7, 10
+; PPC-NEXT:    lwz 22, 168(1) # 4-byte Folded Reload
+; PPC-NEXT:    lwz 21, 164(1) # 4-byte Folded Reload
+; PPC-NEXT:    mullw 3, 3, 8
+; PPC-NEXT:    subc 3, 5, 3
+; PPC-NEXT:    subfe 4, 9, 4
+; PPC-NEXT:    subfe 5, 7, 6
+; PPC-NEXT:    clrlwi 5, 5, 30
+; PPC-NEXT:    or 3, 3, 5
+; PPC-NEXT:    or 3, 3, 4
+; PPC-NEXT:    cntlzw 3, 3
+; PPC-NEXT:    rlwinm 3, 3, 27, 31, 31
+; PPC-NEXT:    lwz 20, 160(1) # 4-byte Folded Reload
+; PPC-NEXT:    lwz 19, 156(1) # 4-byte Folded Reload
+; PPC-NEXT:    lwz 18, 152(1) # 4-byte Folded Reload
+; PPC-NEXT:    lwz 17, 148(1) # 4-byte Folded Reload
+; PPC-NEXT:    lwz 16, 144(1) # 4-byte Folded Reload
+; PPC-NEXT:    addi 1, 1, 208
 ; PPC-NEXT:    blr
+; PPC-NEXT:  .LBB5_20:
+; PPC-NEXT:    clrlwi 7, 7, 30
+; PPC-NEXT:    b .LBB5_19
+; PPC-NEXT:  .LBB5_21:
+; PPC-NEXT:    li 28, 0
+; PPC-NEXT:    b .LBB5_18
 ;
 ; PPC64LE-LABEL: test_urem_oversized:
 ; PPC64LE:       # %bb.0:

@@ -8,7 +8,19 @@
 
 # ASSOC-COUNT-2: Selection: Associative (0x5)
 
-# CHECK: ExceptionTableRVA: 0x3000
+# A COMDAT function section is keyed by the descriptor symbol, so the
+# descriptor is emitted in that section rather than in .rdata.
+# RUN: llvm-readobj --symbols %t/helper.obj | FileCheck %s --check-prefix=DESC
+# DESC:      Section: .text (4)
+# DESC:        Selection: NoDuplicates (0x1)
+# DESC:      Name: helper
+# DESC-NEXT:   Value: 0
+# DESC-NEXT:   Section: .text (4)
+# DESC:      Name: ..helper
+# DESC-NEXT:   Value: 8
+# DESC-NEXT:   Section: .text (4)
+
+# CHECK: ExceptionTableRVA: 0x2000
 # CHECK-NEXT: ExceptionTableSize: 0x28
 # CHECK: Name: .pdata
 # CHECK: VirtualSize: 0x28

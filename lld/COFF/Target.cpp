@@ -35,6 +35,17 @@ void writePPC32(uint8_t *off, uint32_t v, bool isLE) {
     write32be(off, v);
 }
 
+static void writePPC16(uint8_t *off, uint16_t v, bool isLE) {
+  if (isLE)
+    write16le(off, v);
+  else
+    write16be(off, v);
+}
+
+void applyPPCImm16(uint8_t *off, uint16_t v, bool isLE) {
+  writePPC16(off, v, isLE);
+}
+
 namespace {
 
 static void add16(uint8_t *p, int16_t v) { write16le(p, read16le(p) + v); }
@@ -268,17 +279,6 @@ static uint32_t readPPC32(const uint8_t *off, bool isLE) {
   return isLE ? read32le(off) : read32be(off);
 }
 
-static void writePPC16(uint8_t *off, uint16_t v, bool isLE) {
-  if (isLE)
-    write16le(off, v);
-  else
-    write16be(off, v);
-}
-
-static void applyPPCImm16(uint8_t *off, uint16_t v, bool isLE) {
-  writePPC16(off, v, isLE);
-}
-
 static void applyPPCAddr24(uint8_t *off, uint64_t v, bool isLE) {
   uint32_t inst = readPPC32(off, isLE);
   writePPC32(off, (inst & 0xfc000003) | (v & 0x03fffffc), isLE);
@@ -300,6 +300,11 @@ static std::optional<uint64_t> getPPCTocRVA(const SectionChunk *sec) {
 }
 
 static std::optional<uint32_t> getPPCImportGlueInst(Symbol *sym) {
+  // Synthesized glue saves the caller's TOC at 4(r1).
+  if (auto *thunk = dyn_cast_or_null<DefinedImportThunk>(sym))
+    if (thunk->getChunk()->getMachine() == IMAGE_FILE_MACHINE_POWERPC)
+      return 0x80410004; // lwz r2,4(r1)
+
   auto *d = dyn_cast_or_null<DefinedRegular>(sym);
   if (!d)
     return std::nullopt;
@@ -349,6 +354,11 @@ static void applyRelPPC(COFFLinkerContext &ctx, const TargetInfo &target,
   case IMAGE_REL_PPC_ADDR32NB:
     writePPC32(off, readPPC32(off, isLE) + s, isLE);
     break;
+  case IMAGE_REL_PPC_ADDR16:
+    // The low 16 bits of the target VA; the loader rebases them with a LOW
+    // base relocation.
+    applyPPCImm16(off, (va + readPPC16(off, isLE)) & 0xffff, isLE);
+    break;
   case IMAGE_REL_PPC_ADDR24:
     applyPPCAddr24(off, va + (readPPC32(off, isLE) & 0x03fffffc), isLE);
     break;
@@ -374,7 +384,12 @@ static void applyRelPPC(COFFLinkerContext &ctx, const TargetInfo &target,
     int64_t sectionStart =
         static_cast<int64_t>(p) - static_cast<int64_t>(rel.VirtualAddress);
     int64_t addend = SignExtend64<16>(readPPC32(off, isLE) & 0x0000fffc);
-    applyPPCAddr14(off, static_cast<int64_t>(s) - sectionStart + addend, isLE);
+    int64_t value = static_cast<int64_t>(s) - sectionStart + addend;
+    if (!isInt<16>(value))
+      error("PowerPC REL14 relocation out of range");
+    if (value & 3)
+      error("PowerPC REL14 relocation is not four-byte aligned");
+    applyPPCAddr14(off, value, isLE);
     break;
   }
   case IMAGE_REL_PPC_TOCREL16:
@@ -405,6 +420,15 @@ static void applyRelPPC(COFFLinkerContext &ctx, const TargetInfo &target,
     break;
   case IMAGE_REL_PPC_SECREL:
     applySecRel(&sec, off, os, s);
+    break;
+  case IMAGE_REL_PPC_SECREL16:
+    if (checkSecRel(&sec, os)) {
+      uint64_t v = s - os->getRVA() + readPPC16(off, isLE);
+      if (!isUInt<16>(v))
+        error("PowerPC SECREL16 relocation out of range in " +
+              toString(sec.file));
+      applyPPCImm16(off, v & 0xffff, isLE);
+    }
     break;
   case IMAGE_REL_PPC_SECRELLO:
     if (checkSecRel(&sec, os))
@@ -1528,6 +1552,7 @@ getBaserelPPC(COFFLinkerContext &ctx, const TargetInfo &target,
     return makeBaserel(rel, IMAGE_REL_BASED_HIGHADJ, v & 0xffff);
   }
   case IMAGE_REL_PPC_REFLO:
+  case IMAGE_REL_PPC_ADDR16:
     return makeBaserel(rel, IMAGE_REL_BASED_LOW);
   default:
     return std::nullopt;

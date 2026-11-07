@@ -23,7 +23,7 @@
 #define __XSAVEOPT_EXTERN_C
 #endif
 
-#if defined(_MSC_VER) && __has_builtin(_xsaveopt)
+#if defined(_WIN32) && __has_builtin(_xsaveopt)
 __XSAVEOPT_EXTERN_C void __cdecl _xsaveopt(void *__p, unsigned __int64 __m);
 #else
 static __inline__ void __DEFAULT_FN_ATTRS
@@ -33,7 +33,7 @@ _xsaveopt(void *__p, unsigned long long __m) {
 #endif
 
 #ifdef __x86_64__
-#if defined(_MSC_VER) && __has_builtin(_xsaveopt64)
+#if defined(_WIN32) && __has_builtin(_xsaveopt64)
 __XSAVEOPT_EXTERN_C void __cdecl _xsaveopt64(void *__p,
                                              unsigned __int64 __m);
 #else
