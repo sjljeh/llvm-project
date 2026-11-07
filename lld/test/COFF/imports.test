@@ -19,37 +19,41 @@ TEXT-NEXT: movq    $0, %rcx
 TEXT-NEXT: leaq    8180(%rip), %rdx
 TEXT-NEXT: leaq    8167(%rip), %r8
 TEXT-NEXT: movl    $0, %r9d
-TEXT-NEXT: callq   0x140001060
+TEXT-NEXT: callq   0x140001039
 TEXT-NEXT: movl    $0, %ecx
-TEXT-NEXT: callq   0x140001040
-TEXT-NEXT: callq   0x140001050
-TEXT:      jmpq    *4098(%rip)
-TEXT:      jmpq    *4090(%rip)
-TEXT:      jmpq    *4082(%rip)
+TEXT-NEXT: callq   0x140001033
+TEXT-NEXT: callq   0x14000103f
+TEXT:      jmpq    *4055(%rip)
+TEXT:      jmpq    *4033(%rip)
+TEXT:      jmpq    *4035(%rip)
 
+## As in link.exe, imports are in reference order, the first one last when a
+## DLL has fewer than 8.
 IMPORT:      Import {
 IMPORT-NEXT:   Name: std64.dll
-IMPORT-NEXT:   ImportLookupTableRVA: 0x2028
-IMPORT-NEXT:   ImportAddressTableRVA: 0x2048
-IMPORT-NEXT:   Symbol: ExitProcess (0)
-IMPORT-NEXT:   Symbol:  (50)
+IMPORT-NEXT:   ImportLookupTableRVA: 0x2060
+IMPORT-NEXT:   ImportAddressTableRVA: 0x2000
 IMPORT-NEXT:   Symbol: MessageBoxA (1)
+IMPORT-NEXT:   Symbol:  (50)
+IMPORT-NEXT:   Symbol: ExitProcess (0)
 IMPORT-NEXT: }
 
 # RUN: lld-link /out:%t.exe /entry:main /subsystem:console /merge:.rdata=.text \
 # RUN:   %p/Inputs/hello64.obj %p/Inputs/std64.lib /include:ExitProcess
 # RUN: llvm-readobj --coff-imports %t.exe | FileCheck -check-prefix=MERGE %s
 
+## As in link.exe, the import tables stay in .idata when .rdata is merged
+## elsewhere, with the import address table first.
 MERGE:      Import {
 MERGE-NEXT:   Name: std64.dll
-MERGE-NEXT:   ImportLookupTableRVA: 0x1090
-MERGE-NEXT:   ImportAddressTableRVA: 0x10B0
-MERGE-NEXT:   Symbol: ExitProcess (0)
-MERGE-NEXT:   Symbol:  (50)
+MERGE-NEXT:   ImportLookupTableRVA: 0x3048
+MERGE-NEXT:   ImportAddressTableRVA: 0x3000
 MERGE-NEXT:   Symbol: MessageBoxA (1)
+MERGE-NEXT:   Symbol:  (50)
+MERGE-NEXT:   Symbol: ExitProcess (0)
 MERGE-NEXT: }
 
 # Verify that import table is properly aligned.
 # RUN: llvm-readobj --headers %t.exe | FileCheck -check-prefix=IMPORTDIR %s
-IMPORTDIR:      ImportTableRVA: 0x1068
+IMPORTDIR:      ImportTableRVA: 0x3020
 IMPORTDIR-NEXT: ImportTableSize: 0x28

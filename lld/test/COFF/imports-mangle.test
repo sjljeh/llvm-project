@@ -3,11 +3,13 @@
 # RUN:   %t.obj %p/Inputs/imports-mangle.lib
 # RUN: llvm-readobj --coff-imports %t.exe | FileCheck %s
 
+## As in link.exe: the imports are in reference order with the first one last,
+## and only x86 strips a leading underscore from a NOPREFIX name.
 # CHECK: Import {
-# CHECK:   Symbol: sym4 (0)
-# CHECK:   Symbol: _sym3 (1)
-# CHECK:   Symbol: sym1 (2)
 # CHECK:   Symbol:  (2)
+# CHECK:   Symbol: __sym3 (1)
+# CHECK:   Symbol: sym4 (0)
+# CHECK:   Symbol: sym1 (2)
 # CHECK: }
 
 --- !COFF

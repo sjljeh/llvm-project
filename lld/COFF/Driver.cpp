@@ -363,6 +363,8 @@ void LinkerDriver::addBuffer(std::unique_ptr<MemoryBuffer> mb,
 
       return;
     }
+    ctx.archiveOrder.try_emplace(mbref.getBufferIdentifier(),
+                                 ctx.archiveOrder.size());
     addFile(make<ArchiveFile>(ctx, mbref, file));
     break;
   }
@@ -543,11 +545,16 @@ void LinkerDriver::enqueueArchiveMember(const Archive::Child &c,
     if (!mbOrErr)
       reportBufferError(mbOrErr.takeError());
     MemoryBufferRef mb = mbOrErr.get();
-    enqueueTask([=]() {
+    auto task = [=]() {
       llvm::TimeTraceScope timeScope("Archive: ", mb.getBufferIdentifier());
       ctx.driver.addArchiveBuffer(mb, toCOFFString(ctx, sym), parentName,
                                   offsetInArchive, false);
-    });
+    };
+    auto order = ctx.archiveOrder.find(parentName);
+    if (!ctx.config.mingw && order != ctx.archiveOrder.end())
+      memberQueues[order->second].push_back(std::move(task));
+    else
+      enqueueTask(std::move(task));
     return;
   }
 
@@ -665,6 +672,7 @@ void LinkerDriver::parseDirectives(InputFile *file) {
       break;
     case OPT_merge:
       parseMerge(arg->getValue());
+      ctx.config.userMerges.insert(StringRef(arg->getValue()).split('=').first);
       break;
     case OPT_nodefaultlib:
       ctx.config.noDefaultLibs.insert(findLib(arg->getValue()).lower());
@@ -687,6 +695,7 @@ void LinkerDriver::parseDirectives(InputFile *file) {
       if (gotVersion) {
         ctx.config.majorOSVersion = ctx.config.majorSubsystemVersion;
         ctx.config.minorOSVersion = ctx.config.minorSubsystemVersion;
+        ctx.config.subsystemVersionSet = true;
       }
       break;
     }
@@ -968,6 +977,11 @@ void LinkerDriver::addLibSearchPaths() {
 }
 
 uint64_t LinkerDriver::getDefaultImageBase() {
+  // link.exe puts a 64-bit executable that is not large address aware at the
+  // 32-bit default, below 2GB.
+  if (ctx.config.is64() && !ctx.config.dll && !ctx.config.largeAddressAware &&
+      ctx.config.linkExeLayout())
+    return 0x400000;
   if (ctx.config.is64())
     return ctx.config.dll ? 0x180000000 : 0x140000000;
   return ctx.config.dll ? 0x10000000 : 0x400000;
@@ -1194,10 +1208,31 @@ bool LinkerDriver::run() {
   llvm::TimeTraceScope timeScope("Read input files");
   ScopedTimer t(ctx.inputFileTimer);
 
-  bool didWork = !taskQueue.empty();
-  while (!taskQueue.empty()) {
-    taskQueue.front()();
-    taskQueue.pop_front();
+  bool didWork = false;
+  auto runTasks = [&]() {
+    while (!taskQueue.empty()) {
+      didWork = true;
+      taskQueue.front()();
+      taskQueue.pop_front();
+    }
+  };
+  runTasks();
+  // Like link.exe, take what is needed from one library before moving to the
+  // next one in search order (wrapping around), so that members load library
+  // by library.
+  while (!memberQueues.empty()) {
+    auto it = memberQueues.lower_bound(currentArchive);
+    if (it == memberQueues.end())
+      it = memberQueues.begin();
+    currentArchive = it->first;
+    while (!it->second.empty()) {
+      didWork = true;
+      std::function<void()> task = std::move(it->second.front());
+      it->second.pop_front();
+      task();
+      runTasks();
+    }
+    memberQueues.erase(it);
   }
   return didWork;
 }
@@ -1961,6 +1996,11 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   // default setting for any other project type.", but link.exe defaults to
   // /FIXED:NO for exe outputs as well. Match behavior, not docs.
   bool fixed = args.hasFlag(OPT_fixed, OPT_fixed_no, false);
+  // link.exe makes an executable with /dynamicbase:no fixed unless
+  // /fixed:no is given.
+  if (!config->dll && !config->mingw && !config->dynamicBase &&
+      !args.hasArg(OPT_fixed, OPT_fixed_no))
+    fixed = true;
   if (fixed) {
     if (dynamicBaseArg &&
         dynamicBaseArg->getOption().getID() == OPT_dynamicbase) {
@@ -1974,6 +2014,10 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   // Handle /appcontainer
   config->appContainer =
       args.hasFlag(OPT_appcontainer, OPT_appcontainer_no, false);
+
+  // Handle /volatilemetadata
+  config->volatileMetadata =
+      args.hasFlag(OPT_volatilemetadata, OPT_volatilemetadata_no, true);
 
   // Handle /machine
   {
@@ -2033,12 +2077,14 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   if (auto *arg = args.getLastArg(OPT_subsystem))
     parseSubsystem(arg->getValue(), &config->subsystem,
                    &config->majorSubsystemVersion,
-                   &config->minorSubsystemVersion);
+                   &config->minorSubsystemVersion,
+                   &config->subsystemVersionSet);
 
   // Handle /osversion
   if (auto *arg = args.getLastArg(OPT_osversion)) {
     parseVersion(arg->getValue(), &config->majorOSVersion,
                  &config->minorOSVersion);
+    config->osVersionSet = true;
   } else {
     config->majorOSVersion = config->majorSubsystemVersion;
     config->minorOSVersion = config->minorSubsystemVersion;
@@ -2196,8 +2242,10 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     checkFailIfMismatch(arg->getValue(), nullptr);
 
   // Handle /merge
-  for (auto *arg : args.filtered(OPT_merge))
+  for (auto *arg : args.filtered(OPT_merge)) {
     parseMerge(arg->getValue());
+    config->userMerges.insert(StringRef(arg->getValue()).split('=').first);
+  }
 
   // Handle /discard-section
   for (auto *arg : args.filtered(OPT_discard_section))
@@ -2214,6 +2262,10 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
 
   if (isArm64EC(config->machine))
     parseMerge(".wowthk=.text");
+
+  // link.exe places the TLS template (.tls) in .rdata.
+  if (!config->mingw)
+    parseMerge(".tls=.rdata");
 
   if (config->mingw) {
     parseMerge(".ctors=.rdata");
@@ -2530,14 +2582,39 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
         createResponseFile(args, ArrayRef<StringRef>(searchPaths).slice(1)));
   }
 
-  // Handle /largeaddressaware
+  // Handle /largeaddressaware. link.exe sets it by default for ARM images too.
+  bool laaByDefault = config->is64() || config->machine == ARMNT;
   config->largeAddressAware = args.hasFlag(
-      OPT_largeaddressaware, OPT_largeaddressaware_no, config->is64());
+      OPT_largeaddressaware, OPT_largeaddressaware_no, laaByDefault);
+  // link.exe ignores /largeaddressaware:no where the image must be large
+  // address aware: DLLs and ARM64 images.
+  if (!config->largeAddressAware && laaByDefault && config->linkExeLayout() &&
+      (config->dll || config->machine == ARM64)) {
+    Warn(ctx) << "ignoring /largeaddressaware:no due to "
+              << (config->dll ? "/dll" : "/machine:arm64");
+    config->largeAddressAware = true;
+  }
+
+  // link.exe defaults ARM and ARM64 images, and app containers, to OS and
+  // subsystem version 6.02.
+  if (!config->mingw && !config->subsystemVersionSet &&
+      (config->machine == ARMNT || isAnyArm64(config->machine) ||
+       (config->appContainer && config->linkExeLayout()))) {
+    config->majorSubsystemVersion = 6;
+    config->minorSubsystemVersion = 2;
+    if (!config->osVersionSet) {
+      config->majorOSVersion = 6;
+      config->minorOSVersion = 2;
+    }
+  }
 
   // Handle /highentropyva
+  // link.exe leaves it off by default when the image is not large address
+  // aware.
   config->highEntropyVA =
       config->is64() &&
-      args.hasFlag(OPT_highentropyva, OPT_highentropyva_no, true);
+      args.hasFlag(OPT_highentropyva, OPT_highentropyva_no,
+                   config->largeAddressAware || !config->linkExeLayout());
 
   // Handle /nodbgdirmerge
   config->mergeDebugDirectory = !args.hasArg(OPT_nodbgdirmerge);
@@ -2698,8 +2775,29 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   }
 
   // Set default image base if /base is not given.
-  if (config->imageBase == uint64_t(-1))
+  bool explicitBase = config->imageBase != uint64_t(-1);
+  if (!explicitBase)
     config->imageBase = getDefaultImageBase();
+  // Like link.exe, reject a base that isn't 64KB aligned or doesn't fit a
+  // 32-bit image (LNK1224), rather than writing a truncated one.
+  if (!config->mingw && config->linkExeLayout()) {
+    if ((config->imageBase & 0xffff) ||
+        (!config->is64() && !isUInt<32>(config->imageBase)) ||
+        (config->machine == AMD64 && !config->largeAddressAware &&
+         config->imageBase >= 0x80000000))
+      Err(ctx) << "invalid image base 0x"
+               << Twine::utohexstr(config->imageBase);
+    else if (config->machine == ARM64 && config->imageBase < 0x100000000)
+      Err(ctx) << "invalid base address 0x"
+               << Twine::utohexstr(config->imageBase)
+               << "; ARM64 image cannot have base address below 4GB";
+    else if (explicitBase && config->machine == AMD64 &&
+             config->imageBase < 0x100000000)
+      Warn(ctx) << "undesirable base address 0x"
+                << Twine::utohexstr(config->imageBase)
+                << " for x64 image; set base address above 4GB for best ASLR "
+                   "optimization";
+  }
 
   ctx.forEachSymtab([&](SymbolTable &symtab) {
     symtab.addSynthetic(symtab.mangle("__ImageBase"), nullptr);

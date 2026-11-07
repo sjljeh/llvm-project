@@ -1503,10 +1503,17 @@ static void addLinkerModuleSectionSymbol(pdb::DbiModuleDescriptorBuilder &mod,
   if (isMinGW)
     return;
 
-  // Output COFF groups for individual chunks of this section.
-  for (PartialSection *sec : os.contribSections) {
+  // Output COFF groups for individual chunks of this section, in address
+  // order as link.exe does.
+  std::vector<PartialSection *> groups;
+  for (PartialSection *sec : os.contribSections)
+    if (!sec->chunks.empty())
+      groups.push_back(sec);
+  llvm::stable_sort(groups, [](PartialSection *a, PartialSection *b) {
+    return a->chunks.front()->getRVA() < b->chunks.front()->getRVA();
+  });
+  for (PartialSection *sec : groups)
     addLinkerModuleCoffGroup(sec, mod, os);
-  }
 }
 
 // Add all import files as modules to the PDB.

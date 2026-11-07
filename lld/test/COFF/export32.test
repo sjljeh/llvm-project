@@ -14,10 +14,12 @@
 # CHECK1-NEXT:       1   0x1008  exportfn1
 # CHECK1-NEXT:       2   0x1010  exportfn2
 
+## As in link.exe, the export directory follows the input .rdata groups and
+## precedes the volatile metadata.
 # HEADER-MERGE: ExportTableRVA: 0x2000
-# HEADER-MERGE-NEXT: ExportTableSize: 0x7A
+# HEADER-MERGE-NEXT: ExportTableSize: 0x7C
 # HEADER-MERGE: Name: .rdata
-# HEADER-MERGE-NEXT: VirtualSize: 0x7A
+# HEADER-MERGE-NEXT: VirtualSize: 0x94
 # HEADER-MERGE-NEXT: VirtualAddress: 0x2000
 
 # RUN: lld-link -safeseh:no /out:%t.dll /dll %t.obj /export:exportfn1,@5 \

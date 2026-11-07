@@ -17,6 +17,7 @@
 #include "PDB.h"
 #include "SymbolTable.h"
 #include "Symbols.h"
+#include "Target.h"
 #include "lld/Common/ErrorHandler.h"
 #include "lld/Common/Memory.h"
 #include "lld/Common/Timer.h"
@@ -24,6 +25,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/BinaryFormat/COFF.h"
+#include "llvm/IR/Mangler.h"
 #include "llvm/MC/StringTableBuilder.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/FileOutputBuffer.h"
@@ -74,6 +76,17 @@ static unsigned char dosProgram[] = {
   0x20, 0x72, 0x75, 0x6e, 0x20, 0x69, 0x6e, 0x20, 0x44, 0x4f, 0x53, 0x20,
   0x6d, 0x6f, 0x64, 0x65, 0x2e, 0x24, 0x00, 0x00
 };
+// The DOS program link.exe writes.
+static unsigned char dosProgramLinkExe[] = {
+  0x0e, 0x1f, 0xba, 0x0e, 0x00, 0xb4, 0x09, 0xcd, 0x21, 0xb8, 0x01, 0x4c,
+  0xcd, 0x21, 0x54, 0x68, 0x69, 0x73, 0x20, 0x70, 0x72, 0x6f, 0x67, 0x72,
+  0x61, 0x6d, 0x20, 0x63, 0x61, 0x6e, 0x6e, 0x6f, 0x74, 0x20, 0x62, 0x65,
+  0x20, 0x72, 0x75, 0x6e, 0x20, 0x69, 0x6e, 0x20, 0x44, 0x4f, 0x53, 0x20,
+  0x6d, 0x6f, 0x64, 0x65, 0x2e, 0x0d, 0x0d, 0x0a, 0x24, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00
+};
+static_assert(sizeof(dosProgramLinkExe) == 64, "");
+
 static_assert(sizeof(dosProgram) % 8 == 0,
               "DOSProgram size must be multiple of 8");
 static_assert((sizeof(dos_header) + sizeof(dosProgram)) % 8 == 0,
@@ -201,6 +214,19 @@ struct ChunkRange {
 };
 
 // The writer writes a SymbolTable result to a file.
+// An empty volatile metadata directory (IMAGE_VOLATILE_METADATA), as link.exe
+// emits for x86 and x64.
+class VolatileMetadataChunk : public NonSectionChunk {
+public:
+  VolatileMetadataChunk() { setAlignment(4); }
+  size_t getSize() const override { return 24; }
+  void writeTo(uint8_t *buf) const override {
+    memset(buf, 0, 24);
+    write32le(buf, 24);
+    write32le(buf + 4, 0x80008000);
+  }
+};
+
 class Writer {
 public:
   Writer(COFFLinkerContext &c)
@@ -219,6 +245,9 @@ private:
   StringRef getMergeDestination(StringRef fromSection, StringRef toSection);
   void mergeSection(const std::map<StringRef, StringRef>::value_type &p);
   void mergeSections();
+  void sortSectionsLikeLinkExe();
+
+  void sortSectionsByRank();
   void sortECChunks();
   void appendECImportTables();
   void removeUnusedSections();
@@ -231,6 +260,17 @@ private:
            Defined *target, int64_t addend, uint64_t p, uint16_t type,
            int margin, MachineTypes machine);
   bool createThunks(OutputSection *os, int margin);
+  // Whether thunks are added like link.exe does: only for branches that are
+  // out of range, keeping the thunks of earlier passes (ARMNT).
+  bool useExactThunks() const { return ctx.config.machine == ARMNT; }
+  struct RangeThunk {
+    Defined *sym;
+    Defined *target;
+    int64_t addend;
+  };
+  // Thunks created so far, kept across passes with useExactThunks().
+  DenseMap<Chunk *, RangeThunk> rangeThunks;
+  DenseMap<std::pair<ObjFile *, Defined *>, uint32_t> rangeThunkSymtabIndices;
   bool verifyRanges(const std::vector<Chunk *> chunks);
   void createECCodeMap();
   void finalizeAddresses();
@@ -271,6 +311,27 @@ private:
   void fixTlsAlignment(SymbolTable &symtab);
   PartialSection *createPartialSection(StringRef name, uint32_t outChars);
   PartialSection *findPartialSection(StringRef name, uint32_t outChars);
+  void addRdataGroupChunks(StringRef name, Chunk *c);
+  void addGroupChunk(OutputSection *sec, StringRef name, uint32_t chars,
+                     Chunk *c);
+  void addImportThunk(Chunk *c);
+  Chunk *nextGroupChunk(Chunk *c);
+  bool needsLinkExeGroupPadding();
+  bool hasCrossSectionBranch();
+
+  // link.exe starts every group at a 4-byte boundary in some ARM/ARM64 links
+  // (see needsLinkExeGroupPadding), including its empty .edata group, which
+  // edataPlaceholder stands in for.
+  bool groupPad4 = false;
+  Chunk *edataPlaceholder = nullptr;
+  Chunk *voltmdChunk = nullptr;
+  // Whether we made the export tables (in link.exe's layout).
+  bool syntheticEdata = false;
+  bool reportedExtent = false;
+  // The index of each input chunk in input order, computed on demand.
+  llvm::DenseMap<Chunk *, size_t> inputOrder;
+  // Empty chunks standing in for groups whose COMDATs were all discarded.
+  llvm::DenseSet<Chunk *> groupPlaceholders;
 
   std::optional<coff_symbol16> createSymbol(Defined *d);
   size_t addEntryToStringTable(StringRef str);
@@ -281,6 +342,8 @@ private:
   void createDynamicRelocs();
 
   uint32_t getSizeOfInitializedData();
+  uint32_t getSizeOfUninitializedData();
+  uint32_t getSectionSizeForHeader(OutputSection *s);
 
   void prepareLoadConfig();
   template <typename T>
@@ -332,6 +395,9 @@ private:
   OutputSection *idataSec;
   OutputSection *edataSec;
   OutputSection *didatSec;
+  // With /guard:cf, link.exe puts the delay-load IAT in a .didat section of
+  // its own, so the delay-load helper can protect it.
+  OutputSection *delayIatSec = nullptr;
   OutputSection *a64xrmSec;
   OutputSection *rsrcSec;
   OutputSection *relocSec;
@@ -431,7 +497,8 @@ bool Writer::isInRange(uint16_t relType, uint64_t s, uint64_t p, int margin,
     diff += diff < 0 ? -margin : margin;
     return isInt<23>(diff);
   } else if (machine == ARMNT) {
-    int64_t diff = AbsoluteDifference(s, p + 4) + margin;
+    int64_t diff = static_cast<int64_t>(s) - static_cast<int64_t>(p + 4);
+    diff += diff < 0 ? -margin : margin;
     switch (relType) {
     case IMAGE_REL_ARM_BRANCH20T:
       return isInt<21>(diff);
@@ -474,7 +541,7 @@ Writer::getThunk(DenseMap<std::pair<uint64_t, int64_t>, Defined *> &lastThunks,
   if (lastThunk) {
     uint64_t lastThunkRVA = lastThunk->getRVA();
     if (machine == IMAGE_FILE_MACHINE_ALPHA ||
-        machine == IMAGE_FILE_MACHINE_POWERPC)
+        machine == IMAGE_FILE_MACHINE_POWERPC || machine == ARMNT)
       lastThunkRVA = static_cast<uint32_t>(lastThunkRVA + addend);
     if (isInRange(type, lastThunkRVA, p, margin, machine))
       return {lastThunk, false};
@@ -487,7 +554,7 @@ Writer::getThunk(DenseMap<std::pair<uint64_t, int64_t>, Defined *> &lastThunks,
   } else {
     switch (getMachineArchType(machine)) {
     case Triple::thumb:
-      c = make<RangeExtensionThunkARM>(ctx, target);
+      c = make<RangeExtensionThunkARM>(ctx, target, addend);
       break;
     case Triple::aarch64:
       c = make<RangeExtensionThunkARM64>(machine, target);
@@ -496,11 +563,13 @@ Writer::getThunk(DenseMap<std::pair<uint64_t, int64_t>, Defined *> &lastThunks,
       llvm_unreachable("Unexpected architecture");
     }
   }
-  // Alpha and PPC input branches carry their source addend in the instruction.
-  // Bias the synthetic symbol by -A so relocating the branch reaches the thunk
-  // itself; the thunk then jumps to the original S + A destination.
+  // Alpha, PPC and ARM input branches carry their source addend in the
+  // instruction. Bias the synthetic symbol by -A so relocating the branch
+  // reaches the thunk itself; the thunk then jumps to the original S + A
+  // destination.
   bool hasEncodedAddend = machine == IMAGE_FILE_MACHINE_ALPHA ||
-                          machine == IMAGE_FILE_MACHINE_POWERPC;
+                          machine == IMAGE_FILE_MACHINE_POWERPC ||
+                          machine == ARMNT;
   uint32_t symbolOffset = hasEncodedAddend ? uint32_t(-addend) : 0;
   Defined *d = make<DefinedSynthetic>("range_extension_thunk", c, symbolOffset);
   lastThunk = d;
@@ -520,8 +589,11 @@ Writer::getThunk(DenseMap<std::pair<uint64_t, int64_t>, Defined *> &lastThunks,
 // the previously created thunks) and retry with a wider margin.
 bool Writer::createThunks(OutputSection *os, int margin) {
   bool addressesChanged = false;
+  bool exact = useExactThunks();
   DenseMap<std::pair<uint64_t, int64_t>, Defined *> lastThunks;
-  DenseMap<std::pair<ObjFile *, Defined *>, uint32_t> thunkSymtabIndices;
+  DenseMap<std::pair<ObjFile *, Defined *>, uint32_t> localSymtabIndices;
+  auto &thunkSymtabIndices =
+      exact ? rangeThunkSymtabIndices : localSymtabIndices;
   size_t thunksSize = 0;
   // Recheck Chunks.size() each iteration, since we can insert more
   // elements into it.
@@ -537,6 +609,19 @@ bool Writer::createThunks(OutputSection *os, int margin) {
     }
     MachineTypes machine = sc->getMachine();
     size_t thunkInsertionSpot = i + 1;
+
+    // link.exe shares a thunk only among the branches of the section it
+    // follows. Those include the thunks this section got in earlier passes.
+    if (exact) {
+      lastThunks.clear();
+      for (size_t j = i + 1; j != os->chunks.size(); ++j) {
+        auto it = rangeThunks.find(os->chunks[j]);
+        if (it == rangeThunks.end())
+          break;
+        lastThunks[{it->second.target->getRVA(), it->second.addend}] =
+            it->second.sym;
+      }
+    }
 
     // Try to get a good enough estimate of where new thunks will be placed.
     // Offset this by the size of the new thunks added so far, to make the
@@ -567,6 +652,9 @@ bool Writer::createThunks(OutputSection *os, int margin) {
       Defined *sym = dyn_cast_or_null<Defined>(relocTarget);
       if (!sym)
         continue;
+      // Thumb branches to absolute symbols are diagnosed when relocating.
+      if (machine == ARMNT && isa<DefinedAbsolute>(sym))
+        continue;
 
       int64_t addend = 0;
       if (machine == IMAGE_FILE_MACHINE_ALPHA &&
@@ -575,6 +663,10 @@ bool Writer::createThunks(OutputSection *os, int margin) {
       else if (machine == IMAGE_FILE_MACHINE_POWERPC &&
                (rel.Type & IMAGE_REL_PPC_TYPEMASK) == IMAGE_REL_PPC_REL24)
         addend = sc->getPPCBranchAddend(rel);
+      else if (machine == ARMNT &&
+               rel.VirtualAddress + 4 <= sc->getContents().size())
+        addend = getARMBranchAddend(
+            rel.Type, sc->getContents().data() + rel.VirtualAddress);
       uint64_t s = static_cast<uint32_t>(sym->getRVA() + addend);
 
       if (isInRange(rel.Type, s, p, margin, machine))
@@ -585,6 +677,8 @@ bool Writer::createThunks(OutputSection *os, int margin) {
           getThunk(lastThunks, sym, addend, p, rel.Type, margin, machine);
       if (wasNew) {
         Chunk *thunkChunk = thunk->getChunk();
+        if (exact)
+          rangeThunks[thunkChunk] = {thunk, sym, addend};
         thunkChunk->setRVA(
             thunkInsertionRVA); // Estimate of where it will be located.
         os->chunks.insert(os->chunks.begin() + thunkInsertionSpot, thunkChunk);
@@ -704,6 +798,8 @@ bool Writer::verifyRanges(const std::vector<Chunk *> chunks) {
       Defined *sym = dyn_cast_or_null<Defined>(relocTarget);
       if (!sym)
         continue;
+      if (machine == ARMNT && isa<DefinedAbsolute>(sym))
+        continue;
 
       uint64_t p = sc->getRVA() + rel.VirtualAddress;
       int64_t addend = 0;
@@ -713,6 +809,10 @@ bool Writer::verifyRanges(const std::vector<Chunk *> chunks) {
       else if (machine == IMAGE_FILE_MACHINE_POWERPC &&
                (rel.Type & IMAGE_REL_PPC_TYPEMASK) == IMAGE_REL_PPC_REL24)
         addend = sc->getPPCBranchAddend(rel);
+      else if (machine == ARMNT &&
+               rel.VirtualAddress + 4 <= sc->getContents().size())
+        addend = getARMBranchAddend(
+            rel.Type, sc->getContents().data() + rel.VirtualAddress);
       uint64_t s = static_cast<uint32_t>(sym->getRVA() + addend);
 
       if (!isInRange(rel.Type, s, p, 0, machine))
@@ -730,14 +830,20 @@ void Writer::finalizeAddresses() {
       ctx.config.machine != IMAGE_FILE_MACHINE_POWERPC)
     return;
 
+  // Base relocation blocks are laid out with the other sections and may grow
+  // as thunks are added; leave them out of the thunk count.
   size_t origNumChunks = 0;
   for (OutputSection *sec : ctx.outputSections) {
     sec->origChunks = sec->chunks;
-    origNumChunks += sec->chunks.size();
+    if (sec != relocSec)
+      origNumChunks += sec->chunks.size();
   }
 
   int pass = 0;
-  int margin = 1024 * 100;
+  // link.exe only adds thunks for branches that are out of range; when the
+  // added thunks push further branches out of range, it adds more. Elsewhere,
+  // thunks are added with a margin and the margin grows if that fails.
+  int margin = useExactThunks() ? 0 : 1024 * 100;
   while (true) {
     llvm::TimeTraceScope timeScope2("Add thunks pass");
 
@@ -752,7 +858,8 @@ void Writer::finalizeAddresses() {
           rangesOk = false;
           break;
         }
-        numChunks += sec->chunks.size();
+        if (sec != relocSec)
+          numChunks += sec->chunks.size();
       }
     }
     if (rangesOk) {
@@ -766,7 +873,7 @@ void Writer::finalizeAddresses() {
       Fatal(ctx) << "adding thunks hasn't converged after " << pass
                  << " passes";
 
-    if (pass > 0) {
+    if (pass > 0 && !useExactThunks()) {
       // If the previous pass didn't work out, reset everything back to the
       // original conditions before retrying with a wider margin. This should
       // ideally never happen under real circumstances.
@@ -850,6 +957,7 @@ void Writer::run() {
     createMiscChunks();
     createExportTable();
     mergeSections();
+    sortSectionsLikeLinkExe();
     sortECChunks();
     appendECImportTables();
     createDynamicRelocs();
@@ -1143,6 +1251,9 @@ void Writer::addSyntheticIdata() {
   // chunks from other linked in object files to be grouped together.
   // See Microsoft PE/COFF spec 5.4 for details.
   auto add = [&](StringRef n, std::vector<Chunk *> &v) {
+    // An empty group would show up as a zero-chunk COFF group in the PDB.
+    if (v.empty())
+      return;
     PartialSection *pSec = createPartialSection(n, rdata);
     pSec->chunks.insert(pSec->chunks.end(), v.begin(), v.end());
   };
@@ -1162,8 +1273,24 @@ void Writer::addSyntheticIdata() {
 }
 
 void Writer::appendECImportTables() {
-  if (!isArm64EC(ctx.config.machine))
+  if (!isArm64EC(ctx.config.machine)) {
+    // link.exe places the IAT at the start of .rdata.
+    const uint32_t rdata = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ;
+    PartialSection *iat = findPartialSection(".idata$5", rdata);
+    if (!ctx.config.linkExeLayout() || !iat || iat->chunks.empty())
+      return;
+    for (OutputSection *sec : ctx.outputSections) {
+      auto &chunks = sec->chunks;
+      auto first = llvm::find(chunks, iat->chunks.front());
+      if (first == chunks.end())
+        continue;
+      if (size_t(chunks.end() - first) >= iat->chunks.size() &&
+          std::equal(iat->chunks.begin(), iat->chunks.end(), first))
+        std::rotate(chunks.begin(), first, first + iat->chunks.size());
+      break;
+    }
     return;
+  }
 
   const uint32_t rdata = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ;
 
@@ -1260,7 +1387,9 @@ void Writer::calculateStubDependentSizes() {
   if (ctx.config.dosStub)
     dosStubSize = alignTo(ctx.config.dosStub->getBufferSize(), 8);
   else
-    dosStubSize = sizeof(dos_header) + sizeof(dosProgram);
+    dosStubSize = sizeof(dos_header) + (ctx.config.linkExeLayout()
+                                            ? sizeof(dosProgramLinkExe)
+                                            : sizeof(dosProgram));
 
   coffHeaderOffset = dosStubSize + sizeof(PEMagic);
   peHeaderOffset = coffHeaderOffset + sizeof(coff_file_header);
@@ -1317,6 +1446,17 @@ void Writer::createSections() {
     if (sc && !sc->live) {
       if (ctx.config.verbose)
         sc->printDiscardedMessage();
+      // link.exe lays out groups before discarding unreferenced COMDATs, so
+      // their alignment still applies to the group (even an empty one).
+      if (ctx.config.linkExeLayout() && sc->isCOMDAT() && !sc->isDWARF()) {
+        StringRef name = sc->getSectionName();
+        if (shouldStripSectionSuffix(sc, name, ctx.config.mingw))
+          name = name.split('$').first;
+        PartialSection *pSec =
+            createPartialSection(name, sc->getOutputCharacteristics());
+        pSec->discardedAlign =
+            std::max(pSec->discardedAlign, sc->getAlignment());
+      }
       continue;
     }
     if (auto *cc = dyn_cast<CommonChunk>(c)) {
@@ -1331,9 +1471,49 @@ void Writer::createSections() {
     if (name.starts_with(".tls"))
       tlsAlignment = std::max(tlsAlignment, c->getAlignment());
 
-    PartialSection *pSec = createPartialSection(name,
-                                                c->getOutputCharacteristics());
+    uint32_t chars = c->getOutputCharacteristics();
+    // On x86, link.exe treats writable .CRT contributions as read-only (see
+    // below), so they share groups with the read-only ones, in input order.
+    if (ctx.config.linkExeLayout() && ctx.config.machine == I386 &&
+        getOutputSectionName(name, false) == ".CRT" &&
+        chars == (IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ |
+                  IMAGE_SCN_MEM_WRITE))
+      chars = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ;
+    PartialSection *pSec = createPartialSection(name, chars);
     pSec->chunks.push_back(c);
+  }
+
+  // The same goes for the copies of COMDATs that lost to another copy.
+  if (ctx.config.linkExeLayout()) {
+    for (ObjFile *file : ctx.objFileInstances) {
+      for (const coff_section *hdr : file->discardedComdats) {
+        if (hdr->Characteristics &
+            (IMAGE_SCN_LNK_INFO | IMAGE_SCN_LNK_REMOVE))
+          continue;
+        Expected<StringRef> name = file->getCOFFObj()->getSectionName(hdr);
+        if (!name) {
+          consumeError(name.takeError());
+          continue;
+        }
+        if (name->starts_with(".debug"))
+          continue;
+        PartialSection *pSec = createPartialSection(
+            *name, hdr->Characteristics & (permMask | typeMask));
+        pSec->discardedAlign =
+            std::max(pSec->discardedAlign, hdr->getAlignment());
+      }
+    }
+  }
+
+  // link.exe emits an empty volatile metadata directory for x86 and x64. (When
+  // nothing else is in .rdata, link.exe leaves the last section out of the
+  // section count, which can drop .reloc from the image; lld counts it.)
+  if (ctx.config.linkExeLayout() && ctx.config.volatileMetadata &&
+      (ctx.config.machine == I386 || ctx.config.machine == AMD64) &&
+      !ctx.config.discardSection.contains(".rdata")) {
+    PartialSection *pSec = createPartialSection(".rdata$voltmd", data | r);
+    voltmdChunk = make<VolatileMetadataChunk>();
+    pSec->chunks.push_back(voltmdChunk);
   }
 
   fixPartialSectionChars(".rsrc", data | r);
@@ -1355,6 +1535,8 @@ void Writer::createSections() {
   for (auto thunk : ctx.symtab.sameAddressThunks)
     wowthkSec->addChunk(thunk);
 
+  groupPad4 = needsLinkExeGroupPadding();
+
   // Then create an OutputSection for each section.
   // '$' and all following characters in input section names are
   // discarded when determining output section. So, .text$foo
@@ -1368,8 +1550,10 @@ void Writer::createSections() {
       // In link.exe, there is a special case for the I386 target where .CRT
       // sections are treated as if they have output characteristics DATA | R if
       // their characteristics are DATA | R | W. This implements the same
-      // special case for all architectures.
-      outChars = data | r;
+      // special case for all architectures, except where we follow link.exe's
+      // layout (which keeps a writable .CRT writable on other targets).
+      if (!ctx.config.linkExeLayout() || ctx.config.machine == I386)
+        outChars = data | r;
 
       Log(ctx) << "Processing section " << pSec->name << " -> " << name;
 
@@ -1382,11 +1566,108 @@ void Writer::createSections() {
         (pSec->name == ".idata$5" || pSec->name == ".idata$9"))
       continue;
 
-    OutputSection *sec = createSection(name, outChars);
+    if (ctx.config.linkExeLayout() && pSec->chunks.empty() &&
+        pSec->discardedAlign > 1) {
+      auto *e = make<EmptyChunk>();
+      e->setAlignment(pSec->discardedAlign);
+      pSec->chunks.push_back(e);
+      groupPlaceholders.insert(e);
+    }
+    if (pSec->chunks.empty())
+      continue;
+
+    OutputSection *sec;
+    if (ctx.config.linkExeLayout() && name == ".didat" &&
+        !pSec->chunks.empty() && isa<SectionChunk>(pSec->chunks.front())) {
+      // link.exe merges only its own delay-load tables into .rdata; input
+      // .didat sections stay in a .didat section of their own.
+      sec = nullptr;
+      for (OutputSection *s : ctx.outputSections)
+        if (s != didatSec && s->name == ".didat" &&
+            s->header.Characteristics == outChars)
+          sec = s;
+      if (!sec) {
+        sec = make<OutputSection>(".didat", outChars);
+        ctx.outputSections.push_back(sec);
+      }
+    } else {
+      sec = createSection(name, outChars);
+    }
+    // link.exe aligns the start of each group of same-named input sections to
+    // the largest alignment in the group (and at least 4 in some ARM links).
+    if (ctx.config.linkExeLayout() && !pSec->chunks.empty()) {
+      uint32_t maxAlign = std::max(groupPad4 ? 4u : 1u, pSec->discardedAlign);
+      for (Chunk *c : pSec->chunks)
+        maxAlign = std::max(maxAlign, c->getAlignment());
+      Chunk *first = pSec->chunks.front();
+      if (first->getAlignment() < maxAlign)
+        first->setAlignment(maxAlign);
+    }
     for (Chunk *c : pSec->chunks)
       sec->addChunk(c);
 
     sec->addContributingPartialSection(pSec);
+  }
+
+  // Like link.exe (LNK4078), point out input sections of the same name that
+  // end up in different output sections because their attributes differ.
+  if (ctx.config.linkExeLayout()) {
+    StringMap<OutputSection *> seen;
+    for (OutputSection *sec : ctx.outputSections) {
+      if (sec->chunks.empty() || sec == didatSec)
+        continue;
+      auto [it, inserted] = seen.try_emplace(sec->name, sec);
+      if (!inserted && it->second->header.Characteristics !=
+                           sec->header.Characteristics)
+        Warn(ctx) << "multiple '" << sec->name
+                  << "' sections found with different attributes (0x"
+                  << llvm::utohexstr(sec->header.Characteristics, /*LowerCase=*/false)
+                  << ")";
+    }
+  }
+
+  // A section of nothing but discarded groups doesn't exist.
+  for (OutputSection *sec : ctx.outputSections)
+    if (!sec->chunks.empty() &&
+        llvm::all_of(sec->chunks,
+                     [&](Chunk *c) { return groupPlaceholders.contains(c); }))
+      sec->chunks.clear();
+
+  // link.exe merges its .edata group into .rdata right after the input
+  // groups (before the linker's own groups such as $voltmd and $zzzdbg). It
+  // is empty without exports, which only matters when groups are 4-aligned.
+  // createExportTable puts the export tables here.
+  bool exports = !ctx.symtab.exports.empty();
+  if (ctx.config.linkExeLayout() && !ctx.hybridSymtab &&
+      edataSec->chunks.empty() &&
+      (exports || (groupPad4 && !rdataSec->chunks.empty())) &&
+      llvm::any_of(ctx.config.merge,
+                   [](auto &p) {
+                     return p.first == ".edata" && p.second == ".rdata";
+                   }) &&
+      !ctx.config.merge.count(".rdata")) {
+    edataPlaceholder = make<EmptyChunk>();
+    edataPlaceholder->setAlignment(groupPad4 ? 4 : 1);
+    auto &chunks = rdataSec->chunks;
+    auto pos = chunks.end();
+    while (pos != chunks.begin() && *(pos - 1) == voltmdChunk)
+      --pos;
+    chunks.insert(pos, edataPlaceholder);
+  }
+
+  // When import library members were loaded but none of their imports
+  // survived, link.exe still lays out the (empty) .idata groups at the end of
+  // .rdata, so the section ends aligned like the import lookup table.
+  if (ctx.config.linkExeLayout() && !ctx.hybridSymtab && !hasIdata &&
+      !idata.deadImports.empty() && !rdataSec->chunks.empty() &&
+      llvm::any_of(ctx.config.merge,
+                   [](auto &p) {
+                     return p.first == ".idata" && p.second == ".rdata";
+                   }) &&
+      !ctx.config.merge.count(".rdata")) {
+    Chunk *pad = make<EmptyChunk>();
+    pad->setAlignment(ctx.config.wordsize);
+    rdataSec->chunks.push_back(pad);
   }
 
   if (ctx.hybridSymtab) {
@@ -1395,6 +1676,10 @@ void Writer::createSections() {
   }
 
   // Finally, move some output sections to the end.
+  sortSectionsByRank();
+}
+
+void Writer::sortSectionsByRank() {
   auto sectionOrder = [&](const OutputSection *s) {
     // Move DISCARDABLE (or non-memory-mapped) sections to the end of file
     // because the loader cannot handle holes. Runtime sections must precede
@@ -1447,8 +1732,16 @@ void Writer::createMiscChunks() {
     }
 
     if (!symtab.localImportChunks.empty()) {
-      for (Chunk *c : symtab.localImportChunks)
-        rdataSec->addChunk(c);
+      // link.exe places locally imported pointers at the start of .rdata
+      // (after the import address table).
+      if (config->linkExeLayout()) {
+        auto &chunks = rdataSec->chunks;
+        chunks.insert(chunks.begin(), symtab.localImportChunks.begin(),
+                      symtab.localImportChunks.end());
+      } else {
+        for (Chunk *c : symtab.localImportChunks)
+          rdataSec->addChunk(c);
+      }
     }
   });
 
@@ -1460,6 +1753,10 @@ void Writer::createMiscChunks() {
   } else {
     debugInfoSec = rdataSec;
   }
+  // link.exe puts the debug directory at the end of the plain .rdata group and
+  // the records it points to in .rdata$zzzdbg.
+  bool linkExeDebugGroups =
+      config->linkExeLayout() && debugInfoSec == rdataSec;
   if (config->buildIDHash != BuildIDHash::None || config->debug ||
       config->repro || config->cetCompat || config->cetCompatStrict ||
       config->cetCompatIpValidationRelaxed ||
@@ -1467,7 +1764,10 @@ void Writer::createMiscChunks() {
     debugDirectory =
         make<DebugDirectoryChunk>(ctx, debugRecords, config->repro);
     debugDirectory->setAlignment(4);
-    debugInfoSec->addChunk(debugDirectory);
+    if (linkExeDebugGroups)
+      addRdataGroupChunks(".rdata", debugDirectory);
+    else
+      debugInfoSec->addChunk(debugDirectory);
   }
 
   if (config->debug || config->buildIDHash != BuildIDHash::None) {
@@ -1509,7 +1809,10 @@ void Writer::createMiscChunks() {
   // Align and add each chunk referenced by the debug data directory.
   for (std::pair<COFF::DebugType, Chunk *> r : debugRecords) {
     r.second->setAlignment(4);
-    debugInfoSec->addChunk(r.second);
+    if (linkExeDebugGroups)
+      addRdataGroupChunks(".rdata$zzzdbg", r.second);
+    else
+      debugInfoSec->addChunk(r.second);
   }
 
   // Create SEH table. x86-only.
@@ -1543,8 +1846,13 @@ void Writer::createImportTables() {
   // the same order as in the command line. (That affects DLL
   // initialization order, and this ordering is MSVC-compatible.)
   for (ImportFile *file : ctx.importFileInstances) {
-    if (!file->live)
+    if (!file->live) {
+      if (ctx.config.linkExeLayout() && file->impSym &&
+          isa<DefinedImportData>(file->impSym) &&
+          !ctx.config.delayLoads.contains(StringRef(file->dllName).lower()))
+        idata.deadImports.push_back(cast<DefinedImportData>(file->impSym));
       continue;
+    }
 
     std::string dll = StringRef(file->dllName).lower();
     ctx.config.dllOrder.try_emplace(dll, ctx.config.dllOrder.size());
@@ -1564,12 +1872,25 @@ void Writer::createImportTables() {
   }
 }
 
+// link.exe puts import thunks at the end of the .text$mn group.
+void Writer::addImportThunk(Chunk *c) {
+  if (ctx.config.linkExeLayout() && !ctx.hybridSymtab)
+    addGroupChunk(textSec, ".text$mn",
+                  IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_READ,
+                  c);
+  else
+    textSec->addChunk(c);
+}
+
 void Writer::appendImportThunks() {
   if (ctx.importFileInstances.empty())
     return;
 
   llvm::TimeTraceScope timeScope("Import thunks");
-  for (ImportFile *file : ctx.importFileInstances) {
+  std::vector<ImportFile *> files = ctx.importFileInstances;
+  if (ctx.config.linkExeLayout() && !ctx.hybridSymtab)
+    sortImportsByFirstReference(ctx, files, [](ImportFile *f) { return f; });
+  for (ImportFile *file : files) {
     if (!file->live)
       continue;
 
@@ -1579,7 +1900,7 @@ void Writer::appendImportThunks() {
                    << " was replaced";
       auto *chunk = cast<DefinedImportThunk>(file->thunkSym)->getChunk();
       if (chunk->live)
-        textSec->addChunk(chunk);
+        addImportThunk(chunk);
     }
 
     if (file->auxThunkSym) {
@@ -1595,12 +1916,39 @@ void Writer::appendImportThunks() {
       textSec->addChunk(file->impchkThunk);
   }
 
+  // On ARM, link.exe creates its (word-aligned) import thunk group once an
+  // import library member is loaded, even if no thunk ends up in it.
+  if (ctx.config.linkExeLayout() && !ctx.hybridSymtab &&
+      ctx.config.machine == ARMNT &&
+      llvm::any_of(files, [&](ImportFile *f) {
+        return !ctx.config.delayLoads.contains(StringRef(f->dllName).lower());
+      })) {
+    Chunk *slot = make<EmptyChunk>();
+    slot->setAlignment(4);
+    addImportThunk(slot);
+  }
+
   if (!delayIdata.empty()) {
     delayIdata.create();
     for (Chunk *c : delayIdata.getChunks())
       didatSec->addChunk(c);
-    for (Chunk *c : delayIdata.getDataChunks())
-      dataSec->addChunk(c);
+    if (ctx.config.linkExeDelayLoadLayout()) {
+      // link.exe puts the delay-load IAT before the module handles, or with
+      // /guard:cf in its own writable .didat section.
+      if (ctx.config.guardCF != GuardCFLevel::Off) {
+        delayIatSec = make<OutputSection>(
+            ".didat", IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ |
+                          IMAGE_SCN_MEM_WRITE);
+        ctx.outputSections.push_back(delayIatSec);
+      }
+      for (Chunk *c : delayIdata.getAddresses())
+        (delayIatSec ? delayIatSec : dataSec)->addChunk(c);
+      for (Chunk *c : delayIdata.getModuleHandles())
+        dataSec->addChunk(c);
+    } else {
+      for (Chunk *c : delayIdata.getDataChunks())
+        dataSec->addChunk(c);
+    }
     for (Chunk *c : delayIdata.getCodeChunks())
       textSec->addChunk(c);
     for (Chunk *c : delayIdata.getCodePData())
@@ -1646,8 +1994,19 @@ void Writer::createExportTable() {
     } else if (!symtab.exports.empty()) {
       std::vector<Chunk *> edataChunks;
       createEdataChunks(symtab, edataChunks);
-      for (Chunk *c : edataChunks)
-        edataSec->addChunk(c);
+      // link.exe starts the export directory on a 16-byte boundary.
+      if (ctx.config.linkExeLayout()) {
+        edataChunks.front()->setAlignment(16);
+        syntheticEdata = true;
+      }
+      if (edataPlaceholder) {
+        auto &chunks = rdataSec->chunks;
+        chunks.insert(llvm::find(chunks, edataPlaceholder) + 1,
+                      edataChunks.begin(), edataChunks.end());
+      } else {
+        for (Chunk *c : edataChunks)
+          edataSec->addChunk(c);
+      }
       symtab.edataStart = edataChunks.front();
       symtab.edataEnd = edataChunks.back();
     }
@@ -1718,6 +2077,14 @@ void Writer::assignOutputSectionIndices() {
     for (Chunk *c : os->chunks)
       c->setOutputSectionIdx(idx);
     ++idx;
+  }
+
+  // The merged TLS template keeps its own base for section-relative
+  // relocations, within the section it was merged into.
+  if (OutputSection *tls = ctx.tlsTemplateSection) {
+    OutputSection *host = ctx.getOutputSection(ctx.tlsTemplateStart);
+    tls->header.VirtualAddress = ctx.tlsTemplateStart->getRVA();
+    tls->sectionIndex = host ? host->sectionIndex : 0;
   }
 
   // Merge chunks are containers of chunks, so assign those an output section
@@ -1897,14 +2264,160 @@ void Writer::mergeSection(const std::map<StringRef, StringRef>::value_type &p) {
   StringRef toSection = getMergeDestination(p.first, p.second);
 
   OutputSection *from = findSection(p.first);
+  // Of several sections by that name (with different attributes), link.exe
+  // merges the one the input contributes to first.
+  if (ctx.config.linkExeLayout() && from && p.first != ".didat") {
+    if (inputOrder.empty())
+      for (Chunk *c : ctx.driver.getChunks())
+        inputOrder.try_emplace(c, inputOrder.size());
+    auto firstInput = [&](OutputSection *s) {
+      size_t first = SIZE_MAX;
+      for (Chunk *c : s->chunks) {
+        auto it = inputOrder.find(c);
+        if (it != inputOrder.end())
+          first = std::min(first, it->second);
+      }
+      return first;
+    };
+    size_t best = firstInput(from);
+    for (OutputSection *s : ctx.outputSections) {
+      if (s == from || s->name != p.first)
+        continue;
+      size_t f = firstInput(s);
+      if (f < best) {
+        best = f;
+        from = s;
+      }
+    }
+  }
   OutputSection *to = findSection(toSection);
   if (!from)
     return;
+  // link.exe moves only a writable .tls (the usual TLS template) into .rdata.
+  if (p.first == ".tls" && p.second == ".rdata") {
+    if (!ctx.config.linkExeLayout() ||
+        !(from->header.Characteristics & IMAGE_SCN_MEM_WRITE))
+      return;
+    if (to && !from->chunks.empty()) {
+      ctx.mergedTlsChunks.insert(from->chunks.begin(), from->chunks.end());
+      ctx.tlsTemplateStart = from->chunks.front();
+      ctx.tlsTemplateSection =
+          make<OutputSection>(".tls", from->header.Characteristics);
+    }
+  }
   if (!to) {
     from->name = toSection;
     return;
   }
   to->merge(from);
+
+  // link.exe orders the contributions of a merged section by section name, as
+  // if they had the same name before the '$'. Only reorder sections that hold
+  // nothing but input sections. Merged .bss stays at the end, as in link.exe,
+  // so that its zeros take no space in the file.
+  if (!ctx.config.linkExeLayout())
+    return;
+  // The import and export tables and the zeros of .bss keep their own places;
+  // the other sections link.exe merges itself (.xdata, .00cfg) are sorted in
+  // by name like the rest.
+  if (llvm::is_contained({".bss", ".idata", ".didat", ".edata", ".tls"},
+                         p.first))
+    return;
+  // Chunks outside any group keep their place if they lead the section (like
+  // locally imported pointers) and otherwise follow the merged groups (like
+  // the .edata group link.exe merges in afterwards).
+  DenseSet<Chunk *> grouped;
+  for (PartialSection *ps : to->contribSections)
+    grouped.insert(ps->chunks.begin(), ps->chunks.end());
+  size_t present = llvm::count_if(
+      to->chunks, [&](Chunk *c) { return grouped.contains(c); });
+  if (present != grouped.size())
+    return;
+  std::vector<Chunk *> leading, trailing;
+  bool seenGroup = false;
+  for (Chunk *c : to->chunks) {
+    if (grouped.contains(c))
+      seenGroup = true;
+    else
+      (seenGroup ? trailing : leading).push_back(c);
+  }
+  // The import, delay import and export tables, which link.exe merges in last,
+  // follow the sorted groups in their own order.
+  auto key = [](const PartialSection *p) {
+    StringRef n = p->name;
+    bool tables = n.starts_with(".idata") || n.starts_with(".didat") ||
+                  n.starts_with(".edata");
+    return std::make_pair(tables, tables ? StringRef() : n);
+  };
+  llvm::stable_sort(to->contribSections,
+                    [&](const PartialSection *a, const PartialSection *b) {
+                      return key(a) < key(b);
+                    });
+  to->chunks = std::move(leading);
+  for (PartialSection *ps : to->contribSections)
+    to->chunks.insert(to->chunks.end(), ps->chunks.begin(), ps->chunks.end());
+  to->chunks.insert(to->chunks.end(), trailing.begin(), trailing.end());
+}
+
+// Order the sections as link.exe does: code, then uninitialized data, then
+// initialized data, each in the order the input first contributes to them
+// under the section's own name, except that .rdata and .data lead the
+// initialized data. Contributions merged in from other names (/merge) do not
+// move a section; a section made only of merged contributions follows the
+// others, in the order of those contributions. A section is code if any
+// contribution is code, otherwise uninitialized data if all contributions
+// are. Sections without input contributions come last.
+void Writer::sortSectionsLikeLinkExe() {
+  if (!ctx.config.linkExeLayout())
+    return;
+  DenseMap<Chunk *, size_t> inputOrder;
+  for (Chunk *c : ctx.driver.getChunks())
+    inputOrder.try_emplace(c, inputOrder.size());
+  using Key = std::tuple<int, int, size_t, size_t>;
+  DenseMap<OutputSection *, Key> keys;
+  for (OutputSection *sec : ctx.outputSections) {
+    size_t own = SIZE_MAX, first = SIZE_MAX;
+    bool anyCode = false, allBss = true;
+    for (Chunk *c : sec->chunks) {
+      auto it = inputOrder.find(c);
+      if (it == inputOrder.end())
+        continue;
+      first = std::min(first, it->second);
+      if (it->second < own &&
+          getOutputSectionName(c->getSectionName(), ctx.config.mingw) ==
+              sec->name)
+        own = it->second;
+      uint32_t ch = c->getOutputCharacteristics();
+      anyCode |= (ch & IMAGE_SCN_CNT_CODE) != 0;
+      allBss &= (ch & IMAGE_SCN_CNT_UNINITIALIZED_DATA) &&
+                !(ch & (IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_CNT_CODE));
+    }
+    if (first == SIZE_MAX) {
+      uint32_t ch = sec->header.Characteristics;
+      anyCode = ch & IMAGE_SCN_CNT_CODE;
+      allBss = (ch & IMAGE_SCN_CNT_UNINITIALIZED_DATA) &&
+               !(ch & IMAGE_SCN_CNT_INITIALIZED_DATA);
+    }
+    int category = anyCode ? 0 : allBss ? 1 : 2;
+    int lead = 4;
+    if (sec == rdataSec)
+      lead = 0;
+    else if (sec == dataSec)
+      lead = 1;
+    else if (sec == idataSec)
+      lead = 2;
+    else if (sec->name == ".didat" && sec != delayIatSec &&
+             (sec->header.Characteristics & IMAGE_SCN_MEM_WRITE))
+      lead = 3;
+    // .rdata and .data are initialized data even if they hold merged .bss.
+    if (lead != 4)
+      category = 2;
+    keys[sec] = Key(category, category == 2 ? lead : 4, own, first);
+  }
+  llvm::stable_sort(ctx.outputSections, [&](OutputSection *a, OutputSection *b) {
+    return keys[a] < keys[b];
+  });
+  sortSectionsByRank();
 }
 
 void Writer::mergeSections() {
@@ -1934,9 +2447,24 @@ void Writer::mergeSections() {
     }
   }
 
-  for (auto &p : ctx.config.merge) {
-    if (p.first != ".bss")
+  // link.exe applies the /merge options before its own default merges.
+  for (int pass = 0; pass < 2; ++pass) {
+    for (auto &p : ctx.config.merge) {
+      if (p.first == ".bss")
+        continue;
+      bool user = ctx.config.userMerges.contains(p.first);
+      if (ctx.config.linkExeLayout() ? user != (pass == 0) : pass == 1)
+        continue;
+      // When .rdata itself is merged elsewhere, link.exe keeps the import
+      // tables in their own .idata section.
+      if (ctx.config.linkExeLayout() && p.first == ".idata" &&
+          p.second == ".rdata") {
+        auto it = ctx.config.merge.find(".rdata");
+        if (it != ctx.config.merge.end() && it->second != ".rdata")
+          continue;
+      }
       mergeSection(p);
+    }
   }
 
   // Because .bss contains all zeros, it should be merged at the end of
@@ -2047,6 +2575,17 @@ void Writer::assignAddresses() {
     fileSize += alignTo(rawSize, config->fileAlign);
   }
   sizeOfImage = alignTo(rva, config->align);
+  // A 32-bit image must end below 2GB, or 4GB if large address aware
+  // (link.exe: LNK1249).
+  if (!config->is64() && config->linkExeLayout() && !reportedExtent &&
+      config->imageBase + sizeOfImage >=
+          (config->largeAddressAware ? 0x100000000ull : 0x80000000ull))
+  {
+    reportedExtent = true;
+    Err(ctx) << "image exceeds maximum extent with base address 0x"
+             << Twine::utohexstr(config->imageBase) << " and size 0x"
+             << Twine::utohexstr(sizeOfImage);
+  }
 
   // Assign addresses to sections in MergeChunks.
   for (MergeChunk *mc : ctx.mergeChunkInstances)
@@ -2086,8 +2625,18 @@ template <typename PEHeaderTy> void Writer::writeHeader() {
     dos->AddressOfRelocationTable = sizeof(dos_header);
     dos->AddressOfNewExeHeader = dosStubSize;
 
-    memcpy(buf, dosProgram, sizeof(dosProgram));
-    buf += sizeof(dosProgram);
+    if (config->linkExeLayout()) {
+      // The header values link.exe writes.
+      dos->UsedBytesInTheLastPage = 0x90;
+      dos->FileSizeInPages = 3;
+      dos->MaximumExtraParagraphs = 0xffff;
+      dos->InitialSP = 0xb8;
+      memcpy(buf, dosProgramLinkExe, sizeof(dosProgramLinkExe));
+      buf += sizeof(dosProgramLinkExe);
+    } else {
+      memcpy(buf, dosProgram, sizeof(dosProgram));
+      buf += sizeof(dosProgram);
+    }
   }
 
   // Make sure DOS stub is aligned to 8 bytes at this point
@@ -2152,10 +2701,10 @@ template <typename PEHeaderTy> void Writer::writeHeader() {
   pe->SizeOfHeaders = sizeOfHeaders;
   if (!config->noEntry) {
     Defined *entry = cast<Defined>(symtab.entry);
-    pe->AddressOfEntryPoint = entry->getRVA();
-    // Pointer to thumb code must have the LSB set, so adjust it.
-    if (config->machine == ARMNT)
-      pe->AddressOfEntryPoint |= 1;
+    // An entry point in Thumb code must have the LSB set.
+    pe->AddressOfEntryPoint = config->machine == ARMNT
+                                  ? getARMTargetRVA(entry)
+                                  : entry->getRVA();
   }
   pe->SizeOfStackReserve = config->stackReserve;
   pe->SizeOfStackCommit = config->stackCommit;
@@ -2184,11 +2733,29 @@ template <typename PEHeaderTy> void Writer::writeHeader() {
   if (config->terminalServerAware)
     pe->DLLCharacteristics |= IMAGE_DLL_CHARACTERISTICS_TERMINAL_SERVER_AWARE;
   pe->NumberOfRvaAndSize = numberOfDataDirectory;
-  if (textSec->getVirtualSize()) {
-    pe->BaseOfCode = textSec->getRVA();
-    pe->SizeOfCode = textSec->getRawSize();
+  // Like link.exe, SizeOfCode covers every code section, BaseOfCode is the
+  // first of them and the PE32 BaseOfData is the first section after code
+  // (or the end of the image if there is none).
+  for (OutputSection *sec : ctx.outputSections) {
+    if (!(sec->header.Characteristics & IMAGE_SCN_CNT_CODE) ||
+        !sec->getVirtualSize())
+      continue;
+    if (!pe->SizeOfCode)
+      pe->BaseOfCode = sec->getRVA();
+    pe->SizeOfCode += getSectionSizeForHeader(sec);
+  }
+  if constexpr (std::is_same_v<PEHeaderTy, pe32_header>) {
+    pe->BaseOfData = sizeOfImage;
+    for (OutputSection *sec : ctx.outputSections) {
+      if (!(sec->header.Characteristics & IMAGE_SCN_CNT_CODE) &&
+          sec->getVirtualSize()) {
+        pe->BaseOfData = sec->getRVA();
+        break;
+      }
+    }
   }
   pe->SizeOfInitializedData = getSizeOfInitializedData();
+  pe->SizeOfUninitializedData = getSizeOfUninitializedData();
 
   // Write data directory
   assert(!ctx.config.is64() ||
@@ -2201,6 +2768,12 @@ template <typename PEHeaderTy> void Writer::writeHeader() {
     dir[EXPORT_TABLE].Size = symtab.edataEnd->getRVA() +
                              symtab.edataEnd->getSize() -
                              symtab.edataStart->getRVA();
+    // link.exe gives the size of the .edata group it makes, which runs up to
+    // the start of the next group.
+    if (syntheticEdata) {
+      if (Chunk *next = nextGroupChunk(symtab.edataEnd))
+        dir[EXPORT_TABLE].Size = next->getRVA() - symtab.edataStart->getRVA();
+    }
   }
   if (importTableStart) {
     dir[IMPORT_TABLE].RelativeVirtualAddress = importTableStart->getRVA();
@@ -2209,6 +2782,15 @@ template <typename PEHeaderTy> void Writer::writeHeader() {
   if (iatStart) {
     dir[IAT].RelativeVirtualAddress = iatStart->getRVA();
     dir[IAT].Size = iatSize;
+    // link.exe gives the size of the IAT group, which runs up to the start of
+    // the next group.
+    if (config->linkExeLayout() && !isArm64EC(config->machine)) {
+      if (PartialSection *ia = findPartialSection(
+              ".idata$5", IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ)) {
+        if (Chunk *next = nextGroupChunk(ia->chunks.back()))
+          dir[IAT].Size = next->getRVA() - iatStart->getRVA();
+      }
+    }
   }
   if (rsrcSec->getVirtualSize()) {
     dir[RESOURCE_TABLE].RelativeVirtualAddress = rsrcSec->getRVA();
@@ -2249,6 +2831,11 @@ template <typename PEHeaderTy> void Writer::writeHeader() {
     dir[LOAD_CONFIG_TABLE].RelativeVirtualAddress =
         symtab.loadConfigSym->getRVA();
     dir[LOAD_CONFIG_TABLE].Size = symtab.loadConfigSize;
+    // For older loaders, link.exe gives the x86 load configuration's size as
+    // 64; current ones read the structure's own Size field.
+    if (config->machine == I386 && config->linkExeLayout() &&
+        symtab.loadConfigSize > 64)
+      dir[LOAD_CONFIG_TABLE].Size = 64;
   }
   if (!delayIdata.empty()) {
     dir[DELAY_IMPORT_DESCRIPTOR].RelativeVirtualAddress =
@@ -2454,6 +3041,35 @@ void Writer::createGuardCFTables() {
       maybeAddAddressTakenFunction(addressTakenSyms, e.sym);
   });
 
+  // On ARM64EC, link.exe also lists the x64 entry thunks of the entry point
+  // and exports, and the import check thunks and their exit thunks, which
+  // may be called indirectly.
+  if (ctx.hybridSymtab) {
+    SymbolTable &ecSymtab = ctx.symtab;
+    auto addExpThunk = [&](Symbol *s) {
+      if (!s)
+        return;
+      StringRef name = s->getName();
+      std::optional<std::string> mangled =
+          getArm64ECMangledFunctionName(name);
+      Symbol *thunk = ecSymtab.find(
+          "EXP+" + (mangled ? StringRef(*mangled) : name).str());
+      if (auto *d = dyn_cast_or_null<Defined>(thunk))
+        addSymbolToRVASet(addressTakenSyms, d);
+    };
+    addExpThunk(ecSymtab.entry);
+    for (Export &e : ecSymtab.exports)
+      if (!e.data)
+        addExpThunk(e.sym);
+    for (ImportFile *file : ctx.importFileInstances)
+      if (file->live && file->impchkThunk) {
+        addressTakenSyms.insert({file->impchkThunk, 0});
+        if (auto *exitThunk =
+                dyn_cast_or_null<Defined>(file->impchkThunk->exitThunk))
+          addSymbolToRVASet(addressTakenSyms, exitThunk);
+      }
+  }
+
   // For each entry in the .giats table, check if it has a corresponding load
   // thunk (e.g. because the DLL that defines it will be delay-loaded) and, if
   // so, add the load thunk to the address taken (.gfids) table.
@@ -2494,6 +3110,11 @@ void Writer::createGuardCFTables() {
     guardFlags |= uint32_t(GuardFlags::CF_LONGJUMP_TABLE_PRESENT);
   if (config->guardCF & GuardCFLevel::EHCont)
     guardFlags |= uint32_t(GuardFlags::EH_CONTINUATION_TABLE_PRESENT);
+  // Like link.exe, let the delay-load helper protect the delay-load IAT,
+  // which is in a section of its own (see appendImportThunks).
+  if (config->linkExeDelayLoadLayout())
+    guardFlags |= uint32_t(GuardFlags::PROTECT_DELAYLOAD_IAT) |
+                  uint32_t(GuardFlags::DELAYLOAD_IAT_IN_ITS_OWN_SECTION);
   ctx.forEachSymtab([guardFlags](SymbolTable &symtab) {
     Symbol *flagSym = symtab.findUnderscore("__guard_flags");
     cast<DefinedAbsolute>(flagSym)->setVA(guardFlags);
@@ -2855,9 +3476,34 @@ void Writer::writeSections() {
   uint8_t *buf = buffer->getBufferStart();
   for (OutputSection *sec : ctx.outputSections) {
     uint8_t *secBuf = buf + sec->getFileOff();
-    // Fill gaps between functions in .text with trap/NOP instructions instead
-    // of leaving NUL bytes, which may decode as instructions.
-    if ((sec->header.Characteristics & IMAGE_SCN_CNT_CODE) &&
+    // link.exe fills the padding after a code contribution with int3, in any
+    // section, and other padding (including the file alignment padding at
+    // the end of a section) with zeros.
+    if (ctx.config.linkExeLayout() &&
+        (ctx.config.machine == AMD64 || ctx.config.machine == I386)) {
+      uint32_t rawSize = sec->getRawSize();
+      Chunk *prev = nullptr;
+      uint32_t prevEnd = 0;
+      for (Chunk *c : sec->chunks) {
+        uint32_t off = c->getRVA() - sec->getRVA();
+        if (off >= rawSize)
+          break;
+        // Only padding between two contributions is filled; padding before
+        // empty groups at the end of the section stays zero.
+        // /functionpadmin's padding before a function is always int3.
+        bool hotPatchPad = ctx.config.functionPadMin &&
+                           sec->isCodeSection() && c->isHotPatchable();
+        if (off > prevEnd && c->getSize() &&
+            (hotPatchPad ||
+             (prev && (prev->getOutputCharacteristics() &
+                       (IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE)))))
+          memset(secBuf + prevEnd, 0xCC, off - prevEnd);
+        if (c->getSize()) {
+          prev = c;
+          prevEnd = std::min(off + static_cast<uint32_t>(c->getSize()), rawSize);
+        }
+      }
+    } else if ((sec->header.Characteristics & IMAGE_SCN_CNT_CODE) &&
         (ctx.config.machine == AMD64 || ctx.config.machine == I386 ||
          ctx.config.machine == ALPHA ||
          ctx.config.machine == IMAGE_FILE_MACHINE_ALPHA64)) {
@@ -3123,11 +3769,29 @@ OutputSection *Writer::findSection(StringRef name) {
   return nullptr;
 }
 
+// Like link.exe, count each section's virtual size rounded up to the file
+// alignment, so that, e.g., a .data holding only merged .bss counts.
+uint32_t Writer::getSectionSizeForHeader(OutputSection *s) {
+  if (!ctx.config.linkExeLayout())
+    return s->getRawSize();
+  return alignTo(s->getVirtualSize(), ctx.config.fileAlign);
+}
+
 uint32_t Writer::getSizeOfInitializedData() {
   uint32_t res = 0;
   for (OutputSection *s : ctx.outputSections)
     if (s->header.Characteristics & IMAGE_SCN_CNT_INITIALIZED_DATA)
-      res += s->getRawSize();
+      res += getSectionSizeForHeader(s);
+  return res;
+}
+
+uint32_t Writer::getSizeOfUninitializedData() {
+  uint32_t res = 0;
+  if (!ctx.config.linkExeLayout())
+    return res;
+  for (OutputSection *s : ctx.outputSections)
+    if (s->header.Characteristics & IMAGE_SCN_CNT_UNINITIALIZED_DATA)
+      res += getSectionSizeForHeader(s);
   return res;
 }
 
@@ -3153,6 +3817,12 @@ void Writer::addBaserels() {
       addBaserelBlocks(v);
     v.clear();
   }
+  // Without /opt:ref, ARM link.exe keeps a .reloc section for a branch into
+  // another input section even when there is nothing to relocate, as a single
+  // empty block for page 0.
+  if (relocSec->chunks.empty() && ctx.config.machine == ARMNT &&
+      !ctx.config.doGC && hasCrossSectionBranch())
+    relocSec->addChunk(make<BaserelChunk>(0, nullptr, nullptr));
 }
 
 // Add addresses to .reloc section. Note that addresses are grouped by page.
@@ -3282,6 +3952,92 @@ PartialSection *Writer::createPartialSection(StringRef name,
     return pSec;
   pSec = make<PartialSection>(name, outChars);
   return pSec;
+}
+
+// Under /opt:ref, ARM and ARM64 link.exe lays out the image a second time when
+// a branch relocation reaches into another input section, and in that layout
+// every group starts at least 4-byte aligned. Report whether that happens.
+bool Writer::needsLinkExeGroupPadding() {
+  return ctx.config.doGC && hasCrossSectionBranch();
+}
+
+// Whether an ARM or ARM64 branch relocation targets another input section.
+bool Writer::hasCrossSectionBranch() {
+  Configuration *config = &ctx.config;
+  if (!config->linkExeLayout() ||
+      (config->machine != ARMNT && config->machine != ARM64))
+    return false;
+  for (Chunk *c : ctx.driver.getChunks()) {
+    auto *sc = dyn_cast<SectionChunk>(c);
+    if (!sc || !sc->live)
+      continue;
+    for (const coff_relocation &rel : sc->getRelocs()) {
+      bool branch =
+          config->machine == ARMNT
+              ? (rel.Type == IMAGE_REL_ARM_BRANCH20T ||
+                 rel.Type == IMAGE_REL_ARM_BRANCH24T ||
+                 rel.Type == IMAGE_REL_ARM_BLX23T)
+              : (rel.Type == IMAGE_REL_ARM64_BRANCH26 ||
+                 rel.Type == IMAGE_REL_ARM64_BRANCH19 ||
+                 rel.Type == IMAGE_REL_ARM64_BRANCH14);
+      if (!branch)
+        continue;
+      auto *d = dyn_cast_or_null<Defined>(sc->file->getSymbol(rel.SymbolTableIndex));
+      if (d && d->getChunk() != sc)
+        return true;
+    }
+  }
+  return false;
+}
+
+// The chunk that starts what follows `c` in its section, for the sizes
+// link.exe gives to groups: the next contribution or empty group, skipping
+// zero-size markers. Null at the end of the section.
+Chunk *Writer::nextGroupChunk(Chunk *c) {
+  OutputSection *os = ctx.getOutputSection(c);
+  if (!os)
+    return nullptr;
+  auto it = llvm::find(os->chunks, c);
+  if (it == os->chunks.end())
+    return nullptr;
+  for (++it; it != os->chunks.end(); ++it)
+    if ((*it)->getSize() || groupPlaceholders.contains(*it))
+      return *it;
+  return nullptr;
+}
+
+// Add a synthetic chunk to .rdata as part of the group `name`, where link.exe
+// would put it: groups are ordered by name, and a chunk added to a group
+// follows the group's input contributions.
+void Writer::addRdataGroupChunks(StringRef name, Chunk *c) {
+  addGroupChunk(rdataSec, name,
+                IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ, c);
+}
+
+// Add a synthetic chunk to `sec` as part of the group `name`, where link.exe
+// would put it: groups are ordered by name, and a chunk added to a group
+// follows the group's input contributions.
+void Writer::addGroupChunk(OutputSection *sec, StringRef name, uint32_t chars,
+                           Chunk *c) {
+  PartialSection *ps = createPartialSection(name, chars);
+  std::vector<PartialSection *> &contribs = sec->contribSections;
+  auto next = llvm::find_if(contribs, [&](PartialSection *p) {
+    return p != ps && p->name > name && !p->chunks.empty();
+  });
+  auto pos = sec->chunks.end();
+  if (next != contribs.end())
+    pos = llvm::find(sec->chunks, (*next)->chunks.front());
+  // link.exe makes the plain .rdata group before merging in .edata, and the
+  // linker's other groups after.
+  if (sec == rdataSec && edataPlaceholder && name == ".rdata") {
+    auto e = llvm::find(sec->chunks, edataPlaceholder);
+    if (e < pos)
+      pos = e;
+  }
+  sec->chunks.insert(pos, c);
+  ps->chunks.push_back(c);
+  if (!llvm::is_contained(contribs, ps))
+    contribs.insert(next, ps);
 }
 
 PartialSection *Writer::findPartialSection(StringRef name, uint32_t outChars) {

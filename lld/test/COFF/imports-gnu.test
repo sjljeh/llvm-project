@@ -23,7 +23,7 @@ IMPORT-NEXT: Import {
 IMPORT-NEXT:   Name: std64.dll
 IMPORT-NEXT:   ImportLookupTableRVA:
 IMPORT-NEXT:   ImportAddressTableRVA:
-IMPORT-NEXT:   Symbol: ExitProcess (0)
-IMPORT-NEXT:   Symbol:  (50)
 IMPORT-NEXT:   Symbol: MessageBoxA (1)
+IMPORT-NEXT:   Symbol:  (50)
+IMPORT-NEXT:   Symbol: ExitProcess (0)
 IMPORT-NEXT: }

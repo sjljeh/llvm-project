@@ -687,13 +687,70 @@ void SymbolTable::initializeSameAddressThunks() {
 Symbol *SymbolTable::addUndefined(StringRef name, InputFile *f,
                                   bool overrideLazy) {
   auto [s, wasInserted] = insert(name, f);
+  noteUndefined(s);
   if (wasInserted || (s->isLazy() && overrideLazy)) {
     replaceSymbol<Undefined>(s, name);
+    if (wasInserted && !ctx.config.mingw && name.ends_with("_$fo$"))
+      addFunctionOverrideDefault(s);
     return s;
   }
-  if (s->isLazy())
+  if (s->isLazy()) {
+    // link.exe doesn't search libraries for the "<function>_$fo$" symbols of
+    // MSVC's function overrides unless asked to (/funcoverride, which isn't
+    // supported); the reference resolves to "<function>_$fo_default$".
+    if (!ctx.config.mingw && name.ends_with("_$fo$")) {
+      replaceSymbol<Undefined>(s, name);
+      addFunctionOverrideDefault(s);
+      return s;
+    }
+    preferArchiveLikeLinkExe(s, f);
     forceLazy(s);
+  }
   return s;
+}
+
+// Resolve an undefined "<function>_$fo$" to "<function>_$fo_default$", as
+// link.exe does without /funcoverride.
+void SymbolTable::addFunctionOverrideDefault(Symbol *s) {
+  StringRef name = s->getName();
+  std::string def = (name.drop_back(strlen("$fo$")) + "$fo_default$").str();
+  // Like an /alternatename, so that the object's own default (which may come
+  // later in its symbol table) is used.
+  alternateNames.try_emplace(name, saver().save(def));
+}
+
+// link.exe searches one library at a time, so a symbol that a library member
+// leaves undefined comes from that library if it defines it, or else from the
+// next library in search order that does. Make a lazy symbol for a reference
+// from `f` point at that archive.
+void SymbolTable::preferArchiveLikeLinkExe(Symbol *s, InputFile *f) {
+  auto *lazy = dyn_cast<LazyArchive>(s);
+  if (!lazy || !f || f->parentName.empty() || ctx.config.mingw)
+    return;
+  auto it = lazyAlternates.find(CachedHashStringRef(s->getName()));
+  if (it == lazyAlternates.end())
+    return;
+  size_t n = ctx.archiveOrder.size();
+  auto from = ctx.archiveOrder.find(f->parentName);
+  if (from == ctx.archiveOrder.end() || n == 0)
+    return;
+  auto distance = [&](ArchiveFile *a) {
+    size_t idx = ctx.archiveOrder.lookup(a->getName());
+    return (idx + n - from->second) % n;
+  };
+  ArchiveFile *bestFile = lazy->file;
+  Archive::Symbol bestSym = lazy->sym;
+  size_t best = distance(bestFile);
+  for (auto &[file, sym] : it->second) {
+    size_t d = distance(file);
+    if (d < best) {
+      best = d;
+      bestFile = file;
+      bestSym = sym;
+    }
+  }
+  if (bestFile != lazy->file)
+    replaceSymbol<LazyArchive>(s, bestFile, bestSym);
 }
 
 Symbol *SymbolTable::addGCRoot(StringRef name, bool aliasEC) {
@@ -773,10 +830,22 @@ void SymbolTable::addLazyArchive(ArchiveFile *f, const Archive::Symbol &sym) {
     replaceSymbol<LazyArchive>(s, f, sym);
     return;
   }
+  if (auto *l = dyn_cast<LazyArchive>(s)) {
+    if (l->file != f && !ctx.config.mingw)
+      lazyAlternates[CachedHashStringRef(name)].push_back({f, sym});
+    return;
+  }
   auto *u = dyn_cast<Undefined>(s);
   if (!u || (u->weakAlias && !u->isECAlias(machine)) || s->pendingArchiveLoad)
     return;
+  if (!ctx.config.mingw && name.ends_with("_$fo$"))
+    return;
   s->pendingArchiveLoad = true;
+  if (collectingArchiveLoads) {
+    collectedArchiveLoads.push_back(
+        {undefinedOrder.lookup(s), std::make_pair(f, sym)});
+    return;
+  }
   f->addMember(sym);
 }
 
@@ -1335,9 +1404,45 @@ void SymbolTable::assignExportOrdinals() {
   uint32_t max = 0;
   for (Export &e : exports)
     max = std::max(max, (uint32_t)e.ordinal);
-  for (Export &e : exports)
-    if (e.ordinal == 0)
-      e.ordinal = ++max;
+  if (ctx.config.mingw) {
+    for (Export &e : exports)
+      if (e.ordinal == 0)
+        e.ordinal = ++max;
+  } else {
+    // link.exe gives the exports without an ordinal (in name order) the free
+    // ordinals from the lowest one given (or 1) up, filling gaps first.
+    uint32_t base = std::numeric_limits<uint32_t>::max();
+    for (Export &e : exports)
+      if (e.ordinal)
+        base = std::min(base, (uint32_t)e.ordinal);
+    if (base == std::numeric_limits<uint32_t>::max())
+      base = 1;
+    DenseSet<uint32_t> used;
+    for (Export &e : exports)
+      if (e.ordinal)
+        used.insert(e.ordinal);
+    // For ARM64EC, link.exe orders them by the names as given to /export
+    // instead (E in /export:E=N, or else N), so mangled functions ("#func")
+    // come before data.
+    SmallVector<std::pair<StringRef, Export *>, 0> pending;
+    for (Export &e : exports) {
+      if (e.ordinal)
+        continue;
+      StringRef key = e.exportName;
+      if (isEC())
+        key = e.extName.empty() ? e.name : e.extName;
+      pending.emplace_back(key, &e);
+    }
+    if (isEC())
+      llvm::stable_sort(pending, [](auto &a, auto &b) { return a.first < b.first; });
+    uint32_t next = base;
+    for (auto &[key, e] : pending) {
+      while (used.contains(next))
+        ++next;
+      max = std::max(max, next);
+      e->ordinal = next++;
+    }
+  }
   if (max > std::numeric_limits<uint16_t>::max())
     Fatal(ctx) << "too many exported symbols (got " << max << ", max "
                << Twine(std::numeric_limits<uint16_t>::max()) << ")";
@@ -1358,6 +1463,13 @@ void SymbolTable::parseModuleDefs(StringRef path) {
 
   if (ctx.config.outputFile.empty())
     ctx.config.outputFile = std::string(saver().save(m.OutputFile));
+  else if (!ctx.config.mingw && !m.OutputFile.empty() &&
+           !sys::path::filename(ctx.config.outputFile)
+                .equals_insensitive(sys::path::filename(m.OutputFile)))
+    Warn(ctx) << "/out:" << sys::path::filename(m.OutputFile)
+              << " directive in .def differs from output filename '"
+              << sys::path::filename(ctx.config.outputFile)
+              << "'; the module keeps the .def name in its exports";
   ctx.config.importName = std::string(saver().save(m.ImportName));
   if (m.ImageBase)
     ctx.config.imageBase = m.ImageBase;
@@ -1377,6 +1489,8 @@ void SymbolTable::parseModuleDefs(StringRef path) {
     ctx.config.majorOSVersion = m.MajorOSVersion;
   if (m.MinorOSVersion)
     ctx.config.minorOSVersion = m.MinorOSVersion;
+  if (m.MajorOSVersion || m.MinorOSVersion)
+    ctx.config.osVersionSet = true;
 
   for (COFFShortExport e1 : m.Exports) {
     Export e2;

@@ -29,9 +29,10 @@
 # CHECK3:      DLL name: ordinals-override.test.tmp.dll
 # CHECK3:      Ordinal base: 55
 # CHECK3:      Ordinal      RVA  Name
+## As in link.exe, baz takes the first free ordinal from the lowest one up.
 # CHECK3-NEXT:      55   0x1000  ?foo@@YAXXZ
+# CHECK3-NEXT:      56   0x1020  baz
 # CHECK3-NEXT:     122   0x1010  ?bar@@YAXXZ
-# CHECK3-NEXT:     123   0x1020  baz
 #
 # RUN: echo "EXPORTS" > %t.def
 # RUN: echo "?foo@@YAXXZ @55" >> %t.def
@@ -51,8 +52,8 @@
 # CHECK4:      Ordinal base: 122
 # CHECK4:      Ordinal      RVA  Name
 # CHECK4-NEXT:     122   0x1010  ?bar@@YAXXZ
+# CHECK4-NEXT:     123   0x1020  baz
 # CHECK4-NEXT:   10000   0x1000  ?foo@@YAXXZ
-# CHECK4-NEXT:   10001   0x1020  baz
 
 # The .drectve section below contains the following:
 #

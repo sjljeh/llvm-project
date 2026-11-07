@@ -219,6 +219,27 @@ private:
   std::vector<Symbol *> getSymsWithPrefix(StringRef prefix);
 
   llvm::DenseMap<llvm::CachedHashStringRef, Symbol *> symMap;
+  // The other archives that define a symbol held as LazyArchive, for picking
+  // the archive link.exe would search first.
+  llvm::DenseMap<llvm::CachedHashStringRef,
+                 llvm::SmallVector<std::pair<ArchiveFile *, Archive::Symbol>, 1>>
+      lazyAlternates;
+  void preferArchiveLikeLinkExe(Symbol *s, InputFile *f);
+  void addFunctionOverrideDefault(Symbol *s);
+
+public:
+  // While an archive's symbols are read, its members that resolve undefined
+  // symbols are collected here, to be loaded in the order the symbols became
+  // undefined (as link.exe searches its list of undefined symbols).
+  bool collectingArchiveLoads = false;
+  std::vector<std::pair<size_t, std::pair<ArchiveFile *, Archive::Symbol>>>
+      collectedArchiveLoads;
+  llvm::DenseMap<Symbol *, size_t> undefinedOrder;
+  void noteUndefined(Symbol *s) {
+    undefinedOrder.try_emplace(s, undefinedOrder.size());
+  }
+
+private:
   std::unique_ptr<BitcodeCompiler> lto;
   std::vector<std::pair<Symbol *, Symbol *>> entryThunks;
   llvm::DenseMap<Symbol *, Symbol *> exitThunks;

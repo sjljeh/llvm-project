@@ -14,14 +14,14 @@
 # IMPORT-NEXT: DelayImport {
 # IMPORT-NEXT:   Name: library.dll
 # IMPORT-NEXT:   Attributes: 0x1
-# IMPORT-NEXT:   ModuleHandle: 0x3008
-# IMPORT-NEXT:   ImportAddressTable: 0x3010
-# IMPORT-NEXT:   ImportNameTable: 0x2044
-# IMPORT-NEXT:   BoundDelayImportTable: 0x0
+# IMPORT-NEXT:   ModuleHandle: 0x300C
+# IMPORT-NEXT:   ImportAddressTable: 0x3004
+# IMPORT-NEXT:   ImportNameTable: 0x2054
+# IMPORT-NEXT:   BoundDelayImportTable: 0x2068
 # IMPORT-NEXT:   UnloadDelayImportTable: 0x0
 # IMPORT-NEXT:   Import {
 # IMPORT-NEXT:     Symbol: function (0)
-# IMPORT-NEXT:     Address: 0x40100D
+# IMPORT-NEXT:     Address: 0x401035
 # IMPORT-NEXT:   }
 # IMPORT-NEXT: }
 #
@@ -32,19 +32,19 @@
 # BASEREL-NEXT:   }
 # BASEREL-NEXT:   Entry {
 # BASEREL-NEXT:     Type: ARM_MOV32(T)
-# BASEREL-NEXT:     Address: 0x100C
+# BASEREL-NEXT:     Address: 0x101A
 # BASEREL-NEXT:   }
 # BASEREL-NEXT:   Entry {
 # BASEREL-NEXT:     Type: ARM_MOV32(T)
-# BASEREL-NEXT:     Address: 0x1026
-# BASEREL-NEXT:   }
-# BASEREL-NEXT:   Entry {
-# BASEREL-NEXT:     Type: ABSOLUTE
-# BASEREL-NEXT:     Address: 0x1000
+# BASEREL-NEXT:     Address: 0x1034
 # BASEREL-NEXT:   }
 # BASEREL-NEXT:   Entry {
 # BASEREL-NEXT:     Type: HIGHLOW
-# BASEREL-NEXT:     Address: 0x3010
+# BASEREL-NEXT:     Address: 0x1040
+# BASEREL-NEXT:   }
+# BASEREL-NEXT:   Entry {
+# BASEREL-NEXT:     Type: HIGHLOW
+# BASEREL-NEXT:     Address: 0x3004
 # BASEREL-NEXT:   }
 # BASEREL-NEXT:   Entry {
 # BASEREL-NEXT:     Type: ABSOLUTE
@@ -53,23 +53,36 @@
 # BASEREL-NEXT: ]
 #
 # DISASM:    00401000 <.text>:
-# DISASM:      40100c:       f243 0c10       movw r12, #12304
-# DISASM-NEXT:               f2c0 0c40       movt    r12, #64
-# DISASM-NEXT:               f000 b800       b.w     {{.+}} @ imm = #0
-# DISASM-NEXT:               e92d 480f       push.w  {r0, r1, r2, r3, r11, lr}
-# DISASM-NEXT:               f20d 0b10       addw    r11, sp, #16
-# DISASM-NEXT:               ed2d 0b10       vpush   {d0, d1, d2, d3, d4, d5, d6, d7}
-# DISASM-NEXT:               4661            mov     r1, r12
-# DISASM-NEXT:               f242 0004       movw r0, #8196
-# DISASM-NEXT:               f2c0 0040       movt    r0, #64
-# DISASM-NEXT:               f7ff ffe7       bl      0x401000 <.text>
-# DISASM-NEXT:               4684            mov     r12, r0
-# DISASM-NEXT:               ecbd 0b10       vpop    {d0, d1, d2, d3, d4, d5, d6, d7}
-# DISASM-NEXT:               e8bd 480f       pop.w   {r0, r1, r2, r3, r11, lr}
-# DISASM-NEXT:               4760            bx      r12
+## As in link.exe, the tail-merge code comes before the delay-load thunk, which
+## reaches it through a literal holding its address.
+# DISASM:      40100c: e92d 480f       push.w  {r0, r1, r2, r3, r11, lr}
+# DISASM-NEXT: 401010: f20d 0b10       addw    r11, sp, #16
+# DISASM-NEXT: 401014: ed2d 0b10       vpush   {d0, d1, d2, d3, d4, d5, d6, d7}
+# DISASM-NEXT: 401018: 4661            mov     r1, r12
+# DISASM-NEXT: 40101a: f242 0014       movw    r0, #8212
+# DISASM-NEXT: 40101e: f2c0 0040       movt    r0, #64
+# DISASM-NEXT: 401022: f7ff ffed       bl      0x401000 <.text>
+# DISASM-NEXT: 401026: 4684            mov     r12, r0
+# DISASM-NEXT: 401028: ecbd 0b10       vpop    {d0, d1, d2, d3, d4, d5, d6, d7}
+# DISASM-NEXT: 40102c: e8bd 480f       pop.w   {r0, r1, r2, r3, r11, lr}
+# DISASM-NEXT: 401030: 4760            bx      r12
+# DISASM-NEXT: 401032: 0000            movs    r0, r0
+# DISASM-NEXT: 401034: f243 0c04       movw    r12, #12292
+# DISASM-NEXT: 401038: f2c0 0c40       movt    r12, #64
+# DISASM-NEXT: 40103c: f8df f000       ldr.w   pc, [pc, #0]
+# DISASM-NEXT: 401040: 100d
+# DISASM-NEXT: 401042: 0040
 #
-# DIR:         DelayImportDescriptorRVA: 0x2004
+# DIR:         DelayImportDescriptorRVA: 0x2014
 # DIR-NEXT:    DelayImportDescriptorSize: 0x40
+#
+# Like link.exe, describe how to unwind through the tail-merge code.
+# RUN: llvm-readobj --unwind %t.exe | FileCheck -check-prefix=UNWIND %s
+# UNWIND:      Function: 0x40100D
+# UNWIND:        FunctionLength: 38
+# UNWIND:        EpiloguePacked: Yes
+# UNWIND:        EpilogueOffset: 6
+# UNWIND:        ByteCodeLength: 12
 
 
 --- !COFF

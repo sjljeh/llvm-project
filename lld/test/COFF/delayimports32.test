@@ -13,18 +13,18 @@ IMPORT-NEXT: AddressSize: 32bit
 IMPORT-NEXT: DelayImport {
 IMPORT-NEXT:   Name: std32.dll
 IMPORT-NEXT:   Attributes: 0x1
-IMPORT-NEXT:   ModuleHandle: 0x3018
-IMPORT-NEXT:   ImportAddressTable: 0x3020
-IMPORT-NEXT:   ImportNameTable: 0x2040
-IMPORT-NEXT:   BoundDelayImportTable: 0x0
+IMPORT-NEXT:   ModuleHandle: 0x3020
+IMPORT-NEXT:   ImportAddressTable: 0x3014
+IMPORT-NEXT:   ImportNameTable: 0x2058
+IMPORT-NEXT:   BoundDelayImportTable: 0x2080
 IMPORT-NEXT:   UnloadDelayImportTable: 0x0
 IMPORT-NEXT:   Import {
-IMPORT-NEXT:     Symbol: ExitProcess (0)
-IMPORT-NEXT:     Address: 0x401029
+IMPORT-NEXT:     Symbol: MessageBoxA (1)
+IMPORT-NEXT:     Address: 0x40103A
 IMPORT-NEXT:   }
 IMPORT-NEXT:   Import {
-IMPORT-NEXT:     Symbol: MessageBoxA (0)
-IMPORT-NEXT:     Address: 0x401033
+IMPORT-NEXT:     Symbol: ExitProcess (0)
+IMPORT-NEXT:     Address: 0x401044
 IMPORT-NEXT:   }
 IMPORT-NEXT: }
 
@@ -47,15 +47,15 @@ BASEREL-NEXT:     Address: 0x1025
 BASEREL-NEXT:   }
 BASEREL-NEXT:   Entry {
 BASEREL-NEXT:     Type: HIGHLOW
-BASEREL-NEXT:     Address: 0x102A
+BASEREL-NEXT:     Address: 0x102D
 BASEREL-NEXT:   }
 BASEREL-NEXT:   Entry {
 BASEREL-NEXT:     Type: HIGHLOW
-BASEREL-NEXT:     Address: 0x1034
+BASEREL-NEXT:     Address: 0x103B
 BASEREL-NEXT:   }
 BASEREL-NEXT:   Entry {
 BASEREL-NEXT:     Type: HIGHLOW
-BASEREL-NEXT:     Address: 0x1041
+BASEREL-NEXT:     Address: 0x1045
 BASEREL-NEXT:   }
 BASEREL-NEXT:   Entry {
 BASEREL-NEXT:     Type: ABSOLUTE
@@ -63,23 +63,23 @@ BASEREL-NEXT:     Address: 0x1000
 BASEREL-NEXT:   }
 BASEREL-NEXT:   Entry {
 BASEREL-NEXT:     Type: HIGHLOW
-BASEREL-NEXT:     Address: 0x3020
+BASEREL-NEXT:     Address: 0x3014
 BASEREL-NEXT:   }
 BASEREL-NEXT:   Entry {
 BASEREL-NEXT:     Type: HIGHLOW
-BASEREL-NEXT:     Address: 0x3024
+BASEREL-NEXT:     Address: 0x3018
 BASEREL-NEXT:   }
 BASEREL-NEXT: ]
 
-DISASM:      1029:      b8 20 30 40 00  movl    $4206624, %eax
-DISASM-NEXT: 102e:      e9 0a 00 00 00  jmp     0x40103d <.text+0x3d>
-DISASM-NEXT: 1033:      b8 24 30 40 00  movl    $4206628, %eax
-DISASM-NEXT: 1038:      e9 00 00 00 00  jmp     0x40103d <.text+0x3d>
-DISASM-NEXT: 103d:      51      pushl   %ecx
-DISASM-NEXT: 103e:      52      pushl   %edx
-DISASM-NEXT: 103f:      50      pushl   %eax
-DISASM-NEXT: 1040:      68 00 20 40 00  pushl   $4202496
-DISASM-NEXT: 1045:      e8 b6 ff ff ff  calll   0x401000 <.text>
-DISASM-NEXT: 104a:      5a      popl    %edx
-DISASM-NEXT: 104b:      59      popl    %ecx
-DISASM-NEXT: 104c:      ff e0   jmpl    *%eax
+DISASM:      401029: 51                           	pushl	%ecx
+DISASM-NEXT: 40102a: 52                           	pushl	%edx
+DISASM-NEXT: 40102b: 50                           	pushl	%eax
+DISASM-NEXT: 40102c: 68 18 20 40 00               	pushl	$4202520
+DISASM-NEXT: 401031: e8 ca ff ff ff               	calll	0x401000 <.text>
+DISASM-NEXT: 401036: 5a                           	popl	%edx
+DISASM-NEXT: 401037: 59                           	popl	%ecx
+DISASM-NEXT: 401038: ff e0                        	jmpl	*%eax
+DISASM-NEXT: 40103a: b8 14 30 40 00               	movl	$4206612, %eax
+DISASM-NEXT: 40103f: e9 e5 ff ff ff               	jmp	0x401029 <.text+0x29>
+DISASM-NEXT: 401044: b8 18 30 40 00               	movl	$4206616, %eax
+DISASM-NEXT: 401049: e9 db ff ff ff               	jmp	0x401029 <.text+0x29>

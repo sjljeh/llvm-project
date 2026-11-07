@@ -130,5 +130,5 @@ FORWARDER-ORD-NEXT:        4   0x1010  exportfn3
 
 MERGE:      DLL name: export.test.tmp.dll
 MERGE:      Ordinal      RVA  Name
-MERGE-NEXT:       1   0x1008  exportfn1
-MERGE-NEXT:       2   0x1010  exportfn2
+MERGE-NEXT:       1   0x1020  exportfn1
+MERGE-NEXT:       2   0x1028  exportfn2

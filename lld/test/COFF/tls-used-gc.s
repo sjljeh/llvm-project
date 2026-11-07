@@ -3,7 +3,8 @@
 # RUN: lld-link %t.obj /out:%t.exe /entry:main /subsystem:console /opt:ref
 # RUN: llvm-readobj --file-headers %t.exe | FileCheck %s
 
-# CHECK: TLSTableRVA: 0x1000
+## As in link.exe, the code section comes first.
+# CHECK: TLSTableRVA: 0x2000
 # CHECK: TLSTableSize: 0x28
 
   .section .text@main,"xr",one_only,main

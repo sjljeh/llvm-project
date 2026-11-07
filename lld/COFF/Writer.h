@@ -29,6 +29,9 @@ public:
   StringRef name;
   unsigned characteristics;
   std::vector<Chunk *> chunks;
+  // The largest alignment of the group's discarded COMDAT sections, which
+  // link.exe still aligns the group to.
+  uint32_t discardedAlign = 1;
 };
 
 // OutputSection represents a section in an output file. It's a

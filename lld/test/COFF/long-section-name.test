@@ -9,14 +9,14 @@
 # RUN: lld-link /out:%t.exe /entry:main %t.obj -lldmingw 2>&1 | FileCheck %s --check-prefix=IGNORE --allow-empty
 # RUN: lld-link /out:%t.exe /entry:main %t.obj -debug:dwarf 2>&1 | FileCheck %s --check-prefix=IGNORE --allow-empty
 
-# WARN: warning: section name .data_long_section_name is longer than 8 characters and will use a non-standard string table
 # WARN: warning: section name .text_long_section_name is longer than 8 characters and will use a non-standard string table
+# WARN: warning: section name .data_long_section_name is longer than 8 characters and will use a non-standard string table
 
 # IGNORE-NOT: warning:
 
 # CHECK: Name: .eh_fram (
-# CHECK: Name: .data_long_section_name
 # CHECK: Name: .text_long_section_name
+# CHECK: Name: .data_long_section_name
 
 --- !COFF
 header:

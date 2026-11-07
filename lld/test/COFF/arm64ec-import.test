@@ -173,6 +173,31 @@ RDATA-HEADER-NEXT: VirtualSize: 0x2030
 RDATA-HEADER-NEXT: VirtualAddress: 0x3000
 RDATA-HEADER-NEXT: RawDataSize: 0x2030
 
+Like link.exe, list the import check thunks and their exit thunks as valid
+indirect call targets with -guard:cf, and default to OS version 6.02.
+
+RUN: lld-link -machine:arm64ec -dll -noentry -out:out-cfg.dll loadconfig-arm64ec.obj icall.obj hybmp.obj \
+RUN:          test.obj test-arm64ec.lib test2-arm64ec.lib -map -guard:cf
+RUN: llvm-readobj --file-headers --coff-load-config out-cfg.dll | FileCheck --check-prefix=CFG %s
+RUN: FileCheck --check-prefix=CFG-MAP %s < out-cfg.map
+CFG:      MinorOperatingSystemVersion: 2
+CFG:      MinorSubsystemVersion: 2
+CFG:      GuardFidTable [
+CFG-NEXT:   0x180001010
+CFG-NEXT:   0x180001020
+CFG-NEXT:   0x180001040
+CFG-NEXT:   0x180001060
+CFG-NEXT:   0x180001070
+CFG-NEXT:   0x180001090
+CFG-NEXT:   0x1800010A0
+CFG-NEXT:   0x180002000
+CFG-NEXT: ]
+CFG-MAP: 0001:00000020       __impchk_func              0000000180001020
+CFG-MAP: 0001:00000040       __impchk_func2             0000000180001040
+CFG-MAP: 0001:00000070       __impchk_t2func            0000000180001070
+CFG-MAP: 0001:00000090       func_exit_thunk            0000000180001090
+CFG-MAP: 0001:000000a0       t2func_exit_thunk          00000001800010a0
+
 #--- test.s
     .section .test, "r"
     .globl arm64ec_data_sym

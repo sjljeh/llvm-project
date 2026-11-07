@@ -47,9 +47,26 @@
 // LOADCFG-NEXTX:  ]
 // LOADCFGX:     ]
 
+// On ARM64EC (but not ARM64X), the delay-load IAT is protected as with link.exe.
+// LOADCFGEC:      LoadConfig [
+// LOADCFGEC:        GuardCFFunctionCount: 3
+// LOADCFGEC-NEXT:   GuardFlags [ (0x13500)
+// LOADCFGEC-NEXT:     CF_FUNCTION_TABLE_PRESENT (0x400)
+// LOADCFGEC-NEXT:     CF_INSTRUMENTED (0x100)
+// LOADCFGEC-NEXT:     CF_LONGJUMP_TABLE_PRESENT (0x10000)
+// LOADCFGEC-NEXT:     DELAYLOAD_IAT_IN_ITS_OWN_SECTION (0x2000)
+// LOADCFGEC-NEXT:     PROTECT_DELAYLOAD_IAT (0x1000)
+// LOADCFGEC-NEXT:   ]
+// LOADCFGEC:      ]
+// LOADCFGEC:      GuardFidTable [
+// LOADCFGEC-NEXT:   0x180001000
+// LOADCFGEC-NEXT:   0x180002000
+// LOADCFGEC-NEXT:   0x180003000
+// LOADCFGEC-NEXT: ]
+
 // RUN: lld-link -dll -noentry -machine:arm64ec func-gfids-arm64.obj func-gfids-arm64ec.obj func-amd64.obj -guard:cf -out:out-ec.dll \
 // RUN:          loadconfig-arm64ec.obj loadconfig-arm64.obj
-// RUN: llvm-readobj --coff-load-config out-ec.dll | FileCheck --check-prefix=LOADCFG %s
+// RUN: llvm-readobj --coff-load-config out-ec.dll | FileCheck --check-prefix=LOADCFGEC %s
 
 
 // Check that exports from both views are present in CF guard tables.
@@ -60,7 +77,7 @@
 
 // RUN: lld-link -dll -noentry -machine:arm64ec func-exp-arm64.obj func-exp-arm64ec.obj -guard:cf -out:out-exp-ec.dll \
 // RUN:          loadconfig-arm64ec.obj loadconfig-arm64.obj
-// RUN: llvm-readobj --coff-load-config out-exp-ec.dll | FileCheck --check-prefixes=LOADCFG %s
+// RUN: llvm-readobj --coff-load-config out-exp-ec.dll | FileCheck --check-prefix=LOADCFGEC %s
 
 
 // Check that entry points from both views are present in CF guard tables.

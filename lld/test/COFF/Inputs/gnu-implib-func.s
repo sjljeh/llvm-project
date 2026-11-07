@@ -2,7 +2,7 @@
         .global         func
         .global         __imp_func
 func:
-        jmp             *__imp_func
+        jmp             *__imp_func(%rip)
 
         # The data that is emitted into .idata$7 here is isn't needed for
         # the import data structures, but we need to emit something which

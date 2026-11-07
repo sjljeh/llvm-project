@@ -22,6 +22,7 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/TarWriter.h"
 #include "llvm/WindowsDriver/MSVCPaths.h"
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -191,6 +192,10 @@ private:
   bool run();
 
   std::list<std::function<void()>> taskQueue;
+  // Loads of archive members, per archive in search order. link.exe takes the
+  // members it needs from one library at a time; see run().
+  std::map<size_t, std::list<std::function<void()>>> memberQueues;
+  size_t currentArchive = 0;
   std::vector<MemoryBufferRef> resources;
 
   llvm::DenseSet<StringRef> excludedSymbols;

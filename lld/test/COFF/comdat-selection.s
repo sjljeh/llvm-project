@@ -58,20 +58,19 @@ symbol:
 # RUN: lld-link /opt:noref /include:symbol /dll /noentry /nodefaultlib %t.largest.obj %t.largest.short.2.obj /out:%t.exe
 # RUN: llvm-objdump -s %t.exe | FileCheck --check-prefix=LARGEST1 %s
 # LARGEST1: Contents of section .text:
-# LARGEST1:   180001000 01000000 ....
+# LARGEST1:   180002000 01000000 ....
 
 # FIXME: Make this pass when /opt:noref is passed.
 # RUN: lld-link /include:symbol /dll /noentry /nodefaultlib %t.largest.short.2.obj %t.largest.obj /out:%t.exe
 # RUN: llvm-objdump -s %t.exe | FileCheck --check-prefix=LARGEST2 %s
 # LARGEST2: Contents of section .text:
-# LARGEST2:   180001000 01000000 ....
+# LARGEST2:   180002000 01000000 ....
 
 
 # Test linking the same symbol with different comdat selection types.
 # link.exe generally rejects this, except for "largest" which is allowed to
 # combine with everything (https://bugs.llvm.org/show_bug.cgi?id=40094#c7).
-# lld-link rejects all comdat selection type mismatches. Spot-test just a few
-# combinations.
+# Spot-test just a few combinations.
 
 # RUN: not lld-link /verbose /dll /noentry /nodefaultlib %t.discard.obj %t.one_only.obj 2>&1 | FileCheck --check-prefix=DISCARDONE %s
 # DISCARDONE: lld-link: conflicting comdat type for symbol: 2 in
@@ -94,14 +93,16 @@ symbol:
 # RUN: lld-link /dll /noentry /nodefaultlib %t.discard.short.2.obj %t.largest.obj
 # RUN: llvm-objdump -s %t.exe | FileCheck --check-prefix=DISCARDLARGEST %s
 # DISCARDLARGEST: Contents of section .text:
-# DISCARDLARGEST:   180001000 01000000 ....
+# DISCARDLARGEST:   180002000 01000000 ....
 # RUN: lld-link /dll /noentry /nodefaultlib %t.largest.obj %t.discard.short.2.obj
 # RUN: llvm-objdump -s %t.exe | FileCheck --check-prefix=LARGESTDISCARD %s
 # LARGESTDISCARD: Contents of section .text:
-# LARGESTDISCARD:   180001000 01000000 ....
+# LARGESTDISCARD:   180002000 01000000 ....
 
 
-# These cases are accepted by link.exe but not by lld-link.
-# RUN: not lld-link /verbose /dll /noentry /nodefaultlib %t.largest.obj %t.one_only.obj 2>&1 | FileCheck --check-prefix=LARGESTONE %s
-# LARGESTONE: lld-link: conflicting comdat type for symbol: 6 in
-# LARGESTONE: lld-link: error: duplicate symbol: symbol
+# As in link.exe, "largest" also takes any selection that follows it, and
+# combines with any (but "one only") that precedes it.
+# RUN: lld-link /dll /noentry /nodefaultlib %t.largest.obj %t.one_only.obj
+# RUN: lld-link /dll /noentry /nodefaultlib %t.same_size.obj %t.largest.obj
+# RUN: not lld-link /dll /noentry /nodefaultlib %t.one_only.obj %t.largest.obj 2>&1 | FileCheck --check-prefix=ONELARGEST %s
+# ONELARGEST: lld-link: error: duplicate symbol: symbol

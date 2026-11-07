@@ -13,12 +13,12 @@
 // RUN: llvm-objdump -s -d --print-imm-hex %t.exe | FileCheck %s
 
 // CHECK:      Contents of section .rdata:
-// CHECK-NEXT:  402000 0c104000
+// CHECK-NEXT:  402000 62200000 5c200000 00000000 0c104000
 
 // CHECK:      Disassembly of section .text:
 // CHECK-EMPTY:
 // CHECK:      00401000 <_entry>:
-// CHECK-NEXT:   401000: ff 25 00 20 40 00             jmpl    *0x402000
+// CHECK-NEXT:   401000: ff 25 0c 20 40 00             jmpl    *0x40200c
 // CHECK-NEXT:   401006: ff 25 00 00 00 00             jmpl    *0x0
 // CHECK-EMPTY:
 // CHECK-NEXT: 0040100c <___wrap_foo>:
@@ -27,8 +27,8 @@
 // CHECK-NEXT: 0040100d <___wrap_bar>:
 // CHECK-NEXT:   40100d: c3                            retl
 
-// The first jmpl instruction in _entry points at an address in 0x402000,
-// which is the first 4 bytes of the .rdata section (above), which is a
+// The first jmpl instruction in _entry points at 0x40200c, which follows the
+// import address table at the start of .rdata (as in link.exe) and is a
 // pointer that points at ___wrap_foo.
 
 // The second jmpl instruction in _entry points to null because the referenced

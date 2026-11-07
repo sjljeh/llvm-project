@@ -25,7 +25,7 @@ foo:
 
 
 .section .pdata,"r",associative,foo
-.long foo
+.long foo@IMGREL
 .long 5
 .long foo_xdata@IMGREL
 
@@ -47,6 +47,6 @@ bar_xdata:
 .long 42
 
 .section .pdata,"r",associative,bar
-.long bar
+.long bar@IMGREL
 .long 5
 .long bar_xdata@IMGREL

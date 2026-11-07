@@ -36,21 +36,25 @@
 # RUN: env LLD_IN_TEST=1 not lld-link /out:%t.exe /entry:main /subsystem:console /force \
 # RUN:   /section:.foo,r! %t.obj 2>&1 | FileCheck -check-prefix=INVALID %s
 
+# R:      Name: .foo
 # R:      Characteristics [
 # R-NEXT:   IMAGE_SCN_CNT_INITIALIZED_DATA
 # R-NEXT:   IMAGE_SCN_MEM_READ
 # R-NEXT: ]
 
+# W:      Name: .foo
 # W:      Characteristics [
 # W-NEXT:   IMAGE_SCN_CNT_INITIALIZED_DATA
 # W-NEXT:   IMAGE_SCN_MEM_WRITE
 # W-NEXT: ]
 
+# E:      Name: .foo
 # E:      Characteristics [
 # E-NEXT:   IMAGE_SCN_CNT_INITIALIZED_DATA
 # E-NEXT:   IMAGE_SCN_MEM_EXECUTE
 # E-NEXT: ]
 
+# S:      Name: .foo
 # S:      Characteristics [
 # S-NEXT:   IMAGE_SCN_CNT_INITIALIZED_DATA
 # S-NEXT:   IMAGE_SCN_MEM_READ
@@ -58,6 +62,7 @@
 # S-NEXT:   IMAGE_SCN_MEM_WRITE
 # S-NEXT: ]
 
+# D:      Name: .foo
 # D:      Characteristics [
 # D-NEXT:   IMAGE_SCN_CNT_INITIALIZED_DATA
 # D-NEXT:   IMAGE_SCN_MEM_DISCARDABLE
@@ -65,12 +70,14 @@
 # D-NEXT:   IMAGE_SCN_MEM_WRITE
 # D-NEXT: ]
 
+# KP:      Name: .foo
 # KP:      Characteristics [
 # KP-NEXT:   IMAGE_SCN_CNT_INITIALIZED_DATA
 # KP-NEXT:   IMAGE_SCN_MEM_READ
 # KP-NEXT:   IMAGE_SCN_MEM_WRITE
 # KP-NEXT: ]
 
+# NOT-KP:      Name: .foo
 # NOT-KP:      Characteristics [
 # NOT-KP-NEXT:   IMAGE_SCN_CNT_INITIALIZED_DATA
 # NOT-KP-NEXT:   IMAGE_SCN_MEM_NOT_CACHED
@@ -79,6 +86,7 @@
 # NOT-KP-NEXT:   IMAGE_SCN_MEM_WRITE
 # NOT-KP-NEXT: ]
 
+# NOT-S:      Name: .foo
 # NOT-S:      Characteristics [
 # NOT-S-NEXT:   IMAGE_SCN_CNT_INITIALIZED_DATA
 # NOT-S-NEXT:   IMAGE_SCN_MEM_READ

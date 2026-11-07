@@ -444,54 +444,347 @@ static uint16_t readMOV(uint8_t *off, bool movt) {
          ((op1 & 0x000f) << 12);
 }
 
+// Thumb-2 conditional branch (T3); the offset is S:J2:J1:imm6:imm11:'0'.
 static void applyBranch20T(uint8_t *off, int32_t v) {
   if (!isInt<21>(v))
     error("relocation out of range");
   uint32_t s = v < 0 ? 1 : 0;
-  uint32_t j1 = (v >> 19) & 1;
-  uint32_t j2 = (v >> 18) & 1;
-  or16(off, (s << 10) | ((v >> 12) & 0x3f));
-  or16(off + 2, (j1 << 13) | (j2 << 11) | ((v >> 1) & 0x7ff));
+  uint32_t j1 = (v >> 18) & 1;
+  uint32_t j2 = (v >> 19) & 1;
+  write16le(off, (read16le(off) & 0xfbc0) | (s << 10) | ((v >> 12) & 0x3f));
+  write16le(off + 2, (read16le(off + 2) & 0xd000) | (j1 << 13) | (j2 << 11) |
+                         ((v >> 1) & 0x7ff));
+}
+
+static int32_t readBranch20T(const uint8_t *off) {
+  uint16_t hw1 = read16le(off), hw2 = read16le(off + 2);
+  uint32_t v = (((hw1 >> 10) & 1) << 20) | (((hw2 >> 11) & 1) << 19) |
+               (((hw2 >> 13) & 1) << 18) | ((hw1 & 0x3f) << 12) |
+               ((hw2 & 0x7ff) << 1);
+  return SignExtend32<21>(v);
+}
+
+static int32_t readBranch24T(const uint8_t *off) {
+  uint16_t hw1 = read16le(off), hw2 = read16le(off + 2);
+  uint32_t s = (hw1 >> 10) & 1;
+  uint32_t i1 = ~(((hw2 >> 13) & 1) ^ s) & 1;
+  uint32_t i2 = ~(((hw2 >> 11) & 1) ^ s) & 1;
+  uint32_t v = (s << 24) | (i1 << 23) | (i2 << 22) | ((hw1 & 0x3ff) << 12) |
+               ((hw2 & 0x7ff) << 1);
+  return SignExtend32<25>(v);
+}
+
+// link.exe ignores the offset a Thumb-2 branch already encodes: it ORs the
+// displacement into S and the immediate fields and rewrites J1 and J2. This
+// computes its result, to warn when it differs from adding the offset.
+static void applyBranchLinkExe(uint8_t *off, int32_t v, bool cond) {
+  uint32_t s = v < 0 ? 1 : 0;
+  uint32_t j1 = cond ? (v >> 18) & 1 : ((~v >> 23) & 1) ^ s;
+  uint32_t j2 = cond ? (v >> 19) & 1 : ((~v >> 22) & 1) ^ s;
+  or16(off, (s << 10) | ((v >> 12) & (cond ? 0x3f : 0x3ff)));
+  write16le(off + 2, (read16le(off + 2) & ~0x2800) | (j1 << 13) | (j2 << 11) |
+                         ((v >> 1) & 0x7ff));
+}
+
+
+// ARM MOVW/MOVT pair (A2 encodings): imm4 in bits 19:16, imm12 in 11:0. The
+// pair's immediate is an addend.
+static void applyMOV32A(uint8_t *off, uint32_t v) {
+  auto get = [](uint32_t w) { return ((w >> 4) & 0xf000) | (w & 0xfff); };
+  auto set = [](uint32_t w, uint32_t imm) {
+    return (w & 0xfff0f000) | ((imm & 0xf000) << 4) | (imm & 0xfff);
+  };
+  uint32_t lo = read32le(off), hi = read32le(off + 4);
+  v += get(lo) | (get(hi) << 16);
+  write32le(off, set(lo, v & 0xffff));
+  write32le(off + 4, set(hi, v >> 16));
+}
+
+static StringRef getARMRelocationName(uint16_t type) {
+  switch (type) {
+  case IMAGE_REL_ARM_ADDR32NB:
+    return "IMAGE_REL_ARM_ADDR32NB";
+  case IMAGE_REL_ARM_REL32:
+    return "IMAGE_REL_ARM_REL32";
+  case IMAGE_REL_ARM_BRANCH20T:
+    return "IMAGE_REL_ARM_BRANCH20T";
+  case IMAGE_REL_ARM_BRANCH24T:
+    return "IMAGE_REL_ARM_BRANCH24T";
+  case IMAGE_REL_ARM_BLX23T:
+    return "IMAGE_REL_ARM_BLX23T";
+  case IMAGE_REL_ARM_BRANCH24:
+    return "IMAGE_REL_ARM_BRANCH24";
+  case IMAGE_REL_ARM_BLX24:
+    return "IMAGE_REL_ARM_BLX24";
+  case IMAGE_REL_ARM_BRANCH11:
+    return "IMAGE_REL_ARM_BRANCH11";
+  case IMAGE_REL_ARM_BLX11:
+    return "IMAGE_REL_ARM_BLX11";
+  default:
+    return "ARM";
+  }
 }
 
 static void applyRelARM(COFFLinkerContext &ctx, const SectionChunk &sec,
-                        uint8_t *off, uint16_t type, OutputSection *os,
-                        uint64_t s, uint64_t p, uint64_t imageBase) {
-  // Pointer to thumb code must have the LSB set.
-  uint64_t sx = s;
-  if (os && (os->header.Characteristics & IMAGE_SCN_MEM_EXECUTE))
-    sx |= 1;
-  switch (type) {
+                        uint8_t *off, const coff_relocation &rel,
+                        OutputSection *os, uint64_t s, uint64_t p,
+                        uint64_t imageBase) {
+  auto *sym = dyn_cast_or_null<Defined>(sec.file->getSymbol(rel.SymbolTableIndex));
+  // Addresses of Thumb code carry the Thumb bit; link.exe adds it to every
+  // relocation against a section marked IMAGE_SCN_MEM_16BIT, including SECREL
+  // outside of debug info.
+  bool thumb = sym && isARMThumbTarget(sym);
+  uint64_t sx = thumb ? s | 1 : s;
+  // link.exe adds the bit even to an odd address, which yields neither the
+  // address nor a Thumb pointer; keep the address and warn.
+  if (thumb && (s & 1) && rel.Type != IMAGE_REL_ARM_SECTION &&
+      !sec.isCodeView())
+    warn(toString(sec.file) + ": relocation against '" + toString(ctx, *sym) +
+         "', at an odd address in a Thumb (IMAGE_SCN_MEM_16BIT) section; "
+         "link.exe would add the Thumb bit to the address");
+
+  // link.exe rejects (LNK2016) absolute targets of relocations that are
+  // relative to the image or to the relocation itself.
+  auto isAbsoluteTarget = [&]() {
+    if (!sym || !isa<DefinedAbsolute>(sym) || sec.isCodeView())
+      return false;
+    error(toString(sec.file) + ": absolute symbol '" + toString(ctx, *sym) +
+          "' cannot be the target of an " + getARMRelocationName(rel.Type) +
+          " relocation");
+    return true;
+  };
+  // A branch that cannot switch instruction set targets code in the other
+  // one. Returns whether to encode the branch anyway, as link.exe does with
+  // /OPT:NOREF.
+  auto reportStateMismatch = [&](StringRef what) {
+    std::string msg = toString(sec.file) + ": " +
+                      getARMRelocationName(rel.Type).str() +
+                      " relocation targets '" + toString(ctx, *sym) +
+                      "', which is " + what.str() +
+                      " (IMAGE_SCN_MEM_16BIT) section";
+    if (ctx.config.doGC) {
+      error(msg);
+      return false;
+    }
+    warn(msg + "; the branch will not change instruction set");
+    return true;
+  };
+  auto checkThumbBranch = [&]() {
+    if (isAbsoluteTarget())
+      return false;
+    // A B.W or Bcc.W cannot change instruction set. link.exe diagnoses this
+    // (LNK2013) with /OPT:REF but encodes the branch as is with /OPT:NOREF,
+    // which works if the target is Thumb code in a section that lacks the flag.
+    if (thumb || !sym)
+      return true;
+    return reportStateMismatch("not in a Thumb");
+  };
+  auto warnARMState = [&](StringRef from, StringRef to, StringRef state) {
+    warn(toString(sec.file) + ": " + getARMRelocationName(rel.Type) +
+         " relocation against '" + (sym ? toString(ctx, *sym) : "") +
+         "': changed " + from + " to " + to + " to stay in " + state +
+         " state; link.exe would keep the " + from);
+  };
+  auto warnAddend = [&](int64_t addend) {
+    warn(toString(sec.file) + ": " + getARMRelocationName(rel.Type) +
+         " relocation against '" + (sym ? toString(ctx, *sym) : "") +
+         "' adds the offset " + Twine(addend) +
+         " encoded in the instruction; link.exe would merge it differently "
+         "and branch elsewhere");
+  };
+  // ARM B/BL/BLX (A1/A2). link.exe ORs the displacement into the immediate.
+  auto applyARMBranch = [&](uint64_t target, uint64_t pc, bool toBLX) {
+    uint32_t insn = read32le(off);
+    bool isBLX = (insn >> 28) == 0xf;
+    int64_t addend = SignExtend64<26>((insn & 0xffffff) << 2) +
+                     (isBLX ? ((insn >> 23) & 2) : 0);
+    int64_t v = int64_t(target) - int64_t(pc);
+    int64_t w = v + addend;
+    if (!isInt<26>(w))
+      error(toString(sec.file) + ": " + getARMRelocationName(rel.Type) +
+            " relocation out of range");
+    uint32_t res;
+    if (toBLX)
+      res = 0xfa000000 | ((w & 2) << 23) | ((w >> 2) & 0xffffff);
+    else
+      res = (insn & 0xff000000) | ((w >> 2) & 0xffffff);
+    write32le(off, res);
+    if (addend) {
+      uint32_t ms = insn | ((v >> 2) & 0xffffff);
+      if (toBLX)
+        ms = (ms & 0x00ffffff) | 0xfa000000 | ((v & 2) << 23);
+      if (ms != res)
+        warnAddend(addend);
+    }
+  };
+  // Thumb-1 BL/BLX pair: 11110 offset[22:12], 11111/11101 offset[11:1].
+  auto applyThumb1Branch = [&](uint64_t target, uint64_t pc) {
+    uint16_t hi = read16le(off), lo = read16le(off + 2);
+    int64_t addend =
+        SignExtend64<23>(((hi & 0x7ff) << 12) | ((lo & 0x7ff) << 1));
+    int64_t v = int64_t(target) - int64_t(pc);
+    int64_t w = v + addend;
+    if (!isInt<23>(w))
+      error(toString(sec.file) + ": " + getARMRelocationName(rel.Type) +
+            " relocation out of range");
+    write16le(off, (hi & 0xf800) | ((w >> 12) & 0x7ff));
+    write16le(off + 2, (lo & 0xf800) | ((w >> 1) & 0x7ff));
+    if (addend && ((((v >> 12) & 0x7ff) | hi) != read16le(off) ||
+                   (((v >> 1) & 0x7ff) | lo) != read16le(off + 2)))
+      warnAddend(addend);
+  };
+  // Apply a branch to target from pc (the base of the PC-relative offset).
+  // Any offset the instruction already encodes is added. link.exe instead
+  // merges the two bitwise; warn where that would branch elsewhere.
+  auto applyBranch = [&](uint64_t target, uint64_t pc, bool toARM) {
+    bool cond = rel.Type == IMAGE_REL_ARM_BRANCH20T;
+    uint8_t orig[4];
+    memcpy(orig, off, 4);
+    int32_t addend = rel.Type == IMAGE_REL_ARM_BRANCH20T ? readBranch20T(off)
+                                                         : readBranch24T(off);
+    int64_t v = int64_t(target) - int64_t(pc) + addend;
+    if (cond)
+      applyBranch20T(off, v);
+    else
+      applyBranch24T(off, v);
+    if (toARM)
+      write16le(off + 2, read16le(off + 2) & ~0x1000);
+    if (addend == 0)
+      return;
+    uint8_t linkExe[4];
+    memcpy(linkExe, orig, 4);
+    applyBranchLinkExe(linkExe, int64_t(target) - int64_t(pc), cond);
+    if (toARM)
+      write16le(linkExe + 2, read16le(linkExe + 2) & ~0x1000);
+    if (memcmp(linkExe, off, 4))
+      warnAddend(addend);
+  };
+
+  switch (rel.Type) {
+  case IMAGE_REL_ARM_ABSOLUTE:
+    break;
   case IMAGE_REL_ARM_ADDR32:
     add32(off, sx + imageBase);
     break;
   case IMAGE_REL_ARM_ADDR32NB:
-    add32(off, sx);
+    if (!isAbsoluteTarget())
+      add32(off, sx);
     break;
   case IMAGE_REL_ARM_MOV32T:
     applyMOV32T(off, sx + imageBase);
     break;
   case IMAGE_REL_ARM_BRANCH20T:
-    applyBranch20T(off, sx - p - 4);
-    break;
   case IMAGE_REL_ARM_BRANCH24T:
-    applyBranch24T(off, sx - p - 4);
+    if (checkThumbBranch())
+      applyBranch(sx, p + 4, false);
     break;
-  case IMAGE_REL_ARM_BLX23T:
-    applyBranch24T(off, sx - p - 4);
+  case IMAGE_REL_ARM_BLX23T: {
+    if (isAbsoluteTarget())
+      break;
+    uint16_t hw2 = read16le(off + 2);
+    if (thumb || !sym) {
+      applyBranch(sx, p + 4, false);
+      // A BLX would switch to ARM state; link.exe leaves it in place.
+      if (!(hw2 & 0x1000)) {
+        write16le(off + 2, read16le(off + 2) | 0x1000);
+        warnARMState("BLX", "BL", "Thumb");
+      }
+      break;
+    }
+    // A call to ARM code becomes BLX, which branches relative to Align(PC, 4)
+    // and needs a word-aligned target (link.exe: LNK2008).
+    if (s & 3) {
+      error(toString(sec.file) + ": IMAGE_REL_ARM_BLX23T relocation target '" +
+            toString(ctx, *sym) + "' is not 4-byte aligned");
+      break;
+    }
+    // Only a BL can become a BLX (link.exe corrupts a B.W instead).
+    if (!(hw2 & 0x4000)) {
+      error(toString(sec.file) + ": IMAGE_REL_ARM_BLX23T relocation against '" +
+            toString(ctx, *sym) +
+            "' is not on a BL or BLX instruction and cannot reach ARM code");
+      break;
+    }
+    applyBranch(s, (p + 4) & ~uint64_t(3), true);
     break;
+  }
+  case IMAGE_REL_ARM_MOV32A:
+    applyMOV32A(off, sx + imageBase);
+    break;
+  case IMAGE_REL_ARM_BRANCH24:
+  case IMAGE_REL_ARM_BLX24: {
+    // ARM B, BL or BLX, relative to PC + 8.
+    if (isAbsoluteTarget() || !sym)
+      break;
+    bool isBLX = (read32le(off) >> 28) == 0xf;
+    if (thumb && rel.Type == IMAGE_REL_ARM_BRANCH24) {
+      // link.exe does not turn these into BLX (LNK2013).
+      if (reportStateMismatch("in a Thumb"))
+        applyARMBranch(s, p + 8, false);
+      break;
+    }
+    if (thumb) {
+      // BLX24 to Thumb code: BLX, with H selecting the halfword.
+      applyARMBranch(sx, p + 8, true);
+      break;
+    }
+    if (s & 3) {
+      error(toString(sec.file) + ": " + getARMRelocationName(rel.Type) +
+            " relocation target '" + toString(ctx, *sym) +
+            "' is not 4-byte aligned");
+      break;
+    }
+    applyARMBranch(s, p + 8, false);
+    if (isBLX) {
+      // A BLX would switch to Thumb state; link.exe leaves it in place.
+      write32le(off, (read32le(off) & 0x00ffffff) | 0xeb000000);
+      warnARMState("BLX", "BL", "ARM");
+    }
+    break;
+  }
+  case IMAGE_REL_ARM_BRANCH11:
+  case IMAGE_REL_ARM_BLX11: {
+    // Thumb-1 BL or BLX pair, relative to PC + 4.
+    if (isAbsoluteTarget() || !sym)
+      break;
+    uint16_t lo = read16le(off + 2);
+    if (thumb) {
+      applyThumb1Branch(sx, p + 4);
+      if (!(lo & 0x1000)) {
+        write16le(off + 2, read16le(off + 2) | 0x1000);
+        warnARMState("BLX", "BL", "Thumb");
+      }
+      break;
+    }
+    if (rel.Type == IMAGE_REL_ARM_BRANCH11) {
+      // link.exe does not turn these into BLX (LNK2013).
+      if (reportStateMismatch("not in a Thumb"))
+        applyThumb1Branch(s, p + 4);
+      break;
+    }
+    if (s & 3) {
+      error(toString(sec.file) + ": IMAGE_REL_ARM_BLX11 relocation target '" +
+            toString(ctx, *sym) + "' is not 4-byte aligned");
+      break;
+    }
+    applyThumb1Branch(s, (p + 4) & ~uint64_t(3));
+    write16le(off + 2, read16le(off + 2) & ~0x1000);
+    break;
+  }
   case IMAGE_REL_ARM_SECTION:
     applySecIdx(off, os, ctx.outputSections.size());
     break;
   case IMAGE_REL_ARM_SECREL:
-    applySecRel(&sec, off, os, s);
+    // CodeView symbol and line addresses don't carry the Thumb bit.
+    applySecRel(&sec, off, os, sec.isCodeView() ? s : sx);
     break;
   case IMAGE_REL_ARM_REL32:
-    add32(off, sx - p - 4);
+    if (!isAbsoluteTarget())
+      add32(off, sx - p - 4);
     break;
   default:
-    error("unsupported relocation type 0x" + Twine::utohexstr(type) + " in " +
-          toString(sec.file));
+    error("unsupported relocation type 0x" + Twine::utohexstr(rel.Type) +
+          " in " + toString(sec.file));
   }
 }
 
@@ -538,6 +831,15 @@ static void applyArm64Branch14(uint8_t *off, int64_t v) {
 static void applyRelARM64(COFFLinkerContext &ctx, const SectionChunk &sec,
                           uint8_t *off, uint16_t type, OutputSection *os,
                           uint64_t s, uint64_t p, uint64_t imageBase) {
+  // A branch can only reach a word-aligned target; link.exe rejects others
+  // (LNK2008) rather than branch beside them.
+  if ((type == IMAGE_REL_ARM64_BRANCH26 || type == IMAGE_REL_ARM64_BRANCH19 ||
+       type == IMAGE_REL_ARM64_BRANCH14) &&
+      ((s - p) & 3)) {
+    error(toString(sec.file) + ": branch relocation target at 0x" +
+          Twine::utohexstr(s) + " is not 4-byte aligned");
+    return;
+  }
   switch (type) {
   case IMAGE_REL_ARM64_PAGEBASE_REL21:
     applyArm64Addr(off, s, p, 12);
@@ -1148,6 +1450,8 @@ static std::optional<BaserelInfo> getBaserelARM(const coff_relocation &rel) {
     return makeBaserel(rel, IMAGE_REL_BASED_HIGHLOW);
   case IMAGE_REL_ARM_MOV32T:
     return makeBaserel(rel, IMAGE_REL_BASED_ARM_MOV32T);
+  case IMAGE_REL_ARM_MOV32A:
+    return makeBaserel(rel, IMAGE_REL_BASED_ARM_MOV32A);
   default:
     return std::nullopt;
   }
@@ -1156,6 +1460,10 @@ static std::optional<BaserelInfo> getBaserelARM(const coff_relocation &rel) {
 static std::optional<BaserelInfo> getBaserelARM64(const coff_relocation &rel) {
   if (rel.Type == IMAGE_REL_ARM64_ADDR64)
     return makeBaserel(rel, IMAGE_REL_BASED_DIR64);
+  // An absolute 32-bit address needs a fixup as much as a 64-bit one; link.exe
+  // emits HIGHLOW for it.
+  if (rel.Type == IMAGE_REL_ARM64_ADDR32)
+    return makeBaserel(rel, IMAGE_REL_BASED_HIGHLOW);
   return std::nullopt;
 }
 
@@ -1306,7 +1614,7 @@ public:
   void applyRelocation(const SectionChunk &sec, uint8_t *off,
                        const coff_relocation &rel, OutputSection *os,
                        uint64_t s, uint64_t p) const override {
-    applyRelARM(ctx, sec, off, rel.Type, os, s, p, ctx.config.imageBase);
+    applyRelARM(ctx, sec, off, rel, os, s, p, ctx.config.imageBase);
   }
 
   std::optional<BaserelInfo>
@@ -1485,16 +1793,43 @@ void applyMOV32T(uint8_t *off, uint32_t v) {
   applyMOV(off + 4, v >> 16); // set MOVT operand
 }
 
+// Thumb-2 B.W, BL or BLX (T4/T1/T2); the offset is S:I1:I2:imm10:imm11:'0'
+// with J1 = NOT(I1) XOR S and J2 = NOT(I2) XOR S. Any offset the instruction
+// encodes is replaced.
 void applyBranch24T(uint8_t *off, int32_t v) {
   if (!isInt<25>(v))
     error("relocation out of range");
   uint32_t s = v < 0 ? 1 : 0;
   uint32_t j1 = ((~v >> 23) & 1) ^ s;
   uint32_t j2 = ((~v >> 22) & 1) ^ s;
-  or16(off, (s << 10) | ((v >> 12) & 0x3ff));
-  // Clear out the J1 and J2 bits which may be set.
+  write16le(off, (read16le(off) & 0xf800) | (s << 10) | ((v >> 12) & 0x3ff));
   write16le(off + 2, (read16le(off + 2) & 0xd000) | (j1 << 13) | (j2 << 11) |
                          ((v >> 1) & 0x7ff));
+}
+
+int32_t getARMBranchAddend(uint16_t type, const uint8_t *loc) {
+  switch (type) {
+  case IMAGE_REL_ARM_BRANCH20T:
+    return readBranch20T(loc);
+  case IMAGE_REL_ARM_BRANCH24T:
+  case IMAGE_REL_ARM_BLX23T:
+    return readBranch24T(loc);
+  default:
+    return 0;
+  }
+}
+
+bool isARMThumbTarget(Defined *sym) {
+  Chunk *c = sym->getChunk();
+  if (!c)
+    return false;
+  if (auto *sc = dyn_cast<SectionChunk>(c))
+    return sc->header->Characteristics & IMAGE_SCN_MEM_16BIT;
+  return c->getOutputCharacteristics() & IMAGE_SCN_MEM_EXECUTE;
+}
+
+uint64_t getARMTargetRVA(Defined *sym) {
+  return sym->getRVA() | (isARMThumbTarget(sym) ? 1 : 0);
 }
 
 // Interpret the existing immediate value as a byte offset to the

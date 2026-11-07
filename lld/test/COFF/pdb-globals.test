@@ -35,9 +35,9 @@ CHECK-NEXT:            type = 0x0403 (void*), addr = 0003:0004
 CHECK-NEXT:      292 | S_GDATA32 [size = 24] `GlobalVar`
 CHECK-NEXT:            type = 0x100C (const int*), addr = 0003:0000
 CHECK-NEXT:      316 | S_GTHREAD32 [size = 24] `GlobalTLS`
-CHECK-NEXT:            type = 0x0074 (int), addr = 0004:0000
+CHECK-NEXT:            type = 0x0074 (int), addr = 0002:0000
 CHECK-NEXT:      392 | S_LTHREAD32 [size = 24] `StaticTLS`
-CHECK-NEXT:            type = 0x0074 (int), addr = 0004:0004
+CHECK-NEXT:            type = 0x0074 (int), addr = 0002:0004
 CHECK-NEXT:      416 | S_UDT [size = 28] `HelloPointTypedef`
 CHECK-NEXT:            original type = 0x1007
 CHECK-NEXT:      364 | S_LDATA32 [size = 28] `ConstantVar`

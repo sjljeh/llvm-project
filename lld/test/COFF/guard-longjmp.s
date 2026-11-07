@@ -11,10 +11,12 @@
 # CHECK:   GuardCFCheckDispatch: 0x0
 # CHECK:   GuardCFFunctionTable: 0x14000{{.*}}
 # CHECK:   GuardCFFunctionCount: 1
-# CHECK:   GuardFlags [ (0x10500)
+# CHECK:   GuardFlags [ (0x13500)
 # CHECK:     CF_FUNCTION_TABLE_PRESENT (0x400)
 # CHECK:     CF_INSTRUMENTED (0x100)
 # CHECK:     CF_LONGJUMP_TABLE_PRESENT (0x10000)
+# CHECK:     DELAYLOAD_IAT_IN_ITS_OWN_SECTION (0x2000)
+# CHECK:     PROTECT_DELAYLOAD_IAT (0x1000)
 # CHECK:   ]
 # CHECK:   GuardAddressTakenIatEntryTable: 0x0
 # CHECK:   GuardAddressTakenIatEntryCount: 0
