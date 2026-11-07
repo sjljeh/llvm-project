@@ -54,47 +54,47 @@
 # AFTER-EMPTY:
 # AFTER:  140001000:      f81f0ffe        str     x30, [sp, #-16]!
 # AFTER:  140001004:      b0000000        adrp    x0, 0x140002000
-# AFTER:  140001008:      91001800        add     x0, x0, #6
+# AFTER:  140001008:      91005800        add     x0, x0, #22
 # AFTER:  14000100c:      94000026        bl      0x1400010a4
-# AFTER:  140001010:      39402100        ldrb    w0, [x8, #8]
-# AFTER:  140001014:      79401100        ldrh    w0, [x8, #8]
-# AFTER:  140001018:      b9400900        ldr     w0, [x8, #8]
-# AFTER:  14000101c:      f9400500        ldr     x0, [x8, #8]
-# AFTER:  140001020:      39002100        strb    w0, [x8, #8]
-# AFTER:  140001024:      79001100        strh    w0, [x8, #8]
-# AFTER:  140001028:      b9000900        str     w0, [x8, #8]
-# AFTER:  14000102c:      f9000500        str     x0, [x8, #8]
-# AFTER:  140001030:      3d404100        ldr     b0, [x8, #16]
-# AFTER:  140001034:      7d402100        ldr     h0, [x8, #16]
-# AFTER:  140001038:      bd401100        ldr     s0, [x8, #16]
-# AFTER:  14000103c:      fd400900        ldr     d0, [x8, #16]
-# AFTER:  140001040:      3dc00500        ldr     q0, [x8, #16]
-# AFTER:  140001044:      3d004100        str     b0, [x8, #16]
-# AFTER:  140001048:      7d002100        str     h0, [x8, #16]
-# AFTER:  14000104c:      bd001100        str     s0, [x8, #16]
-# AFTER:  140001050:      fd000900        str     d0, [x8, #16]
-# AFTER:  140001054:      3d800500        str     q0, [x8, #16]
-# AFTER:  140001058:      f9400900        ldr     x0, [x8, #16]
+# AFTER:  140001010:      39406100        ldrb    w0, [x8, #24]
+# AFTER:  140001014:      79403100        ldrh    w0, [x8, #24]
+# AFTER:  140001018:      b9401900        ldr     w0, [x8, #24]
+# AFTER:  14000101c:      f9400d00        ldr     x0, [x8, #24]
+# AFTER:  140001020:      39006100        strb    w0, [x8, #24]
+# AFTER:  140001024:      79003100        strh    w0, [x8, #24]
+# AFTER:  140001028:      b9001900        str     w0, [x8, #24]
+# AFTER:  14000102c:      f9000d00        str     x0, [x8, #24]
+# AFTER:  140001030:      3d408100        ldr     b0, [x8, #32]
+# AFTER:  140001034:      7d404100        ldr     h0, [x8, #32]
+# AFTER:  140001038:      bd402100        ldr     s0, [x8, #32]
+# AFTER:  14000103c:      fd401100        ldr     d0, [x8, #32]
+# AFTER:  140001040:      3dc00900        ldr     q0, [x8, #32]
+# AFTER:  140001044:      3d008100        str     b0, [x8, #32]
+# AFTER:  140001048:      7d004100        str     h0, [x8, #32]
+# AFTER:  14000104c:      bd002100        str     s0, [x8, #32]
+# AFTER:  140001050:      fd001100        str     d0, [x8, #32]
+# AFTER:  140001054:      3d800900        str     q0, [x8, #32]
+# AFTER:  140001058:      f9401100        ldr     x0, [x8, #32]
 # AFTER:  14000105c:      f0000000        adrp    x0, 0x140004000
-# AFTER:  140001060:      f947fc00        ldr     x0, [x0, #4088]
+# AFTER:  140001060:      f9400400        ldr     x0, [x0, #8]
 # AFTER:  140001064:      2a1f03e0        mov      w0, wzr
 # AFTER:  140001068:      f84107fe        ldr     x30, [sp], #16
 # AFTER:  14000106c:      d65f03c0        ret
-# AFTER:  140001070:      40002010        <unknown>
+# AFTER:  140001070:      40002020        <unknown>
 # AFTER:  140001074:      00000001        udf #1
-# AFTER:  140001078:      00002009        udf #8201
-# AFTER:  14000107c:      00000009        udf #9
-# AFTER:  140001080:      910a2000        add     x0, x0, #648
+# AFTER:  140001078:      00002019        udf #8217
+# AFTER:  14000107c:      00000019        udf #25
+# AFTER:  140001080:      910a6000        add     x0, x0, #664
 # AFTER:  140001084:      91400800        add     x0, x0, #2, lsl #12
-# AFTER:  140001088:      f941c400        ldr     x0, [x0, #904]
+# AFTER:  140001088:      f941cc00        ldr     x0, [x0, #920]
 # AFTER:  14000108c:      00000003        udf #3
-# AFTER:  140001090:      300995e0        adr     x0, 0x14001434d
+# AFTER:  140001090:      30099660        adr     x0, 0x14001435d
 # AFTER:  140001094:      54000081        b.ne    0x1400010a4
 # AFTER:  140001098:      36000060        tbz     w0, #0, 0x1400010a4
 # AFTER:  14000109c:      ffffff61        <unknown>
 # AFTER:  1400010a0:      b0fff802        adrp    x2,  0x13ff02000
 # AFTER:  1400010a4:      b0000010        adrp    x16, 0x140002000
-# AFTER:  1400010a8:      f9402a10        ldr     x16, [x16, #80]
+# AFTER:  1400010a8:      f9400210        ldr     x16, [x16]
 # AFTER:  1400010ac:      d61f0200        br      x16
 
 # BASEREL:      BaseReloc [

@@ -326,6 +326,13 @@ private:
   // null pointer.) This vector is only valid during initialization.
   std::vector<SectionChunk *> sparseChunks;
 
+public:
+  // COMDAT sections dropped for another copy of the COMDAT (link.exe still
+  // aligns their groups).
+  std::vector<const llvm::object::coff_section *> discardedComdats;
+
+private:
+
   DWARFCache *dwarf = nullptr;
 };
 

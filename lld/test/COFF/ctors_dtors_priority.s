@@ -48,9 +48,10 @@ main:
 # CHECK-NEXT: Contents of section .data:
 # CHECK-NEXT: 140003000 10200040 01000000 38200040 01000000
 
+## As in link.exe, the sections follow the order of the input.
+# MSVC: Name: .ctors.0
 # MSVC: Name: .ctors (
+# MSVC: Name: .ctors.0
 # MSVC: Name: .dtors (
-# MSVC: Name: .ctors.0
-# MSVC: Name: .ctors.0
 # MSVC: Name: .dtors.0
 # MSVC: Name: .dtors.0

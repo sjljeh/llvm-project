@@ -12,13 +12,13 @@
 
 // CHECK:      Import {
 // CHECK-NEXT:   Name: lib.dll
-// CHECK-NEXT:   ImportLookupTableRVA: 0x2050
-// CHECK-NEXT:   ImportAddressTableRVA: 0x2068
+// CHECK-NEXT:   ImportLookupTableRVA: 0x2080
+// CHECK-NEXT:   ImportAddressTableRVA: 0x2000
 // CHECK-NEXT: }
 // CHECK-NEXT: Import {
 // CHECK-NEXT:   Name: lib.dll
-// CHECK-NEXT:   ImportLookupTableRVA: 0x2058
-// CHECK-NEXT:   ImportAddressTableRVA: 0x2070
+// CHECK-NEXT:   ImportLookupTableRVA: 0x2088
+// CHECK-NEXT:   ImportAddressTableRVA: 0x2008
 // CHECK-NEXT:   Symbol: func (0)
 // CHECK-NEXT: }
 

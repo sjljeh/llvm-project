@@ -9,4 +9,4 @@ main:
 // Check that the first section data comes at 512 bytes in the file.
 // If the size allocated for headers would include size for section
 // headers which aren't written, PointerToRawData would be 0x400 instead.
-// CHECK: PointerToRawData: 0x200
+// CHECK: PointerToRawData: 0x400

@@ -1,17 +1,18 @@
 // REQUIRES: arm
 // RUN: llvm-mc -filetype=obj -triple=thumbv7-windows %s -o %t.obj
-// RUN: lld-link %t.obj %p/Inputs/library.lib /subsystem:console /entry:main \
-// RUN:   /delayload:library.dll /out:%t.exe
-// RUN: llvm-objdump --no-print-imm-hex -d %t.exe --start-address=0x150101a \
-// RUN:   --stop-address=0x1501046 | FileCheck %s
+// RUN: lld-link -lldmingw %t.obj %p/Inputs/library.lib /subsystem:console \
+// RUN:   /entry:main /delayload:library.dll /out:%t.exe
+// RUN: llvm-objdump --no-print-imm-hex -d %t.exe | FileCheck %s
 
 // __delayLoadHelper2 is more than 16 MiB before the tail merge, out of reach of
 // a bl. The tail merge loads its address, with the Thumb bit set, and uses blx.
+// link.exe-compatible layouts call the helper with a bl, as link.exe does, so
+// this links in MinGW mode.
 
-// CHECK:      150101a: {{.*}} push.w {r0, r1, r2, r3, r11, lr}
-// CHECK:      1501030: f241 020d movw r2, #4109
-// CHECK-NEXT: 1501034: f2c0 0240 movt r2, #64
-// CHECK-NEXT: 1501038: 4790 blx r2
+// CHECK:      push.w {r0, r1, r2, r3, r11, lr}
+// CHECK:      movw r2, #4109
+// CHECK-NEXT: movt r2, #64
+// CHECK-NEXT: blx r2
 
     .syntax unified
     .text

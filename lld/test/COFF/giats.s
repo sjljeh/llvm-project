@@ -13,14 +13,16 @@
 
 # CHECK: ImageBase: 0x140000000
 # CHECK: LoadConfig [
-# CHECK:   GuardCFFunctionTable: 0x140002114
+# CHECK:   GuardCFFunctionTable: 0x14000213C
 # CHECK:   GuardCFFunctionCount: 1
-# CHECK:   GuardFlags [ (0x10500)
+# CHECK:   GuardFlags [ (0x13500)
 # CHECK:     CF_FUNCTION_TABLE_PRESENT (0x400)
 # CHECK:     CF_INSTRUMENTED (0x100)
 # CHECK:     CF_LONGJUMP_TABLE_PRESENT (0x10000)
+# CHECK:     DELAYLOAD_IAT_IN_ITS_OWN_SECTION (0x2000)
+# CHECK:     PROTECT_DELAYLOAD_IAT (0x1000)
 # CHECK:   ]
-# CHECK:   GuardAddressTakenIatEntryTable: 0x140002118
+# CHECK:   GuardAddressTakenIatEntryTable: 0x140002140
 # CHECK:   GuardAddressTakenIatEntryCount: 1
 # CHECK: ]
 # CHECK:      GuardFidTable [
@@ -37,14 +39,16 @@
 
 # DELAY-CHECK: ImageBase: 0x140000000
 # DELAY-CHECK: LoadConfig [
-# DELAY-CHECK:   GuardCFFunctionTable: 0x14000211C
+# DELAY-CHECK:   GuardCFFunctionTable: 0x140002134
 # DELAY-CHECK:   GuardCFFunctionCount: 2
-# DELAY-CHECK:   GuardFlags [ (0x10500)
+# DELAY-CHECK:   GuardFlags [ (0x13500)
 # DELAY-CHECK:     CF_FUNCTION_TABLE_PRESENT (0x400)
 # DELAY-CHECK:     CF_INSTRUMENTED (0x100)
 # DELAY-CHECK:     CF_LONGJUMP_TABLE_PRESENT (0x10000)
+# DELAY-CHECK:     DELAYLOAD_IAT_IN_ITS_OWN_SECTION (0x2000)
+# DELAY-CHECK:     PROTECT_DELAYLOAD_IAT (0x1000)
 # DELAY-CHECK:   ]
-# DELAY-CHECK:   GuardAddressTakenIatEntryTable: 0x140002124
+# DELAY-CHECK:   GuardAddressTakenIatEntryTable: 0x14000213C
 # DELAY-CHECK:   GuardAddressTakenIatEntryCount: 1
 # DELAY-CHECK: ]
 # DELAY-CHECK:      GuardFidTable [

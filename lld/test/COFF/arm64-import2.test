@@ -13,6 +13,7 @@
 # BEFORE:        8:       d65f03c0        ret
 # BEFORE:        c:       ff              <unknown>
 
+## As in link.exe, the import address table starts .rdata.
 # AFTER: Disassembly of section .text:
 # AFTER-EMPTY:
 # AFTER:  140001000:      94000004        bl      0x140001010
@@ -20,22 +21,22 @@
 # AFTER:  140001008:      d65f03c0        ret
 # AFTER:  14000100c:      000000ff
 # AFTER:  140001010:      b0000010        adrp    x16, 0x140002000
-# AFTER:  140001014:      f9403210        ldr     x16, [x16, #96]
+# AFTER:  140001014:      f9400210        ldr     x16, [x16]
 # AFTER:  140001018:      d61f0200        br      x16
 # AFTER:  14000101c:      b0000010        adrp    x16, 0x140002000
-# AFTER:  140001020:      f9403a10        ldr     x16, [x16, #112]
+# AFTER:  140001020:      f9400a10        ldr     x16, [x16, #16]
 # AFTER:  140001024:      d61f0200        br      x16
 
 # IMPORTS: Import {
 # IMPORTS:   Name: library.dll
-# IMPORTS:   ImportLookupTableRVA: 0x2040
-# IMPORTS:   ImportAddressTableRVA: 0x2060
+# IMPORTS:   ImportLookupTableRVA: 0x2060
+# IMPORTS:   ImportAddressTableRVA: 0x2000
 # IMPORTS:   Symbol: function (2)
 # IMPORTS: }
 # IMPORTS: Import {
 # IMPORTS:   Name: library2.dll
-# IMPORTS:   ImportLookupTableRVA: 0x2050
-# IMPORTS:   ImportAddressTableRVA: 0x2070
+# IMPORTS:   ImportLookupTableRVA: 0x2070
+# IMPORTS:   ImportAddressTableRVA: 0x2010
 # IMPORTS:   Symbol: function2 (0)
 # IMPORTS: }
 

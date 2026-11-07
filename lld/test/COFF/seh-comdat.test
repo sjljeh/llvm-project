@@ -4,7 +4,7 @@
 # RUN: llvm-objdump -s %t.exe | FileCheck %s
 
 # CHECK: Contents of section .rdata:
-# CHECK:  1000 00200000
+# CHECK:  401010 00000000
 
 --- !COFF
 header:

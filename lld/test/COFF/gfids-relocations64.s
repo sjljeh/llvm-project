@@ -58,7 +58,7 @@ fp:     .quad f        # DIR32 relocation to function
         .section       .text,"xr",one_only,main
         .globl  main
         .p2align 4
-main:   call *fp       # DIR32 relocation to data
+main:   call *fp(%rip) # REL32 relocation to data
         call g         # REL32 relocation to function
         ret
 

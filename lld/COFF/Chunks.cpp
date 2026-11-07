@@ -188,6 +188,8 @@ void SectionChunk::applyRelocation(uint8_t *off,
   // info.
   Chunk *c = sym ? sym->getChunk() : nullptr;
   OutputSection *os = c ? ctx.getOutputSection(c) : nullptr;
+  if (os && ctx.tlsTemplateSection && ctx.mergedTlsChunks.contains(c))
+    os = ctx.tlsTemplateSection;
 
   // Skip the relocation if it refers to a discarded section, and diagnose it
   // as an error if appropriate. If a symbol was discarded early, it may be
@@ -200,6 +202,22 @@ void SectionChunk::applyRelocation(uint8_t *off,
   }
 
   uint64_t s = sym->getRVA();
+
+  // A 32-bit absolute address (which x64 instructions sign-extend) must stay
+  // below 2GB, also after the image is relocated: link.exe rejects it
+  // (LNK2017) in a relocatable large address aware image, or where the
+  // address isn't below 2GB. Without the check it would be truncated.
+  if (rel.Type == IMAGE_REL_AMD64_ADDR32 && getMachine() == AMD64 &&
+      !isa<DefinedAbsolute>(sym) && !ctx.config.mingw) {
+    bool laa = ctx.config.largeAddressAware && ctx.config.relocatable;
+    if (laa || s + ctx.config.imageBase >= 0x80000000) {
+      Err(ctx) << "IMAGE_REL_AMD64_ADDR32 relocation to '" << sym->getName()
+               << "' in " << file
+               << (laa ? " is invalid without /largeaddressaware:no"
+                       : " is out of range");
+      return;
+    }
+  }
 
   // Compute the RVA of the relocation for relative relocations.
   uint64_t p = rva + rel.VirtualAddress;
@@ -576,9 +594,9 @@ ImportThunkChunk::ImportThunkChunk(COFFLinkerContext &ctx, Defined *s)
 
 ImportThunkChunkX64::ImportThunkChunkX64(COFFLinkerContext &ctx, Defined *s)
     : ImportThunkChunk(ctx, s) {
-  // Intel Optimization Manual says that all branch targets
-  // should be 16-byte aligned. MSVC linker does this too.
-  setAlignment(16);
+  // Intel Optimization Manual says that all branch targets should be 16-byte
+  // aligned. Current versions of link.exe pack the thunks instead.
+  setAlignment(ctx.config.linkExeLayout() ? 1 : 16);
 }
 
 void ImportThunkChunkX64::writeTo(uint8_t *buf) const {
@@ -595,6 +613,12 @@ void ImportThunkChunkX86::writeTo(uint8_t *buf) const {
   memcpy(buf, importThunkX86, sizeof(importThunkX86));
   // The first two bytes is a JMP instruction. Fill its operand.
   write32le(buf + 2, impSymbol->getRVA() + ctx.config.imageBase);
+}
+
+ImportThunkChunkARM::ImportThunkChunkARM(COFFLinkerContext &ctx, Defined *s)
+    : ImportThunkChunk(ctx, s) {
+  // link.exe word-aligns each thunk.
+  setAlignment(ctx.config.linkExeLayout() ? 4 : 2);
 }
 
 void ImportThunkChunkARM::getBaserels(std::vector<Baserel> *res) {
@@ -623,11 +647,14 @@ void ImportThunkChunkRISCV::writeTo(uint8_t *buf) const {
   applyRISCVPCRelPair(buf, offset, "import thunk for " + impSymbol->getName());
 }
 
-// A Thumb2, PIC, non-interworking range extension thunk.
+// A Thumb-2 range extension thunk. This is the absolute form link.exe uses,
+// padded to a word as link.exe pads it; it needs an
+// IMAGE_REL_BASED_ARM_MOV32T base relocation.
 const uint8_t armThunk[] = {
-    0x40, 0xf2, 0x00, 0x0c, // P:  movw ip,:lower16:S - (P + (L1-P) + 4)
-    0xc0, 0xf2, 0x00, 0x0c, //     movt ip,:upper16:S - (P + (L1-P) + 4)
-    0xe7, 0x44,             // L1: add  pc, ip
+    0x40, 0xf2, 0x00, 0x0c, // movw ip, :lower16:S
+    0xc0, 0xf2, 0x00, 0x0c, // movt ip, :upper16:S
+    0x60, 0x47,             // bx   ip
+    0x00, 0x00,             // padding
 };
 
 size_t RangeExtensionThunkARM::getSize() const {
@@ -638,9 +665,15 @@ size_t RangeExtensionThunkARM::getSize() const {
 
 void RangeExtensionThunkARM::writeTo(uint8_t *buf) const {
   assert(ctx.config.machine == ARMNT);
-  uint64_t offset = target->getRVA() - rva - 12;
   memcpy(buf, armThunk, sizeof(armThunk));
-  applyMOV32T(buf, uint32_t(offset));
+  uint64_t v = target->getRVA() + addend;
+  if (isARMThumbTarget(target))
+    v |= 1;
+  applyMOV32T(buf, uint32_t(v + ctx.config.imageBase));
+}
+
+void RangeExtensionThunkARM::getBaserels(std::vector<Baserel> *res) {
+  res->emplace_back(rva, IMAGE_REL_BASED_ARM_MOV32T);
 }
 
 // A position independent ARM64 adrp+add thunk, with a maximum range of
@@ -737,14 +770,12 @@ void LocalImportChunk::writeTo(uint8_t *buf) const {
   if (ctx.config.is64()) {
     write64le(buf, sym->getRVA() + ctx.config.imageBase);
   } else {
-    uint32_t bit = 0;
-    // Pointer to thumb code must have the LSB set, so adjust it. Only code is
-    // adjusted: dllimport of a locally defined variable is valid, and the
-    // pointer to such a variable must stay unmodified.
-    if (ctx.config.machine == ARMNT && sym->getChunk() &&
-        (sym->getChunk()->getOutputCharacteristics() & IMAGE_SCN_MEM_EXECUTE))
-      bit = 1;
-    write32le(buf, (sym->getRVA() + ctx.config.imageBase) | bit);
+    // A pointer to Thumb code must have the LSB set. Only code is adjusted:
+    // dllimport of a locally defined variable is valid, and the pointer to such
+    // a variable must stay unmodified.
+    uint64_t rva = ctx.config.machine == ARMNT ? getARMTargetRVA(sym)
+                                                : sym->getRVA();
+    write32le(buf, rva + ctx.config.imageBase);
   }
 }
 

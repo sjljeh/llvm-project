@@ -27,8 +27,10 @@ ret
 # CHECK:     Number: 2
 # CHECK:     Name: .rdata (2E 72 64 61 74 61 00 00)
 # CHECK:     SectionData (
-# CHECK:       0000: 0300                                 |..|
-# CHECK:     )
+## The volatile metadata link.exe emits for x64 follows.
+# CHECK:       0000: 03000000 18000000 00800080 00000000  |................|
+# CHECK-NEXT:  0010: 00000000 00000000 00000000           |............|
+# CHECK-NEXT:     )
 # CHECK:   }
 # CHECK-NOT: Section
 # CHECK: ]

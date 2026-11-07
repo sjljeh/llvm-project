@@ -3,10 +3,10 @@
 # RUN: lld-link %t.obj -dll -noentry -out:%t.dll -merge:.xdata=.xdata
 # RUN: llvm-readobj --sections --coff-exports %t.dll | FileCheck %s
 
-# CHECK:         Name: .pdata
-# CHECK-NEXT:    VirtualSize: 0x18
 # CHECK:         Name: .xdata
 # CHECK-NEXT:    VirtualSize: 0x10
+# CHECK:         Name: .pdata
+# CHECK-NEXT:    VirtualSize: 0x18
 
 # CHECK:         Name: xdata1
 # CHECK-NEXT:    RVA: 0x1010

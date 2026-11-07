@@ -15,11 +15,12 @@
 # CHECK: Name: .text
 # CHECK: Name: .rmeta
 # CHECK: Name: .reloc
+## Debug sections come last, in input order as in link.exe.
 # CHECK: Name: .debug_abbrev
 # CHECK: Name: .debug_info
-# CHECK: Name: .debug_line
 # CHECK: Name: .debug_pubnames
 # CHECK: Name: .debug_pubtypes
+# CHECK: Name: .debug_line
 
 # NODEBUG: Name: .text
 # NODEBUG: Name: .rmeta

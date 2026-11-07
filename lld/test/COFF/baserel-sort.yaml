@@ -7,15 +7,15 @@
 # CHECK:      BaseReloc [
 # CHECK-NEXT:   Entry {
 # CHECK-NEXT:     Type: DIR64
-# CHECK-NEXT:     Address: 0x2000
+# CHECK-NEXT:     Address: 0x3000
 # CHECK-NEXT:   }
 # CHECK-NEXT:   Entry {
 # CHECK-NEXT:     Type: DIR64
-# CHECK-NEXT:     Address: 0x2008
+# CHECK-NEXT:     Address: 0x3008
 # CHECK-NEXT:   }
 # CHECK-NEXT:   Entry {
 # CHECK-NEXT:     Type: DIR64
-# CHECK-NEXT:     Address: 0x2010
+# CHECK-NEXT:     Address: 0x3010
 # CHECK-NEXT:   }
 
 --- !COFF

@@ -58,17 +58,20 @@ StringRef COFFImportFile::getFileFormatName() const {
   }
 }
 
-static StringRef applyNameType(ImportNameType Type, StringRef name) {
+static StringRef applyNameType(ImportNameType Type, StringRef name,
+                               bool isX86 = true) {
   auto ltrim1 = [](StringRef s, StringRef chars) {
     return !s.empty() && chars.contains(s[0]) ? s.substr(1) : s;
   };
+  // Like link.exe, only strip a leading underscore (the C decoration) on x86.
+  StringRef prefixes = isX86 ? "?@_" : "?@";
 
   switch (Type) {
   case IMPORT_NAME_NOPREFIX:
-    name = ltrim1(name, "?@_");
+    name = ltrim1(name, prefixes);
     break;
   case IMPORT_NAME_UNDECORATE:
-    name = ltrim1(name, "?@_");
+    name = ltrim1(name, prefixes);
     name = name.substr(0, name.find('@'));
     break;
   default:
@@ -87,7 +90,8 @@ StringRef COFFImportFile::getExportName() const {
     break;
   case IMPORT_NAME_NOPREFIX:
   case IMPORT_NAME_UNDECORATE:
-    name = applyNameType(static_cast<ImportNameType>(hdr->getNameType()), name);
+    name = applyNameType(static_cast<ImportNameType>(hdr->getNameType()), name,
+                         hdr->Machine == COFF::IMAGE_FILE_MACHINE_I386);
     break;
   case IMPORT_NAME_EXPORTAS: {
     // Skip DLL name

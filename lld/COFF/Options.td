@@ -204,6 +204,9 @@ defm allowbind : B<"allowbind", "Enable DLL binding (default)",
                    "Disable DLL binding">;
 defm allowisolation : B<"allowisolation", "Enable DLL isolation (default)",
                         "Disable DLL isolation">;
+defm volatilemetadata : B<"volatilemetadata",
+    "Emit volatile metadata on x86 and x64 (default)",
+    "Do not emit volatile metadata">;
 defm appcontainer : B<"appcontainer",
                       "Image can only be run in an app container",
                       "Image can run outside an app container (default)">;

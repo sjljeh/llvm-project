@@ -9,16 +9,16 @@
 # There shouldn't be much xdata, because all three .pdata entries (12 bytes
 # each) should use the same .xdata unwind info.
 # XDATA:         Name: .rdata
-# XDATA-NEXT:    VirtualSize: 0x6F
-# XDATA:         Name: .pdata
-# XDATA-NEXT:    VirtualSize: 0x24
+# XDATA-NEXT:    VirtualSize: 0x88
 # XDATA:         Name: .xdata
 # XDATA-NEXT:    VirtualSize: 0x8
+# XDATA:         Name: .pdata
+# XDATA-NEXT:    VirtualSize: 0x24
 #
 # WARN: warning: .xdata=.rdata: already merged into .xdata
 #
 # RDATA:         Name: .rdata
-# RDATA-NEXT:    VirtualSize: 0x78
+# RDATA-NEXT:    VirtualSize: 0x90
 # RDATA:         Name: .pdata
 # RDATA-NEXT:    VirtualSize: 0x24
 

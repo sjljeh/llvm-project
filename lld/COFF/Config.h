@@ -121,6 +121,25 @@ struct Configuration {
   enum ManifestKind { Default, SideBySide, Embed, No };
   bool is64() const { return llvm::COFF::is64Bit(machine); }
 
+  // Whether to lay out the image as current versions of link.exe do (section
+  // order, import tables, header sizes). Other targets keep lld's layout.
+  // Whether to lay out delay-load tables as link.exe does. Unlike the rest of
+  // the link.exe layout this also applies to ARM64EC (but not ARM64X, where
+  // the delay-load tables are shared by the native and EC views).
+  bool linkExeDelayLoadLayout() const {
+    return linkExeLayout() ||
+           (!mingw && machine == llvm::COFF::IMAGE_FILE_MACHINE_ARM64EC);
+  }
+
+  bool linkExeLayout() const {
+    using namespace llvm::COFF;
+    return !mingw &&
+           (machine == IMAGE_FILE_MACHINE_I386 ||
+            machine == IMAGE_FILE_MACHINE_AMD64 ||
+            machine == IMAGE_FILE_MACHINE_ARMNT ||
+            machine == IMAGE_FILE_MACHINE_ARM64);
+  }
+
   std::unique_ptr<MemoryBuffer> dosStub;
   llvm::COFF::MachineTypes machine = IMAGE_FILE_MACHINE_UNKNOWN;
   bool machineInferred = false;
@@ -222,6 +241,8 @@ struct Configuration {
 
   // Used for /merge:from=to (e.g. /merge:.rdata=.text)
   std::map<StringRef, StringRef> merge;
+  // The sections named on the left of /merge options.
+  llvm::StringSet<> userMerges;
 
   // Used for /discard-section:.name
   llvm::StringSet<> discardSection;
@@ -329,6 +350,10 @@ struct Configuration {
   uint32_t minorOSVersion = 0;
   uint32_t majorSubsystemVersion = 6;
   uint32_t minorSubsystemVersion = 0;
+  // Whether the versions above were given explicitly (/subsystem:x,ver,
+  // /osversion or a module-definition file) rather than defaulted.
+  bool subsystemVersionSet = false;
+  bool osVersionSet = false;
   uint32_t timestamp = 0;
   uint32_t functionPadMin = 0;
   uint32_t timeTraceGranularity = 0;
@@ -346,6 +371,7 @@ struct Configuration {
   bool largeAddressAware = false;
   bool highEntropyVA = false;
   bool appContainer = false;
+  bool volatileMetadata = true;
   bool mergeDebugDirectory = true;
   bool mingw = false;
   bool warnMissingOrderSymbol = true;

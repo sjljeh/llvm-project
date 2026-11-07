@@ -12,7 +12,7 @@
 # RUN: lld-link /include:symbol /dll /noentry /nodefaultlib %t.obj /out:%t.exe
 # RUN: llvm-objdump -s %t.exe | FileCheck --check-prefix=BACKWARD %s
 # BACKWARD: Contents of section .text:
-# BACKWARD:   180001000 01000000 02000000 03000000 ............
+# BACKWARD:   180002000 01000000 02000000 03000000 ............
 
 # RUN: lld-link /dll /noentry /nodefaultlib %t.obj /out:%t.exe
 # RUN: llvm-objdump -s %t.exe | FileCheck --check-prefix=BACKWARDDROP %s

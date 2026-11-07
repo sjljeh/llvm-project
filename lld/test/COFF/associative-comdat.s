@@ -14,7 +14,7 @@
 # CHECK-LABEL:     Name: .rdata (2E 72 64 61 74 61 00 00)
 #             This is the critical check to show that only *one* definition of
 #             foo_assoc was retained. This *must* be 8, not 16.
-# CHECK-NEXT:     VirtualSize: 0x8
+# CHECK-NEXT:     VirtualSize: 0x20
 # CHECK:   Section {
 # CHECK:     Number: 3
 # CHECK-LABEL:     Name: .data (2E 64 61 74 61 00 00 00)

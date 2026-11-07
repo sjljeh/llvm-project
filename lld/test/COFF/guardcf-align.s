@@ -41,7 +41,7 @@ _load_config_used:
         .section .text,"rx"
         .global main
 main:
-        movq foo, %rcx
+        movq foo(%rip), %rcx
         xorq %rax, %rax
         callq bar
         retq

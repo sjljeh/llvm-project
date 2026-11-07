@@ -13,30 +13,32 @@
 
 
 ; RUN: llvm-readobj --coff-exports out.dll | FileCheck --check-prefix=EXP %s
+; Like link.exe, number the exports in the order of the symbol names given to
+; -export, so mangled functions come before data.
 ; EXP:      Export {
 ; EXP-NEXT:   Ordinal: 1
-; EXP-NEXT:   Name: #mangled_data_sym
-; EXP-NEXT:   RVA: 0x4000
-; EXP-NEXT: }
-; EXP-NEXT: Export {
-; EXP-NEXT:   Ordinal: 2
-; EXP-NEXT:   Name: ?cxx_func@@YAHXZ
-; EXP-NEXT:   RVA: 0x2030
-; EXP-NEXT: }
-; EXP-NEXT: Export {
-; EXP-NEXT:   Ordinal: 3
-; EXP-NEXT:   Name: data_sym
-; EXP-NEXT:   RVA: 0x4004
-; EXP-NEXT: }
-; EXP-NEXT: Export {
-; EXP-NEXT:   Ordinal: 4
 ; EXP-NEXT:   Name: exportas_func
 ; EXP-NEXT:   RVA: 0x2020
 ; EXP-NEXT: }
 ; EXP-NEXT: Export {
-; EXP-NEXT:   Ordinal: 5
+; EXP-NEXT:   Ordinal: 2
+; EXP-NEXT:   Name: #mangled_data_sym
+; EXP-NEXT:   RVA: 0x4000
+; EXP-NEXT: }
+; EXP-NEXT: Export {
+; EXP-NEXT:   Ordinal: 3
 ; EXP-NEXT:   Name: mangled_func
 ; EXP-NEXT:   RVA: 0x2010
+; EXP-NEXT: }
+; EXP-NEXT: Export {
+; EXP-NEXT:   Ordinal: 4
+; EXP-NEXT:   Name: ?cxx_func@@YAHXZ
+; EXP-NEXT:   RVA: 0x2030
+; EXP-NEXT: }
+; EXP-NEXT: Export {
+; EXP-NEXT:   Ordinal: 5
+; EXP-NEXT:   Name: data_sym
+; EXP-NEXT:   RVA: 0x4004
 ; EXP-NEXT: }
 ; EXP-NEXT: Export {
 ; EXP-NEXT:   Ordinal: 6

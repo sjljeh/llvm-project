@@ -19,6 +19,8 @@
 #include "Writer.h"
 #include "lld/Common/CommonLinkerContext.h"
 #include "lld/Common/Timer.h"
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/StringMap.h"
 #include <memory>
 
 namespace lld::coff {
@@ -65,6 +67,16 @@ public:
   std::vector<ObjFile *> objFileInstances;
   std::map<std::string, PDBInputFile *> pdbInputFileInstances;
   std::vector<ImportFile *> importFileInstances;
+  // The order in which archives were added, for ordering import descriptors
+  // like link.exe.
+  llvm::StringMap<size_t> archiveOrder;
+
+  // When .tls is merged into another section (as link.exe merges it into
+  // .rdata), section-relative relocations against TLS data stay relative to
+  // the TLS template; tlsTemplateSection stands in for the .tls section.
+  llvm::DenseSet<Chunk *> mergedTlsChunks;
+  Chunk *tlsTemplateStart = nullptr;
+  OutputSection *tlsTemplateSection = nullptr;
   std::int64_t consumedInputsSize = 0;
 
   MergeChunk *mergeChunkInstances[Log2MaxSectionAlignment + 1] = {};

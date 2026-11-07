@@ -1,6 +1,10 @@
 # RUN: yaml2obj %s -o %t.obj
-# RUN: lld-link /out:%t.dll /entry:__ImageBase /dll %t.obj
+# RUN: lld-link /out:%t.dll /entry:__ImageBase /dll %t.obj 2>&1 | FileCheck --check-prefix=WARN %s
 # RUN: llvm-readobj --sections --section-data %t.dll | FileCheck %s
+
+## As in link.exe on x64, the writable .CRT contribution makes a .CRT section
+## of its own.
+# WARN: warning: multiple '.CRT' sections found with different attributes (0xC0000040)
 
 # CHECK: Name: .CRT
 # CHECK: Characteristics [
@@ -8,7 +12,16 @@
 # CHECK-NEXT: IMAGE_SCN_MEM_READ
 # CHECK-NEXT: ]
 # CHECK-NEXT: SectionData (
-# CHECK-NEXT: 010203
+# CHECK-NEXT: 0103
+# CHECK-NEXT: )
+# CHECK: Name: .CRT
+# CHECK: Characteristics [
+# CHECK-NEXT: IMAGE_SCN_CNT_INITIALIZED_DATA
+# CHECK-NEXT: IMAGE_SCN_MEM_READ
+# CHECK-NEXT: IMAGE_SCN_MEM_WRITE
+# CHECK-NEXT: ]
+# CHECK-NEXT: SectionData (
+# CHECK-NEXT: 02
 # CHECK-NEXT: )
 
 --- !COFF

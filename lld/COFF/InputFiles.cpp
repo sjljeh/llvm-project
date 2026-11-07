@@ -159,11 +159,23 @@ void ArchiveFile::parse() {
   COFFLinkerContext &ctx = symtab.ctx;
   SymbolTable *archiveSymtab = &symtab;
 
+  // Members needed for symbols that are already undefined are loaded in the
+  // order the symbols became undefined, as link.exe does.
+  bool collect = !ctx.config.mingw;
+  SmallVector<SymbolTable *, 2> collecting;
+  auto startCollecting = [&](SymbolTable *t) {
+    if (!collect || llvm::is_contained(collecting, t))
+      return;
+    t->collectingArchiveLoads = true;
+    collecting.push_back(t);
+  };
+
   // Try to read symbols from ECSYMBOLS section on ARM64EC.
   if (ctx.symtab.isEC()) {
     iterator_range<Archive::symbol_iterator> symbols =
         CHECK(file->ec_symbols(), this);
     if (!symbols.empty()) {
+      startCollecting(&ctx.symtab);
       for (const Archive::Symbol &sym : symbols)
         ctx.symtab.addLazyArchive(this, sym);
 
@@ -222,6 +234,7 @@ void ArchiveFile::parse() {
   }
 
   // Read the symbol table to construct Lazy objects.
+  startCollecting(archiveSymtab);
   for (const Archive::Symbol &sym : file->symbols()) {
     // If an import library provides the DllMain symbol, skip importing it, as
     // we should be using our own DllMain, not another DLL's DllMain.
@@ -231,6 +244,14 @@ void ArchiveFile::parse() {
         continue;
     }
     archiveSymtab->addLazyArchive(this, sym);
+  }
+  for (SymbolTable *t : collecting) {
+    t->collectingArchiveLoads = false;
+    auto loads = std::move(t->collectedArchiveLoads);
+    t->collectedArchiveLoads.clear();
+    llvm::stable_sort(loads, [](auto &a, auto &b) { return a.first < b.first; });
+    for (auto &[order, load] : loads)
+      load.first->addMember(load.second);
   }
 }
 
@@ -351,6 +372,14 @@ void ObjFile::initializeECThunks() {
   }
 }
 
+// We set SectionChunk pointers in the SparseChunks vector to this value
+// temporarily to mark comdat sections as having an unknown resolution. As we
+// walk the object file's symbol table, once we visit either a leader symbol or
+// an associative section definition together with the parent comdat's leader,
+// we set the pointer to either nullptr (to mark the section as discarded) or a
+// valid SectionChunk for that section.
+static SectionChunk *const pendingComdat = reinterpret_cast<SectionChunk *>(1);
+
 void ObjFile::parse() {
   // Read section and symbol tables.
   initializeChunks();
@@ -367,13 +396,6 @@ const coff_section *ObjFile::getSection(uint32_t i) {
   return *sec;
 }
 
-// We set SectionChunk pointers in the SparseChunks vector to this value
-// temporarily to mark comdat sections as having an unknown resolution. As we
-// walk the object file's symbol table, once we visit either a leader symbol or
-// an associative section definition together with the parent comdat's leader,
-// we set the pointer to either nullptr (to mark the section as discarded) or a
-// valid SectionChunk for that section.
-static SectionChunk *const pendingComdat = reinterpret_cast<SectionChunk *>(1);
 
 void ObjFile::initializeChunks() {
   uint32_t numSections = coffObj->getNumberOfSections();
@@ -520,6 +542,7 @@ void ObjFile::readAssociativeDefinition(COFFSymbolRef sym,
     }
   } else {
     sparseChunks[sectionNumber] = nullptr;
+    discardedComdats.push_back(getSection(sectionNumber));
   }
 }
 
@@ -682,6 +705,20 @@ void ObjFile::initializeSymbols() {
                              IMAGE_WEAK_EXTERN_ANTI_DEPENDENCY);
   }
 
+  // COMDAT sections are read as their symbols are, after the others. link.exe
+  // keeps an object's contributions in section table order.
+  if (!symtab.ctx.config.mingw) {
+    DenseMap<Chunk *, uint32_t> index;
+    for (uint32_t i = 1; i < sparseChunks.size(); ++i)
+      if (sparseChunks[i] && sparseChunks[i] != pendingComdat)
+        index[sparseChunks[i]] = i;
+    llvm::stable_sort(chunks, [&](Chunk *a, Chunk *b) {
+      auto x = index.find(a), y = index.find(b);
+      if (x == index.end() || y == index.end())
+        return x != index.end() && y == index.end();
+      return x->second < y->second;
+    });
+  }
   // Free the memory used by sparseChunks now that symbol loading is finished.
   decltype(sparseChunks)().swap(sparseChunks);
 }
@@ -741,6 +778,13 @@ void ObjFile::handleComdatSelection(
     selection = leaderSelection = IMAGE_COMDAT_SELECT_ANY;
   }
 
+  // link.exe rejects an object that defines a COMDAT twice (LNK1179).
+  if (!ctx.config.mingw && leader->file == this) {
+    Err(ctx) << this << ": invalid or corrupt file: duplicate COMDAT '"
+             << leader->getName() << "'";
+    return;
+  }
+
   if ((selection == IMAGE_COMDAT_SELECT_ANY &&
        leaderSelection == IMAGE_COMDAT_SELECT_LARGEST) ||
       (selection == IMAGE_COMDAT_SELECT_LARGEST &&
@@ -761,6 +805,14 @@ void ObjFile::handleComdatSelection(
                             leaderSelection == IMAGE_COMDAT_SELECT_ANY))) {
     leaderSelection = selection = IMAGE_COMDAT_SELECT_SAME_SIZE;
   }
+
+  // link.exe also takes "largest" over any other selection that follows it,
+  // and after anything but "no duplicates".
+  if (!ctx.config.mingw && selection != leaderSelection &&
+      (leaderSelection == IMAGE_COMDAT_SELECT_LARGEST ||
+       (selection == IMAGE_COMDAT_SELECT_LARGEST &&
+        leaderSelection != IMAGE_COMDAT_SELECT_NODUPLICATES)))
+    leaderSelection = selection = IMAGE_COMDAT_SELECT_LARGEST;
 
   // Other than that, comdat selections must match.  This is a bit more
   // strict than link.exe which allows merging "any" and "largest" if "any"
@@ -787,6 +839,20 @@ void ObjFile::handleComdatSelection(
     break;
 
   case IMAGE_COMDAT_SELECT_SAME_SIZE:
+  case IMAGE_COMDAT_SELECT_EXACT_MATCH:
+    // link.exe compares neither sizes nor contents for these, only the
+    // checksums in the section definitions.
+    if (!ctx.config.mingw) {
+      if (leaderChunk->checksum != def->CheckSum)
+        symtab.reportDuplicate(leader, this);
+      break;
+    }
+    if (selection == IMAGE_COMDAT_SELECT_EXACT_MATCH) {
+      SectionChunk newChunk(this, getSection(sym));
+      if (leaderChunk->getContents() != newChunk.getContents())
+        symtab.reportDuplicate(leader, this, &newChunk, sym.getValue());
+      break;
+    }
     if (leaderChunk->getSize() != getSection(sym)->SizeOfRawData) {
       if (!ctx.config.mingw) {
         symtab.reportDuplicate(leader, this);
@@ -801,16 +867,6 @@ void ObjFile::handleComdatSelection(
     }
     break;
 
-  case IMAGE_COMDAT_SELECT_EXACT_MATCH: {
-    SectionChunk newChunk(this, getSection(sym));
-    // link.exe only compares section contents here and doesn't complain
-    // if the two comdat sections have e.g. different alignment.
-    // Match that.
-    if (leaderChunk->getContents() != newChunk.getContents())
-      symtab.reportDuplicate(leader, this, &newChunk, sym.getValue());
-    break;
-  }
-
   case IMAGE_COMDAT_SELECT_ASSOCIATIVE:
     // createDefined() is never called for IMAGE_COMDAT_SELECT_ASSOCIATIVE.
     // (This means lld-link doesn't produce duplicate symbol errors for
@@ -822,12 +878,14 @@ void ObjFile::handleComdatSelection(
     if (leaderChunk->getSize() < getSection(sym)->SizeOfRawData) {
       // Replace the existing comdat symbol with the new one.
       StringRef name = check(coffObj->getSymbolName(sym));
-      // FIXME: This is incorrect: With /opt:noref, the previous sections
-      // make it into the final executable as well. Correct handling would
-      // be to undo reading of the whole old section that's being replaced,
-      // or doing one pass that determines what the final largest comdat
-      // is for all IMAGE_COMDAT_SELECT_LARGEST comdats and then reading
-      // only the largest one.
+      // Discard the replaced section and its associated sections, so they
+      // don't make it into the output (and their relocations aren't
+      // applied) even with /opt:noref, as with link.exe.
+      if (SectionChunk *old = leader->getChunk()) {
+        old->live = false;
+        for (SectionChunk &child : old->children())
+          child.live = false;
+      }
       replaceSymbol<DefinedRegular>(leader, this, name, /*IsCOMDAT*/ true,
                                     /*IsExternal*/ true, sym.getGeneric(),
                                     nullptr);
@@ -964,6 +1022,7 @@ std::optional<Symbol *> ObjFile::createDefined(
       cast<DefinedRegular>(leader)->data = &c->repl;
     } else {
       sparseChunks[sectionNumber] = nullptr;
+      discardedComdats.push_back(getSection(sectionNumber));
     }
     return leader;
   }
@@ -1307,6 +1366,8 @@ void ImportFile::parse() {
   StringRef impName = saver().save("__imp_" + name);
   dllName = buf.split('\0').first;
   StringRef extName;
+  // Like link.exe, only strip a leading underscore (the C decoration) on x86.
+  const char *prefixes = hdr->Machine == I386 ? "?@_" : "?@";
   switch (hdr->getNameType()) {
   case IMPORT_ORDINAL:
     extName = "";
@@ -1315,10 +1376,10 @@ void ImportFile::parse() {
     extName = name;
     break;
   case IMPORT_NAME_NOPREFIX:
-    extName = ltrim1(name, "?@_");
+    extName = ltrim1(name, prefixes);
     break;
   case IMPORT_NAME_UNDECORATE:
-    extName = ltrim1(name, "?@_");
+    extName = ltrim1(name, prefixes);
     extName = extName.substr(0, extName.find('@'));
     break;
   case IMPORT_NAME_EXPORTAS:

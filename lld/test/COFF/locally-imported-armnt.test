@@ -1,4 +1,6 @@
-## On ARMNT a locally imported function pointer must have its low bit set; a data pointer must not.
+## On ARMNT a locally imported pointer to Thumb code (a section marked
+## IMAGE_SCN_MEM_16BIT, as link.exe checks) must have its low bit set; a data
+## pointer must not.
 
 # RUN: split-file %s %t.dir
 
@@ -25,14 +27,15 @@
 # RUN: llvm-readobj --coff-basereloc %t2.exe | FileCheck --check-prefix=DATAREL %s
 
 # DATA:      Contents of section .text:
-# DATA-NEXT: 401000 704700bf 04200000
+# DATA-NEXT: 401000 704700bf 00200000
 # DATA:      Contents of section .rdata:
-# DATA-NEXT: 402000 2a000000 00204000
+## As in link.exe, the local import pointer comes first in .rdata.
+# DATA-NEXT: 402000 04204000 2a000000
 
 # DATAREL:      BaseReloc [
 # DATAREL-NEXT:   Entry {
 # DATAREL-NEXT:     Type: HIGHLOW
-# DATAREL-NEXT:     Address: 0x2004
+# DATAREL-NEXT:     Address: 0x2000
 # DATAREL-NEXT:   }
 
 #--- code.yaml
@@ -42,7 +45,7 @@ header:
   Characteristics: []
 sections:
   - Name:            .text
-    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_16BIT, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
     Alignment:       4
     SectionData:     704700BF00000000
     Relocations:
@@ -71,7 +74,7 @@ header:
   Characteristics: []
 sections:
   - Name:            .text
-    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_16BIT, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
     Alignment:       4
     SectionData:     704700BF00000000
     Relocations:

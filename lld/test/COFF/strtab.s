@@ -20,9 +20,9 @@
 # CHECK-NEXT: }
 
 # SYMBOLS:      140001000 N .debug_abbrez
-# SYMBOLS-NEXT: 140002070 R __imp_function
+# SYMBOLS-NEXT: 140002000 R __imp_function
 # SYMBOLS-NEXT: 140001000 t __impl_long_name_symbolA
-# SYMBOLS-NEXT: 140001010 T function
+# SYMBOLS-NEXT: 140001006 T function
 # SYMBOLS-NEXT: 140001000 t long_name_symbolA
 # SYMBOLS-NEXT: 140001000 t long_name_symbolz
 # SYMBOLS-NEXT: 140001000 T main

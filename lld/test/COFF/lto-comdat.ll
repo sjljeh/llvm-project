@@ -61,9 +61,10 @@
 ; TEXT-01: retq
 ; TEXT-01-NOT: callq
 ; TEXT-01: retq
-; TEXT-01: int3
-; TEXT-01: int3
-; TEXT-01: int3
+;; As in link.exe, the padding before the LTO object's empty .text at the end
+;; of the section is zero.
+; TEXT-01-NEXT: addb
+; TEXT-01-NEXT: <unknown>
 ; TEXT-01-NOT: {{.}}
 
 ; HEADERS-10: AddressOfEntryPoint: 0x1020

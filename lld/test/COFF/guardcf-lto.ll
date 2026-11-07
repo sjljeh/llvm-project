@@ -16,10 +16,12 @@
 ; CHECK:      LoadConfig [
 ; CHECK:        GuardCFFunctionTable: 0x{{[^0].*}}
 ; CHECK-NEXT:   GuardCFFunctionCount: 2
-; CHECK-NEXT:   GuardFlags [ (0x10500)
+; CHECK-NEXT:   GuardFlags [ (0x13500)
 ; CHECK-NEXT:     CF_FUNCTION_TABLE_PRESENT (0x400)
 ; CHECK-NEXT:     CF_INSTRUMENTED (0x100)
 ; CHECK-NEXT:     CF_LONGJUMP_TABLE_PRESENT (0x10000)
+; CHECK-NEXT:     DELAYLOAD_IAT_IN_ITS_OWN_SECTION (0x2000)
+; CHECK-NEXT:     PROTECT_DELAYLOAD_IAT (0x1000)
 ; CHECK-NEXT:   ]
 ; CHECK:      ]
 ; CHECK:      GuardFidTable [

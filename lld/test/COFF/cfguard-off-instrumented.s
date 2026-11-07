@@ -9,7 +9,7 @@
 
 // RUN: llvm-readobj --hex-dump=.test %t1.dll | FileCheck %s
 // RUN: llvm-readobj --hex-dump=.test %t2.dll | FileCheck %s
-// CHECK: 0x180001000 00010000
+// CHECK: 0x180002000 00010000
 
         .def     @feat.00;
         .scl    3;

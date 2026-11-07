@@ -44,5 +44,7 @@ EXPORT-LTO-NEXT:       3   0x1030  exportfn3
 # RUN: lld-link /out:%t2.lto.exe /entry:main %t2.obj %t.lto.lib
 # RUN: llvm-readobj --coff-imports %t2.lto.exe | FileCheck -check-prefix=IMPORT %s
 
-IMPORT: Symbol: exportfn1
+## As in link.exe, with fewer than 8 imports from a DLL the first one
+## referenced is listed last.
 IMPORT: Symbol: exportfn2
+IMPORT: Symbol: exportfn1

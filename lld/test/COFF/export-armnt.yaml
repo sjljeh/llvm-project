@@ -19,7 +19,7 @@ header:
   Characteristics: []
 sections:
   - Name:            .text
-    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_16BIT, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
     Alignment:       4
     SectionData:     704700bf704700bf704700bf
   - Name:            .data

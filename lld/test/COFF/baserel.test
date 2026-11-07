@@ -1,5 +1,6 @@
 # RUN: yaml2obj %s -o %t.obj
 #
+## As in link.exe, the code section .text2 follows .text.
 # RUN: lld-link /out:%t.exe /entry:main %t.obj %p/Inputs/std64.lib
 # RUN: llvm-readobj --coff-basereloc %t.exe | FileCheck %s -check-prefix=BASEREL
 #
@@ -25,19 +26,19 @@
 # BASEREL-NEXT: }
 # BASEREL-NEXT: Entry {
 # BASEREL-NEXT:   Type: DIR64
-# BASEREL-NEXT:   Address: 0x4007
+# BASEREL-NEXT:   Address: 0x2007
 # BASEREL-NEXT: }
 # BASEREL-NEXT: Entry {
 # BASEREL-NEXT:   Type: DIR64
-# BASEREL-NEXT:   Address: 0x400C
+# BASEREL-NEXT:   Address: 0x200C
 # BASEREL-NEXT: }
 # BASEREL-NEXT: Entry {
 # BASEREL-NEXT:   Type: DIR64
-# BASEREL-NEXT:   Address: 0x401E
+# BASEREL-NEXT:   Address: 0x201E
 # BASEREL-NEXT: }
 # BASEREL-NEXT: Entry {
 # BASEREL-NEXT:   Type: ABSOLUTE
-# BASEREL-NEXT:   Address: 0x4000
+# BASEREL-NEXT:   Address: 0x2000
 # BASEREL-NEXT: }
 #
 # NOBASEREL:      BaseReloc [

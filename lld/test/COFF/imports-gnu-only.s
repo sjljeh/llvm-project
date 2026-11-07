@@ -20,9 +20,12 @@ main:
 # even if there were no normal import libraries, only gnu ones.
 
 # DATA: Contents of section .rdata:
-# First import descriptor
-# DATA:  140002000 28200000 00000000 00000000 53200000
-# Last word from first import descriptor, null terminator descriptor
-# DATA:  140002010 38200000 00000000 00000000 00000000
-# Null terminator descriptor and import lookup table.
-# DATA:  140002020 00000000 00000000 48200000 00000000
+# The import address table comes first, as in link.exe.
+# DATA-NEXT:  140002000 60200000 00000000 00000000 00000000
+# The import descriptor at 0x2028, then the null terminator descriptor.
+# DATA-NEXT:  140002010
+# DATA-NEXT:  140002020 00000000 00000000 50200000 00000000
+# DATA-NEXT:  140002030 00000000 6b200000 00200000 00000000
+# DATA-NEXT:  140002040 00000000 00000000 00000000 00000000
+# Import lookup table.
+# DATA-NEXT:  140002050 60200000 00000000 00000000 00000000

@@ -6,14 +6,14 @@
 # RUN: FileCheck %s --check-prefix=MAP < %t.map
 
 # CHECK:      Contents of section .itest:
-# CHECK-NEXT:  180001000 0c100000 0c100000 00000000 01000000
+# CHECK-NEXT:  180002000 0c200000 0c200000 00000000 01000000
 
-# MAP: 00001000 0000000a     4         {{.*}}:(.itest$2)
-# MAP: 00001000 00000000     0                 .itest$2
-# MAP: 0000100c 00000000     4         {{.*}}:(.itest$4)
-# MAP: 0000100c 00000000     0                 .itest$4
-# MAP: 0000100c 00000004     2         {{.*}}:(.itest$6)
-# MAP: 0000100c 00000000     0                 .itest$6
+# MAP: 00002000 0000000a     4         {{.*}}:(.itest$2)
+# MAP: 00002000 00000000     0                 .itest$2
+# MAP: 0000200c 00000000     4         {{.*}}:(.itest$4)
+# MAP: 0000200c 00000000     0                 .itest$4
+# MAP: 0000200c 00000004     2         {{.*}}:(.itest$6)
+# MAP: 0000200c 00000000     0                 .itest$6
 
 --- !COFF
 header:

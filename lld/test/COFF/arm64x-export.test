@@ -228,7 +228,9 @@ NO-EXPORT:  }
 
 # -defarm64native is ignored on ARM64 target.
 
-RUN: lld-link -machine:arm64 -dll -out:out-arm64-def.dll arm64-func.obj -defarm64native:invalid.def -def:func.def -noentry 2>&1 | count 0
+RUN: lld-link -machine:arm64 -dll -out:out-arm64-def.dll arm64-func.obj -defarm64native:invalid.def -def:func.def -noentry 2>&1 | FileCheck --check-prefix=DEFNATIVE-IGNORED --allow-empty %s
+DEFNATIVE-IGNORED-NOT: invalid.def
+DEFNATIVE-IGNORED-NOT: error
 
 # Export using both the native and EC .edata sections.
 

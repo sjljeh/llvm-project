@@ -1,19 +1,27 @@
 # REQUIRES: x86
 # RUN: yaml2obj %s -o %t.obj
-# RUN: lld-link /out:%t.exe /entry:main %t.obj
+# RUN: lld-link /out:%t.exe /entry:main /largeaddressaware:no %t.obj
 # RUN: llvm-objdump -d %t.exe | FileCheck %s
 
+## As in link.exe, an ADDR32 relocation needs an image that is not large
+## address aware and relocatable (link.exe then bases it at 0x400000), and an
+## address below 2GB.
+# RUN: not lld-link /out:%t.exe /entry:main %t.obj 2>&1 | FileCheck --check-prefix=LAA %s
+# RUN: not lld-link /out:%t.exe /entry:main /dynamicbase:no /base:0x80000000 %t.obj 2>&1 | FileCheck --check-prefix=RANGE %s
+# LAA: error: IMAGE_REL_AMD64_ADDR32 relocation to 'foo' in {{.*}}.obj is invalid without /largeaddressaware:no
+# RANGE: error: IMAGE_REL_AMD64_ADDR32 relocation to 'foo' in {{.*}}.obj is out of range
+
 # CHECK: .text:
-# CHECK: 1000: a1 03 20 00 40 00 00 00 00
-# CHECK: 1009: a1 03 20 00 40 01 00 00 00
-# CHECK: 1012: a1 03 20 00 00 00 00 00 00
-# CHECK: 101b: a1 e3 0f 00 00 00 00 00 00
-# CHECK: 1024: a1 d9 0f 00 00 00 00 00 00
-# CHECK: 102d: a1 cf 0f 00 00 00 00 00 00
-# CHECK: 1036: a1 c5 0f 00 00 00 00 00 00
-# CHECK: 103f: a1 bb 0f 00 00 00 00 00 00
-# CHECK: 1048: a1 b1 0f 00 00 00 00 00 00
-# CHECK: 1051: a1 02 00 00 00 00 00 00 00
+# CHECK: 401000: a1 03 30 40 00 00 00 00 00
+# CHECK: 401009: a1 03 30 40 00 00 00 00 00
+# CHECK: 401012: a1 03 30 00 00 00 00 00 00
+# CHECK: 40101b: a1 e3 1f 00 00 00 00 00 00
+# CHECK: 401024: a1 d9 1f 00 00 00 00 00 00
+# CHECK: 40102d: a1 cf 1f 00 00 00 00 00 00
+# CHECK: 401036: a1 c5 1f 00 00 00 00 00 00
+# CHECK: 40103f: a1 bb 1f 00 00 00 00 00 00
+# CHECK: 401048: a1 b1 1f 00 00 00 00 00 00
+# CHECK: 401051: a1 03 00 00 00 00 00 00 00
 # CHECK: 105a: a1 03 00 00 00 00 00 00 00
 
 --- !COFF

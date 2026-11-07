@@ -13,9 +13,7 @@
 # It must branch to a separate nearby thunk which jumps to target+8. Both thunks
 # carry HIGHADJ/LOW base relocations so the image remains relocatable.
 
-# The generic counter includes the alignment-padding chunk before the two
-# 16-byte thunks.
-# VERBOSE: Added 3 thunks with margin {{[0-9]+}} in 1 passes
+# VERBOSE: Added 2 thunks with margin {{[0-9]+}} in 1 passes
 
 # LINKED:      Name: .text
 # LINKED-NEXT: VirtualSize: 0x30
