@@ -1,17 +1,17 @@
 // REQUIRES: powerpc-registered-target
 //
-// RUN: %clangxx -target powerpcle-pc-windows-msvc -fexceptions -fcxx-exceptions \
+// RUN: %clangxx -target powerpcle-pc-windows-msvc12.0 -fexceptions -fcxx-exceptions \
 // RUN:   -S -emit-llvm -o - %s | FileCheck %s --check-prefix=IR \
 // RUN:   --implicit-check-not=__CxxFrameHandler3
-// RUN: %clangxx -target powerpcle-pc-windows-msvc -fexceptions -fcxx-exceptions \
+// RUN: %clangxx -target powerpcle-pc-windows-msvc12.0 -fexceptions -fcxx-exceptions \
 // RUN:   -S -o - %s | FileCheck %s --check-prefix=ASM
-// RUN: %clangxx -target powerpcle-pc-windows-msvc -fexceptions -fcxx-exceptions \
+// RUN: %clangxx -target powerpcle-pc-windows-msvc12.0 -fexceptions -fcxx-exceptions \
 // RUN:   -c -o %t.obj %s
 // RUN: llvm-readobj --sections --relocations --hex-dump=.xdata \
 // RUN:   --hex-dump=.pdata %t.obj | FileCheck %s --check-prefix=OBJ
-// RUN: %clangxx -target powerpcle-pc-windows-msvc -fexceptions -fcxx-exceptions \
+// RUN: %clangxx -target powerpcle-pc-windows-msvc12.0 -fexceptions -fcxx-exceptions \
 // RUN:   -S -o %t.s %s
-// RUN: %clangxx -target powerpcle-pc-windows-msvc -c -o %t.roundtrip.obj %t.s
+// RUN: %clangxx -target powerpcle-pc-windows-msvc12.0 -c -o %t.roundtrip.obj %t.s
 // RUN: llvm-readobj --relocations --hex-dump=.pdata %t.roundtrip.obj \
 // RUN:   | FileCheck %s --check-prefix=ROUNDTRIP
 

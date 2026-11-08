@@ -194,6 +194,10 @@ public:
   // like stack guard, safeseh, /guard:cf, or other things.
   uint32_t feat00Flags = 0;
 
+  // True if the object defines @unwind.00: its Alpha, MIPS or PowerPC .pdata
+  // holds 8-byte NTUW entries rather than 20-byte NT 4.0 ones.
+  bool usesNTUW = false;
+
   // True if this object file is compatible with SEH.  COFF-specific and
   // x86-only. COFF spec 5.10.1. The .sxdata section.
   bool hasSafeSEH() { return feat00Flags & 0x1; }

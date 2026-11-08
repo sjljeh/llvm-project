@@ -1,12 +1,12 @@
 // REQUIRES: powerpc-registered-target
 //
-// RUN: %clang -target powerpcle-pc-windows-msvc -fms-extensions -fexceptions \
+// RUN: %clang -target powerpcle-pc-windows-msvc12.0 -fms-extensions -fexceptions \
 // RUN:   -Wno-jump-seh-finally -O0 -S -emit-llvm -o - %s \
 // RUN:   | FileCheck %s --check-prefix=IR
-// RUN: %clang -target powerpcle-pc-windows-msvc -fms-extensions -fexceptions \
+// RUN: %clang -target powerpcle-pc-windows-msvc12.0 -fms-extensions -fexceptions \
 // RUN:   -Wno-jump-seh-finally -O0 -S -o - %s \
 // RUN:   | FileCheck %s --check-prefix=ASM
-// RUN: %clang -target powerpcle-pc-windows-msvc -fms-extensions -fexceptions \
+// RUN: %clang -target powerpcle-pc-windows-msvc12.0 -fms-extensions -fexceptions \
 // RUN:   -Wno-jump-seh-finally -O0 -c -o %t.obj %s
 // RUN: llvm-nm --undefined-only %t.obj \
 // RUN:   | FileCheck %s --check-prefix=NM

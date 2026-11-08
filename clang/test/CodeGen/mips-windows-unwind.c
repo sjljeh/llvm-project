@@ -1,8 +1,8 @@
 // REQUIRES: mips-registered-target
 
-// RUN: %clang -target mipsel-pc-windows-msvc -S -o - %s \
+// RUN: %clang -target mipsel-pc-windows-msvc12.0 -S -o - %s \
 // RUN:   | FileCheck %s --check-prefix=ASM
-// RUN: %clang -target mipsel-pc-windows-msvc -c -o %t.obj %s
+// RUN: %clang -target mipsel-pc-windows-msvc12.0 -c -o %t.obj %s
 // RUN: llvm-readobj --sections --relocations --hex-dump=.pdata %t.obj \
 // RUN:   | FileCheck %s --check-prefix=OBJ \
 // RUN:   --implicit-check-not=IMAGE_REL_MIPS_REFWORDNB

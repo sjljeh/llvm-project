@@ -21,6 +21,7 @@
 #include "llvm/BinaryFormat/ELF.h"
 #include "llvm/CodeGen/AsmPrinter.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
+#include "llvm/CodeGen/NTUWRuleTracker.h"
 #include "llvm/CodeGen/TargetLoweringObjectFileImpl.h"
 #include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
@@ -231,6 +232,13 @@ void AlphaAsmPrinter::emitFunctionBodyEnd() {
 }
 
 void AlphaAsmPrinter::emitStartOfAsmFile(Module &M) {
+  if (M.getTargetTriple().usesNTRISCTableUnwind()) {
+    std::unique_ptr<AsmPrinterHandler> Tracker =
+        createAlphaNTUWRuleTracker(*this);
+    OutStreamer->setInstructionObserver(
+        static_cast<NTUWRuleTracker *>(Tracker.get()));
+    addAsmPrinterHandler(std::move(Tracker));
+  }
 }
 
 /// PrintAsmOperand - Print out an operand for an inline asm expression.

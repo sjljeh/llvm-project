@@ -1,8 +1,8 @@
 // REQUIRES: powerpc-registered-target
 //
-// RUN: %clangxx -target powerpcle-pc-windows-msvc -fexceptions -fcxx-exceptions \
+// RUN: %clangxx -target powerpcle-pc-windows-msvc12.0 -fexceptions -fcxx-exceptions \
 // RUN:   -S -o - %s | FileCheck %s --check-prefix=ASM
-// RUN: %clangxx -target powerpcle-pc-windows-msvc -fexceptions -fcxx-exceptions \
+// RUN: %clangxx -target powerpcle-pc-windows-msvc12.0 -fexceptions -fcxx-exceptions \
 // RUN:   -c -o %t.obj %s
 // RUN: llvm-readobj --sections --relocations --hex-dump=.pdata %t.obj \
 // RUN:   | FileCheck %s --check-prefix=OBJ

@@ -14,6 +14,7 @@
 #ifndef LLVM_MC_MCWIN64EH_H
 #define LLVM_MC_MCWIN64EH_H
 
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/MC/MCWinEH.h"
 #include "llvm/Support/Win64EH.h"
 
@@ -67,6 +68,22 @@ public:
   void Emit(MCStreamer &Streamer) const override;
   void EmitUnwindInfo(MCStreamer &Streamer, WinEH::FrameInfo *FI,
                       bool HandlerData) const override;
+};
+
+/// Emit NTUW records and 8-byte image-relative runtime-function entries for
+/// Alpha, MIPS and PowerPC code built for MSVC 13.0 or later. Records are
+/// written when the streamer finishes, after any language-specific data.
+class LLVM_ABI NTUWUnwindEmitter : public WinEH::UnwindEmitter {
+  mutable DenseMap<const WinEH::FrameInfo *, MCSymbol *> HandlerDataSymbols;
+
+  void emitRecord(MCStreamer &Streamer, WinEH::FrameInfo *Info) const;
+
+public:
+  void Emit(MCStreamer &Streamer) const override;
+  void EmitUnwindInfo(MCStreamer &Streamer, WinEH::FrameInfo *FI,
+                      bool HandlerData) const override;
+  /// Defines the @unwind.00 symbol that marks an NTUW object.
+  static void emitObjectMarker(MCStreamer &Streamer);
 };
 
 class LLVM_ABI ARMUnwindEmitter : public WinEH::UnwindEmitter {

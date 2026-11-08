@@ -416,6 +416,9 @@ void MCObjectStreamer::emitInstruction(const MCInst &Inst,
   if (LFIRewriter && LFIRewriter->rewriteInst(Inst, *this, STI))
     return;
 
+  if (InstructionObserver *Observer = getInstructionObserver())
+    Observer->observeInstruction(Inst, STI);
+
   MCStreamer::emitInstruction(Inst, STI);
 
   MCSection *Sec = getCurrentSectionOnly();

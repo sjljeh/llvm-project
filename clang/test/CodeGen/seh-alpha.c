@@ -1,13 +1,13 @@
 // REQUIRES: alpha-registered-target
 //
-// RUN: %clang -target alpha-pc-windows-msvc -mtaso -fms-extensions -O0 -S \
+// RUN: %clang -target alpha-pc-windows-msvc12.0 -mtaso -fms-extensions -O0 -S \
 // RUN:   -emit-llvm -o - %s | FileCheck %s --check-prefix=IR
-// RUN: %clang -target alpha-pc-windows-msvc -mtaso -fms-extensions -O2 -S \
+// RUN: %clang -target alpha-pc-windows-msvc12.0 -mtaso -fms-extensions -O2 -S \
 // RUN:   -o - %s | FileCheck %s --check-prefix=ASM
-// RUN: %clang -target alpha-pc-windows-msvc -mtaso -fms-extensions -O2 -c \
+// RUN: %clang -target alpha-pc-windows-msvc12.0 -mtaso -fms-extensions -O2 -c \
 // RUN:   -o %t.obj %s
 // RUN: llvm-readobj --relocations %t.obj | FileCheck %s --check-prefix=OBJ
-// RUN: %clang -target alpha-pc-windows-msvc -mtaso -fms-extensions -O0 -c \
+// RUN: %clang -target alpha-pc-windows-msvc12.0 -mtaso -fms-extensions -O0 -c \
 // RUN:   -o %t.o0.obj %s
 
 // C SEH on NT Alpha: __C_specific_handler's scope tables hold absolute

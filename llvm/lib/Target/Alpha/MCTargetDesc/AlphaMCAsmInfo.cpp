@@ -13,6 +13,7 @@
 
 #include "AlphaMCAsmInfo.h"
 #include "AlphaMCTargetDesc.h"
+#include "llvm/ADT/Enum.h"
 #include "llvm/MC/MCAssembler.h"
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCValue.h"
@@ -29,6 +30,12 @@ AlphaMCAsmInfo::AlphaMCAsmInfo(const Triple &TT, const MCTargetOptions &Options)
     SupportsDebugInformation = true;
   }
 }
+
+// Image-relative references, which NTUW unwind and EH tables use.
+constexpr EnumStringDef<MCAsmInfo::AtSpecifierKind> COFFAtSpecifierDefs[] = {
+    {{"IMGREL"}, MCSymbolRefExpr::VK_COFF_IMGREL32},
+};
+constexpr auto COFFAtSpecifiers = BUILD_ENUM_STRINGS(COFFAtSpecifierDefs);
 
 static StringRef getAlphaSpecifierName(uint16_t Specifier) {
   switch (static_cast<Alpha::Specifier>(Specifier)) {
@@ -107,5 +114,7 @@ AlphaMCAsmInfoMicrosoftCOFF::AlphaMCAsmInfoMicrosoftCOFF(
   AlignmentIsInBytes = false;
   InternalSymbolPrefix = ".L";
   WeakRefDirective = "\t.weak\t";
-  WinEHEncodingType = WinEH::EncodingType::Alpha;
+  initializeAtSpecifiers(COFFAtSpecifiers);
+  WinEHEncodingType = TT.usesNTRISCTableUnwind() ? WinEH::EncodingType::NTUW
+                                                 : WinEH::EncodingType::Alpha;
 }

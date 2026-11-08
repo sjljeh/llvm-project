@@ -57,11 +57,14 @@ MipsELFMCAsmInfo::MipsELFMCAsmInfo(const Triple &TheTriple,
 
 void MipsCOFFMCAsmInfo::anchor() {}
 
-MipsCOFFMCAsmInfo::MipsCOFFMCAsmInfo(const MCTargetOptions &Options)
+MipsCOFFMCAsmInfo::MipsCOFFMCAsmInfo(const Triple &TheTriple,
+                                     const MCTargetOptions &Options)
     : MCAsmInfoGNUCOFF(Options) {
   initializeAtSpecifiers(COFFAtSpecifiers);
   HasSingleParameterDotFile = true;
-  WinEHEncodingType = WinEH::EncodingType::MIPS;
+  WinEHEncodingType = TheTriple.usesNTRISCTableUnwind()
+                          ? WinEH::EncodingType::NTUW
+                          : WinEH::EncodingType::MIPS;
 
   InternalSymbolPrefix = ".L";
   AllowAtInName = true;

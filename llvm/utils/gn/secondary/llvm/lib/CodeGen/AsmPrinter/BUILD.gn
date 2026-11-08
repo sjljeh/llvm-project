@@ -39,6 +39,7 @@ static_library("AsmPrinter") {
     "DwarfUnit.cpp",
     "EHStreamer.cpp",
     "ErlangGCPrinter.cpp",
+    "NTUWRuleTracker.cpp",
     "OcamlGCPrinter.cpp",
     "PseudoProbePrinter.cpp",
     "WasmException.cpp",

@@ -3,20 +3,20 @@
 // RUN: %clang_cc1 -triple powerpcle-pc-windows-gnu -fms-extensions \
 // RUN:   -fexceptions -exception-model=seh -emit-llvm -o - %s \
 // RUN:   | FileCheck %s --check-prefix=GNU
-// RUN: %clang -target powerpcle-pc-windows-msvc -fms-extensions -fexceptions \
+// RUN: %clang -target powerpcle-pc-windows-msvc12.0 -fms-extensions -fexceptions \
 // RUN:   -O0 -S -emit-llvm -o - %s | FileCheck %s --check-prefix=IR
-// RUN: %clang -target powerpcle-pc-windows-msvc -fms-extensions -fexceptions \
+// RUN: %clang -target powerpcle-pc-windows-msvc12.0 -fms-extensions -fexceptions \
 // RUN:   -O0 -S -o - %s | FileCheck %s --check-prefix=ASM
-// RUN: %clang -target powerpcle-pc-windows-msvc -fms-extensions -fexceptions \
+// RUN: %clang -target powerpcle-pc-windows-msvc12.0 -fms-extensions -fexceptions \
 // RUN:   -O0 -c -o %t.obj %s
 // RUN: llvm-readobj --sections --relocations --hex-dump=.xdata \
 // RUN:   --hex-dump=.pdata %t.obj | FileCheck %s --check-prefix=OBJ
-// RUN: %clang -target powerpcle-pc-windows-msvc -fms-extensions -fexceptions \
+// RUN: %clang -target powerpcle-pc-windows-msvc12.0 -fms-extensions -fexceptions \
 // RUN:   -O2 -ffunction-sections -c -o %t.o2.obj %s
 // RUN: llvm-readobj --symbols %t.o2.obj | FileCheck %s --check-prefix=COMDAT
-// RUN: %clang -target powerpcle-pc-windows-msvc -fms-extensions -fexceptions \
+// RUN: %clang -target powerpcle-pc-windows-msvc12.0 -fms-extensions -fexceptions \
 // RUN:   -O0 -S -o %t.s %s
-// RUN: %clang -target powerpcle-pc-windows-msvc -c -o %t.roundtrip.obj %t.s
+// RUN: %clang -target powerpcle-pc-windows-msvc12.0 -c -o %t.roundtrip.obj %t.s
 // RUN: llvm-readobj --relocations %t.roundtrip.obj \
 // RUN:   | FileCheck %s --check-prefix=ROUNDTRIP
 

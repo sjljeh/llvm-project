@@ -527,6 +527,30 @@ void MipsSEFrameLowering::processFunctionBeforeFrameFinalized(
       MFI.setObjectOffset(FrameIndex, CurrentOffset);
     }
   }
+
+  // NTUW's __CxxFrameHandler3 keeps the try-block state of a frame being
+  // unwound in a word at dispUnwindHelp from the establisher frame, which
+  // starts as -2.
+  if (PerFn && PerFn->getName() == "__CxxFrameHandler3" &&
+      STI.getTargetTriple().usesNTRISCTableUnwind()) {
+    for (int I = MFI.getObjectIndexBegin(); I < 0; ++I)
+      CurrentOffset = std::min(CurrentOffset, MFI.getObjectOffset(I));
+    CurrentOffset -= 4;
+    int FI = MFI.CreateFixedObject(4, CurrentOffset, /*IsImmutable=*/false);
+    EHInfo.UnwindHelpFrameIdx = FI;
+    MachineBasicBlock &Entry = MF.front();
+    MachineBasicBlock::iterator EntryI = Entry.begin();
+    while (EntryI != Entry.end() && EntryI->getFlag(MachineInstr::FrameSetup))
+      ++EntryI;
+    const TargetInstrInfo &TII = *STI.getInstrInfo();
+    BuildMI(Entry, EntryI, DebugLoc(), TII.get(Mips::ADDiu), Mips::R1)
+        .addReg(Mips::R0)
+        .addImm(-2);
+    BuildMI(Entry, EntryI, DebugLoc(), TII.get(Mips::SW))
+        .addReg(Mips::R1, RegState::Kill)
+        .addFrameIndex(FI)
+        .addImm(0);
+  }
 }
 
 void MipsSEFrameLowering::emitPrologue(MachineFunction &MF,
@@ -554,12 +578,20 @@ void MipsSEFrameLowering::emitPrologue(MachineFunction &MF,
   // First, compute final stack size.
   uint64_t StackSize = MFI.getStackSize();
 
+  uint64_t WinSaveArea = 0;
   auto EmitPrologEnd = [&]() {
-    if (STI.getTargetTriple().isOSWindows() && MF.usesWindowsUnwindInfo() &&
-        (MF.hasWinCFI() || MF.hasEHFunclets() ||
-         MF.getFunction().needsUnwindTableEntry()))
-      BuildMI(MBB, MBBI, dl, TII.get(Mips::SEH_PrologEnd))
+    if (!STI.getTargetTriple().isOSWindows() || !MF.usesWindowsUnwindInfo() ||
+        !(MF.hasWinCFI() || MF.hasEHFunclets() ||
+          MF.getFunction().needsUnwindTableEntry()))
+      return;
+    // NTUW states the establisher frame that NT 4.0 derives from a two-step
+    // allocation, so that both formats share one frame layout.
+    if (WinSaveArea && STI.getTargetTriple().usesNTRISCTableUnwind())
+      BuildMI(MBB, MBBI, dl, TII.get(Mips::SEH_Establisher))
+          .addImm(WinSaveArea)
           .setMIFlag(MachineInstr::FrameSetup);
+    BuildMI(MBB, MBBI, dl, TII.get(Mips::SEH_PrologEnd))
+        .setMIFlag(MachineInstr::FrameSetup);
   };
 
   // SEH filters reach the parent's llvm.localaddress (its incoming $sp) by
@@ -587,7 +619,6 @@ void MipsSEFrameLowering::emitPrologue(MachineFunction &MF,
   // in two steps, with the callee-saved area first so that its stores reach
   // every slot from the intermediate $sp.
   const bool IsNT = STI.getTargetTriple().isOSWindows() && !ABI.IsN64();
-  uint64_t WinSaveArea = 0;
   if (IsNT && !isInt<16>(StackSize)) {
     for (const CalleeSavedInfo &I : MFI.getCalleeSavedInfo())
       WinSaveArea = std::max<uint64_t>(WinSaveArea,
@@ -717,11 +748,15 @@ void MipsSEFrameLowering::emitPrologue(MachineFunction &MF,
   const bool IsFunclet = MBB.isEHFuncletEntry();
   const bool StoresStaticLink =
       IsFunclet && STI.getTargetTriple().isOSWindows();
+  // NT 4.0 passes a funclet its frame in $v0; NTUW passes the establisher
+  // frame as the second argument.
+  const bool IsNTUW = STI.getTargetTriple().usesNTRISCTableUnwind();
+  const unsigned StaticLink = IsNTUW ? Mips::R5 : Mips::R2;
   if (StoresStaticLink) {
-    MBB.addLiveIn(Mips::R2);
+    MBB.addLiveIn(StaticLink);
     if (!WinSaveArea)
       BuildMI(MBB, MBBI, dl, TII.get(Mips::SW))
-          .addReg(Mips::R2)
+          .addReg(StaticLink)
           .addReg(SP)
           .addImm(StackSize - 4)
           .setMIFlag(MachineInstr::FrameSetup);
@@ -750,7 +785,7 @@ void MipsSEFrameLowering::emitPrologue(MachineFunction &MF,
         Offset = SignExtend64<16>(NewImm);
       }
       BuildMI(MBB, MBBI, dl, TII.get(Mips::SW))
-          .addReg(Mips::R2)
+          .addReg(StaticLink)
           .addReg(Base, getKillRegState(Base != SP))
           .addImm(Offset)
           .setMIFlag(MachineInstr::FrameSetup);
@@ -760,32 +795,39 @@ void MipsSEFrameLowering::emitPrologue(MachineFunction &MF,
   // If framepointer enabled, set it to the local frame for a parent function
   // or to the outermost parent frame passed in $v0 for a funclet.
   if (hasFP(MF)) {
-    unsigned FrameSource = IsFunclet ? Mips::R2 : SP;
+    unsigned FrameSource = IsFunclet ? StaticLink : SP;
     BuildMI(MBB, MBBI, dl, TII.get(MOVE), FP)
         .addReg(FrameSource)
         .addReg(ZERO)
         .setMIFlag(MachineInstr::FrameSetup);
 
-    if (IsFunclet) {
+    // The NTUW runtime passes every funclet the outermost parent's frame.
+    if (IsFunclet && !IsNTUW) {
       for (unsigned Level = getFuncletFrameNestLevel(MBB); Level > 2; --Level)
         BuildMI(MBB, MBBI, dl, TII.get(Mips::LW), FP)
             .addReg(FP)
             .addImm(-4)
             .setMIFlag(MachineInstr::FrameSetup);
-    } else {
+    } else if (!IsFunclet) {
       CFIBuilder.buildDefCFARegister(FP);
     }
 
     if (RegInfo.hasStackRealignment(MF)) {
       // addiu $Reg, $zero, -MaxAlignment
       // andi $sp, $sp, $Reg
-      Register VR = MF.getRegInfo().createVirtualRegister(RC);
-      assert((Log2(MFI.getMaxAlign()) < 16) &&
-             "Function's alignment size requirement is not supported.");
-      int64_t MaxAlign = -(int64_t)MFI.getMaxAlign().value();
+      // An NTUW funclet keeps its own frame unaligned: it holds only spills,
+      // and NTUW must find the funclet's CFA in a register.
+      if (!(IsFunclet && IsNTUW)) {
+        Register VR = MF.getRegInfo().createVirtualRegister(RC);
+        assert((Log2(MFI.getMaxAlign()) < 16) &&
+               "Function's alignment size requirement is not supported.");
+        int64_t MaxAlign = -(int64_t)MFI.getMaxAlign().value();
 
-      BuildMI(MBB, MBBI, dl, TII.get(ADDiu), VR).addReg(ZERO).addImm(MaxAlign);
-      BuildMI(MBB, MBBI, dl, TII.get(AND), SP).addReg(SP).addReg(VR);
+        BuildMI(MBB, MBBI, dl, TII.get(ADDiu), VR)
+            .addReg(ZERO)
+            .addImm(MaxAlign);
+        BuildMI(MBB, MBBI, dl, TII.get(AND), SP).addReg(SP).addReg(VR);
+      }
 
       if (hasBP(MF)) {
         // move $s7, $sp

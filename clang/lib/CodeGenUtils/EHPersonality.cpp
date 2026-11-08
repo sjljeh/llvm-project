@@ -59,7 +59,10 @@ static const EHPersonality &getCPersonality(const TargetInfo &Target,
                                             const LangOptions &L) {
   const llvm::Triple &T = Target.getTriple();
   if (T.isWindowsMSVCEnvironment()) {
-    if (T.isAlpha() || T.isMIPS() || T.isPPC32())
+    // NT 4.0 Alpha, MIPS and PowerPC use the original C++ handler; NTUW
+    // targets use __CxxFrameHandler3.
+    if ((T.isAlpha() || T.isMIPS() || T.isPPC32()) &&
+        !T.usesNTRISCTableUnwind())
       return EHPersonality::MSVC_CxxFrameHandler;
     bool UseFH4 = CGOpts.MSVCCXXEH4Specified
                       ? CGOpts.MSVCCXXEH4

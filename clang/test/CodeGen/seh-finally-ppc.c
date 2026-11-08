@@ -1,14 +1,14 @@
 // REQUIRES: powerpc-registered-target
 //
-// RUN: %clang -target powerpcle-pc-windows-msvc -fms-extensions -fexceptions \
+// RUN: %clang -target powerpcle-pc-windows-msvc12.0 -fms-extensions -fexceptions \
 // RUN:   -O0 -S -emit-llvm -o - %s | FileCheck %s --check-prefix=IR
-// RUN: %clang -target powerpcle-pc-windows-msvc -fms-extensions -fexceptions \
+// RUN: %clang -target powerpcle-pc-windows-msvc12.0 -fms-extensions -fexceptions \
 // RUN:   -O0 -S -o - %s | FileCheck %s --check-prefix=ASM
-// RUN: %clang -target powerpcle-pc-windows-msvc -fms-extensions -fexceptions \
+// RUN: %clang -target powerpcle-pc-windows-msvc12.0 -fms-extensions -fexceptions \
 // RUN:   -O0 -c -o %t.obj %s
 // RUN: llvm-readobj --sections --relocations --hex-dump=.xdata \
 // RUN:   --hex-dump=.pdata %t.obj | FileCheck %s --check-prefix=OBJ
-// RUN: %clang -target powerpcle-pc-windows-msvc -fms-extensions -fexceptions \
+// RUN: %clang -target powerpcle-pc-windows-msvc12.0 -fms-extensions -fexceptions \
 // RUN:   -O2 -c -o %t.o2.obj %s
 
 extern void may_fault(void);

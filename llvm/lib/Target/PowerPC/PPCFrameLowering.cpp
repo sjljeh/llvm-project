@@ -747,7 +747,13 @@ void PPCFrameLowering::emitNTPrologue(MachineFunction &MF,
   const bool HasBP = RegInfo->hasBasePointer(MF);
   const Register BPReg = RegInfo->getBaseRegister(MF);
   const Align MaxAlign = MFI.getMaxAlign();
-  const bool Realign = HasBP && MaxAlign > 1;
+  const bool IsNTUW = Subtarget.getTargetTriple().usesNTRISCTableUnwind();
+  // An NTUW funclet keeps its own frame unaligned: it holds only spills, and
+  // NTUW must find the funclet's CFA in a register (here, r1 + FrameSize).
+  const bool Realign = HasBP && MaxAlign > 1 && !(IsFunclet && IsNTUW);
+  // The establisher frame a funclet receives: NT 4.0 passes it in r2, NTUW
+  // as the second argument, in r4.
+  const Register FuncletFrame = IsNTUW ? PPC::R4 : PPC::R2;
 
   assert((FrameSize ||
           (!MustSaveLR && !HasFP && MFI.getCalleeSavedInfo().empty())) &&
@@ -811,7 +817,7 @@ void PPCFrameLowering::emitNTPrologue(MachineFunction &MF,
   // funclet those are the parent's (e.g. catch objects), so it is the parent's
   // incoming SP passed in r2; "addi" keeps it invisible to the NT unwinder.
   if (HasBP && IsFunclet)
-    Setup(PPC::ADDI, BPReg).addReg(PPC::R2).addImm(0);
+    Setup(PPC::ADDI, BPReg).addReg(FuncletFrame).addImm(0);
   else if (HasBP)
     Setup(PPC::OR, BPReg).addReg(PPC::R1).addReg(PPC::R1);
 
@@ -865,13 +871,27 @@ void PPCFrameLowering::emitNTPrologue(MachineFunction &MF,
   // mr r31,r1 is ignored by the NT unwinder (it does not reverse "mr rX,r1"),
   // and so are addi/addis/rlwinm into r31 or r2 in a funclet.
   if (IsFunclet) {
+    // Save the establisher frame where __CxxFrameHandler3 looks for it, from
+    // the funclet's own CFA, which its back chain holds.
+    const WinEHFuncInfo *EHInfo = MF.getWinEHFuncInfo();
+    if (EHInfo &&
+        EHInfo->FuncletParentFrameIdx != std::numeric_limits<int>::max()) {
+      int64_t Slot = MFI.getObjectOffset(EHInfo->FuncletParentFrameIdx);
+      if (!isInt<16>(Slot))
+        report_fatal_error("Windows PowerPC C++ EH frame is too large");
+      Setup(PPC::LWZ, PPC::R12).addImm(0).addReg(PPC::R1);
+      Setup(PPC::STW)
+          .addReg(FuncletFrame)
+          .addImm(Slot)
+          .addReg(PPC::R12, RegState::Kill);
+    }
     // r31 = the parent's frame pointer, derived from the parent's incoming SP
-    // that the runtime passes in r2. A realigned parent aligned that SP
-    // before allocating.
+    // that the runtime passes (FuncletFrame). A realigned parent aligned that
+    // SP before allocating.
     assert(HasFP && "NT funclets address the parent frame through r31");
-    MBB.addLiveIn(PPC::R2);
-    Register ParentSP = PPC::R2;
-    if (Realign) {
+    Register ParentSP = FuncletFrame;
+    MBB.addLiveIn(ParentSP);
+    if (HasBP && MaxAlign > 1) {
       Setup(PPC::RLWINM, PPC::R31)
           .addReg(ParentSP)
           .addImm(0)
@@ -1669,8 +1689,18 @@ void PPCFrameLowering::emitPrologue(MachineFunction &MF,
   // the parent frame selected by the runtime for an NT PowerPC funclet.
   if (HasFP) {
     if (IsWinEHFunclet) {
-      MBB.addLiveIn(PPC::R2);
-      Register ParentSP = PPC::R2;
+      // NT 4.0 passes the frame in r2; NTUW as the second argument, r4.
+      Register ParentSP = Subtarget.getTargetTriple().usesNTRISCTableUnwind()
+                              ? PPC::R4
+                              : PPC::R2;
+      MBB.addLiveIn(ParentSP);
+      // Only the NT frame layout saves the establisher frame where NTUW's
+      // __CxxFrameHandler3 reads it.
+      const WinEHFuncInfo *EHInfo = MF.getWinEHFuncInfo();
+      if (EHInfo &&
+          EHInfo->FuncletParentFrameIdx != std::numeric_limits<int>::max())
+        report_fatal_error("Windows PowerPC C++ EH funclets need the NT "
+                           "frame layout");
       if (HasBP && MaxAlign > 1) {
         // The parent aligned its incoming SP before allocating its frame.
         // Reproduce that alignment before addressing its escaped locals.
@@ -2926,6 +2956,39 @@ void PPCFrameLowering::assignWinEHCatchObjectOffsets(
       MFI.setObjectOffset(FrameIndex, CurrentOffset);
     }
   }
+
+  // NTUW's __CxxFrameHandler3 reads two words at fixed offsets from an
+  // establisher frame: UnwindHelp, the try-block state of a parent being
+  // unwound, which starts as -2; and, in a catch funclet's frame, the
+  // establisher frame the funclet was called with. Funclet frames have the
+  // parent's layout, so one fixed object serves every funclet.
+  const Function &F = MF.getFunction();
+  const auto *PerFn =
+      F.hasPersonalityFn()
+          ? dyn_cast<Function>(F.getPersonalityFn()->stripPointerCasts())
+          : nullptr;
+  if (!PerFn || PerFn->getName() != "__CxxFrameHandler3" ||
+      !Subtarget.getTargetTriple().usesNTRISCTableUnwind())
+    return;
+  for (int I = MFI.getObjectIndexBegin(); I < 0; ++I)
+    CurrentOffset = std::min(CurrentOffset, MFI.getObjectOffset(I));
+  CurrentOffset = alignDown(CurrentOffset - 4, 4);
+  EHInfo.FuncletParentFrameIdx =
+      MFI.CreateFixedObject(4, CurrentOffset, /*IsImmutable=*/false);
+  CurrentOffset -= 4;
+  int UnwindHelp =
+      MFI.CreateFixedObject(4, CurrentOffset, /*IsImmutable=*/false);
+  EHInfo.UnwindHelpFrameIdx = UnwindHelp;
+
+  MachineBasicBlock &Entry = MF.front();
+  MachineBasicBlock::iterator I = Entry.begin();
+  while (I != Entry.end() && I->getFlag(MachineInstr::FrameSetup))
+    ++I;
+  const PPCInstrInfo &TII = *Subtarget.getInstrInfo();
+  BuildMI(Entry, I, DebugLoc(), TII.get(PPC::LI), PPC::R0).addImm(-2);
+  addFrameReference(BuildMI(Entry, I, DebugLoc(), TII.get(PPC::STW))
+                        .addReg(PPC::R0, RegState::Kill),
+                    UnwindHelp);
 }
 
 void
