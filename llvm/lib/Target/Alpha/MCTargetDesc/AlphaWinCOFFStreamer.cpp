@@ -8,8 +8,10 @@
 
 #include "AlphaMCTargetDesc.h"
 #include "llvm/MC/MCAsmBackend.h"
+#include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCAssembler.h"
 #include "llvm/MC/MCCodeEmitter.h"
+#include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCObjectWriter.h"
 #include "llvm/MC/MCWin64EH.h"
 #include "llvm/MC/MCWinCOFFStreamer.h"
@@ -19,16 +21,23 @@ using namespace llvm;
 namespace {
 class AlphaWinCOFFStreamer : public MCWinCOFFStreamer {
   Win64EH::RISCUnwindEmitter EHStreamer;
+  Win64EH::NTUWUnwindEmitter NTUWStreamer;
+  bool UsesNTUW;
 
 public:
   AlphaWinCOFFStreamer(MCContext &C, std::unique_ptr<MCAsmBackend> AB,
                        std::unique_ptr<MCCodeEmitter> CE,
                        std::unique_ptr<MCObjectWriter> OW)
-      : MCWinCOFFStreamer(C, std::move(AB), std::move(CE), std::move(OW)) {}
+      : MCWinCOFFStreamer(C, std::move(AB), std::move(CE), std::move(OW)),
+        UsesNTUW(C.getAsmInfo().getWinEHEncodingType() ==
+                 WinEH::EncodingType::NTUW) {}
 
   void emitWinEHHandlerData(SMLoc Loc) override {
     MCStreamer::emitWinEHHandlerData(Loc);
     if (WinEH::FrameInfo *Frame = getCurrentWinFrameInfo()) {
+      if (UsesNTUW)
+        return NTUWStreamer.EmitUnwindInfo(*this, Frame,
+                                           /*HandlerData=*/true);
       Frame = Frame->ChainedParent ? Frame->ChainedParent : Frame;
       EHStreamer.EmitUnwindInfo(*this, Frame, /*HandlerData=*/true);
     }
@@ -37,12 +46,18 @@ public:
   void emitWindowsUnwindTables(WinEH::FrameInfo *) override {}
 
   void emitWindowsUnwindTables() override {
-    if (getNumWinFrameInfos())
+    if (!getNumWinFrameInfos())
+      return;
+    if (UsesNTUW)
+      NTUWStreamer.Emit(*this);
+    else
       EHStreamer.Emit(*this);
   }
 
   void finishImpl() override {
     emitFrames();
+    if (UsesNTUW)
+      Win64EH::NTUWUnwindEmitter::emitObjectMarker(*this);
     emitWindowsUnwindTables();
     MCWinCOFFStreamer::finishImpl();
   }

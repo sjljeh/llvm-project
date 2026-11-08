@@ -35,6 +35,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/LEB128.h"
 #include "llvm/Support/MathExtras.h"
+#include "llvm/Support/NTRISCWinEH.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
 #include <cstdint>
@@ -1248,6 +1249,75 @@ void MCStreamer::emitWinCFIBeginEpilogue(SMLoc Loc) {
   CurrentWinEpilog->Loc = Loc;
 }
 
+static std::optional<NTRISCWinEH::Machine> getNTUWMachine(MCContext &Context) {
+  if (Context.getAsmInfo().getWinEHEncodingType() != WinEH::EncodingType::NTUW)
+    return std::nullopt;
+  switch (Context.getTargetTriple().getArch()) {
+  case Triple::alpha:
+    return NTRISCWinEH::Machine::Alpha;
+  case Triple::mipsel:
+    return NTRISCWinEH::Machine::MIPS;
+  case Triple::ppcle:
+    return NTRISCWinEH::Machine::PPC;
+  default:
+    return std::nullopt;
+  }
+}
+
+void MCStreamer::emitWinCFIStateRule(unsigned Opcode, unsigned Register,
+                                     int64_t Operand, SMLoc Loc) {
+  std::optional<NTRISCWinEH::Machine> Machine = getNTUWMachine(getContext());
+  if (!Machine)
+    return getContext().reportError(
+        Loc, "NTUW state rules need an Alpha, MIPS or PowerPC target that "
+             "uses NTUW");
+  WinEH::FrameInfo *CurFrame = EnsureValidWinFrameInfo(Loc);
+  if (!CurFrame)
+    return;
+  if (CurFrame->PrologEnd && !CurrentWinEpilog)
+    return getContext().reportError(
+        Loc, "NTUW state rule outside the prologue and the epilogues of " +
+                 CurFrame->Function->getName());
+  if (NTRISCWinEH::isLargeOpcode(Opcode) ||
+      !NTRISCWinEH::getDirectiveName(Opcode))
+    return getContext().reportError(Loc, "invalid NTUW state opcode");
+  if (StringRef Message =
+          NTRISCWinEH::validateRule(*Machine, Opcode, Register, Operand);
+      !Message.empty())
+    return getContext().reportError(Loc,
+                                    Twine("invalid NTUW rule: ") + Message);
+
+  MCSymbol *Label = emitCFILabel();
+  WinEH::Instruction Inst(Opcode, Label, Register,
+                          static_cast<uint32_t>(Operand));
+  if (CurrentWinEpilog)
+    CurrentWinEpilog->Instructions.push_back(Inst);
+  else
+    CurFrame->Instructions.push_back(Inst);
+}
+
+void MCStreamer::emitWinCFIEstablisher(unsigned Register, int64_t Offset,
+                                       SMLoc Loc) {
+  std::optional<NTRISCWinEH::Machine> Machine = getNTUWMachine(getContext());
+  if (!Machine)
+    return getContext().reportError(
+        Loc, "'.seh_establisher' needs an Alpha, MIPS or PowerPC target that "
+             "uses NTUW");
+  WinEH::FrameInfo *CurFrame = EnsureValidWinFrameInfo(Loc);
+  if (!CurFrame)
+    return;
+  if ((Register && !NTRISCWinEH::isEstablisherRegister(*Machine, Register)) ||
+      !isInt<32>(Offset))
+    return getContext().reportError(
+        Loc, "the NTUW establisher must be sp or a nonvolatile register, or "
+             "the CFA, with a 32-bit offset");
+  if (CurFrame->Establisher)
+    return getContext().reportError(Loc, "duplicate '.seh_establisher' in " +
+                                             CurFrame->Function->getName());
+  CurFrame->Establisher = {static_cast<uint8_t>(Register),
+                           static_cast<int32_t>(Offset)};
+}
+
 void MCStreamer::emitWinCFIEndEpilogue(SMLoc Loc) {
   WinEH::FrameInfo *CurFrame = EnsureValidWinFrameInfo(Loc);
   if (!CurFrame)
@@ -1448,6 +1518,8 @@ void MCStreamer::visitUsedExpr(const MCExpr &Expr) {
     break;
   }
 }
+
+MCStreamer::InstructionObserver::~InstructionObserver() = default;
 
 void MCStreamer::emitInstruction(const MCInst &Inst, const MCSubtargetInfo &) {
   // Scan for values.

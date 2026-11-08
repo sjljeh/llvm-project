@@ -35,6 +35,7 @@
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineJumpTableInfo.h"
 #include "llvm/CodeGen/MachineOperand.h"
+#include "llvm/CodeGen/NTUWRuleTracker.h"
 #include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/IR/Attributes.h"
@@ -286,6 +287,11 @@ void MipsAsmPrinter::emitInstruction(const MachineInstr *MI) {
 
     if (I->getOpcode() == Mips::SEH_PrologEnd) {
       OutStreamer->emitWinCFIEndProlog();
+      continue;
+    }
+
+    if (I->getOpcode() == Mips::SEH_Establisher) {
+      OutStreamer->emitWinCFIEstablisher(0, -I->getOperand(0).getImm());
       continue;
     }
 
@@ -760,6 +766,14 @@ printRegisterList(const MachineInstr *MI, int opNum, raw_ostream &O) {
 
 void MipsAsmPrinter::emitStartOfAsmFile(Module &M) {
   const Triple &TT = M.getTargetTriple();
+
+  if (TT.usesNTRISCTableUnwind()) {
+    std::unique_ptr<AsmPrinterHandler> Tracker =
+        createMipsNTUWRuleTracker(*this);
+    OutStreamer->setInstructionObserver(
+        static_cast<NTUWRuleTracker *>(Tracker.get()));
+    addAsmPrinterHandler(std::move(Tracker));
+  }
 
   if (TT.isOSBinFormatELF()) {
     MipsTargetStreamer &TS = getTargetStreamer();

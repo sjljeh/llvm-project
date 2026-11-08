@@ -37,7 +37,7 @@ class MipsCOFFMCAsmInfo : public MCAsmInfoGNUCOFF {
   void anchor() override;
 
 public:
-  explicit MipsCOFFMCAsmInfo(const MCTargetOptions &Options);
+  MipsCOFFMCAsmInfo(const Triple &TheTriple, const MCTargetOptions &Options);
   void printSpecifierExpr(raw_ostream &OS,
                           const MCSpecifierExpr &Expr) const override;
   bool evaluateAsRelocatableImpl(const MCSpecifierExpr &Expr, MCValue &Res,

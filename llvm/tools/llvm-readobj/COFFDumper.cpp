@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "ARMWinEHPrinter.h"
+#include "NTRISCWinEHDumper.h"
 #include "ObjDumper.h"
 #include "RISCVWinEHDumper.h"
 #include "StackMapPrinter.h"
@@ -1894,8 +1895,25 @@ void COFFDumper::printUnwindInfo() {
     break;
   }
   case COFF::IMAGE_FILE_MACHINE_POWERPC:
-    printPPCRuntimeFunctions();
+    if (!NTRISCWinEH::Dumper::usesNTUW(*Obj)) {
+      printPPCRuntimeFunctions();
+      break;
+    }
+    [[fallthrough]];
+  case COFF::IMAGE_FILE_MACHINE_ALPHA:
+  case COFF::IMAGE_FILE_MACHINE_ALPHA64:
+  case COFF::IMAGE_FILE_MACHINE_R4000: {
+    NTRISCWinEH::Dumper Dumper(W);
+    NTRISCWinEH::Dumper::SymbolResolver Resolver =
+        [](const object::coff_section *Section, uint64_t Offset,
+           SymbolRef &Symbol, void *UserData) -> std::error_code {
+      auto *COFF = reinterpret_cast<COFFDumper *>(UserData);
+      return COFF->resolveSymbol(Section, Offset, Symbol);
+    };
+    NTRISCWinEH::Dumper::Context Ctx(*Obj, Resolver, this);
+    Dumper.printData(Ctx);
     break;
+  }
   case COFF::IMAGE_FILE_MACHINE_RISCV64: {
     RISCVWinEH::Dumper Dumper(W);
     RISCVWinEH::Dumper::SymbolResolver Resolver =

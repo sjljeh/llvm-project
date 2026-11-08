@@ -1,10 +1,10 @@
-// RUN: %clang -target alpha-pc-windows-msvc -mtaso -fexceptions -fcxx-exceptions -S %s -o - | FileCheck %s --check-prefix=ASM
-// RUN: %clang -target alpha-pc-windows-msvc -mtaso -fexceptions -fcxx-exceptions -c %s -o %t.obj
+// RUN: %clang -target alpha-pc-windows-msvc12.0 -mtaso -fexceptions -fcxx-exceptions -S %s -o - | FileCheck %s --check-prefix=ASM
+// RUN: %clang -target alpha-pc-windows-msvc12.0 -mtaso -fexceptions -fcxx-exceptions -c %s -o %t.obj
 // RUN: llvm-readobj --sections --relocations --symbols %t.obj | FileCheck %s --check-prefix=OBJ
-// RUN: %clang -target alpha-pc-windows-msvc -mtaso -fexceptions -fcxx-exceptions -S %s -o %t.s
+// RUN: %clang -target alpha-pc-windows-msvc12.0 -mtaso -fexceptions -fcxx-exceptions -S %s -o %t.s
 // RUN: llvm-mc -triple=alpha-pc-windows-msvc -mattr=+taso -filetype=obj %t.s -o %t.roundtrip.obj
 // RUN: llvm-readobj --file-headers --sections --relocations %t.roundtrip.obj | FileCheck %s --check-prefix=ROUNDTRIP
-// RUN: %clang -target alpha-pc-windows-msvc -mtaso -O2 -fexceptions -fcxx-exceptions -S %s -o %t.o2.s
+// RUN: %clang -target alpha-pc-windows-msvc12.0 -mtaso -O2 -fexceptions -fcxx-exceptions -S %s -o %t.o2.s
 // RUN: llvm-mc -triple=alpha-pc-windows-msvc -mattr=+taso -filetype=obj %t.o2.s -o %t.o2.obj
 
 extern void may_throw();

@@ -284,6 +284,12 @@ protected:
   // Symbol of the current epilog for which we are processing SEH directives.
   WinEH::FrameInfo::Epilog *CurrentWinEpilog = nullptr;
 
+public:
+  class InstructionObserver;
+
+protected:
+  InstructionObserver *InstObserver = nullptr;
+
   MCFragment *CurFrag = nullptr;
 
   SmallVector<MCDwarfFrameInfo, 0> DwarfFrameInfos;
@@ -1126,6 +1132,14 @@ public:
   virtual void emitWinCFIEndEpilogue(SMLoc Loc = SMLoc());
   virtual void emitWinCFIUnwindV2Start(SMLoc Loc = SMLoc());
   virtual void emitWinCFIUnwindVersion(uint8_t Version, SMLoc Loc = SMLoc());
+  /// Records an NTUW state rule (llvm/Support/NTRISCWinEH.h) that holds from
+  /// the current position on, in the prologue or in the current epilogue.
+  virtual void emitWinCFIStateRule(unsigned Opcode, unsigned Register,
+                                   int64_t Operand, SMLoc Loc = SMLoc());
+  /// Sets the NTUW establisher frame: Register + Offset, or CFA + Offset when
+  /// Register is 0.
+  virtual void emitWinCFIEstablisher(unsigned Register, int64_t Offset,
+                                     SMLoc Loc = SMLoc());
 
   /// Set the default unwind version for new WinCFI frames.
   void setDefaultWinCFIUnwindVersion(uint8_t V) {
@@ -1160,6 +1174,22 @@ public:
 
   /// Emit the given \p Instruction into the current section.
   virtual void emitInstruction(const MCInst &Inst, const MCSubtargetInfo &STI);
+
+  /// Receives every instruction just before a streamer emits it.
+  class LLVM_ABI InstructionObserver {
+  public:
+    virtual ~InstructionObserver();
+    virtual void observeInstruction(const MCInst &Inst,
+                                    const MCSubtargetInfo &STI) = 0;
+  };
+  void setInstructionObserver(InstructionObserver *Observer) {
+    InstObserver = Observer;
+  }
+  InstructionObserver *getInstructionObserver() const { return InstObserver; }
+  /// The Windows unwind frame being described, if any.
+  const WinEH::FrameInfo *getCurrentWinFrame() const {
+    return CurrentWinFrameInfo;
+  }
 
   /// Emit the a pseudo probe into the current section.
   virtual void emitPseudoProbe(uint64_t Guid, uint64_t Index, uint64_t Type,

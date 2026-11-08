@@ -36,6 +36,7 @@
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/LEB128.h"
 #include "llvm/Support/MathExtras.h"
+#include "llvm/Support/NTRISCWinEH.h"
 #include "llvm/Support/Path.h"
 #include <algorithm>
 #include <optional>
@@ -548,6 +549,10 @@ public:
   void emitWinCFIEndEpilogue(SMLoc Loc) override;
   void emitWinCFIUnwindV2Start(SMLoc Loc) override;
   void emitWinCFIUnwindVersion(uint8_t Version, SMLoc Loc) override;
+  void emitWinCFIStateRule(unsigned Opcode, unsigned Register, int64_t Operand,
+                           SMLoc Loc) override;
+  void emitWinCFIEstablisher(unsigned Register, int64_t Offset,
+                             SMLoc Loc) override;
 
   void emitWinEHHandler(const MCSymbol *Sym, bool Unwind, bool Except,
                         SMLoc Loc) override;
@@ -2615,6 +2620,37 @@ void MCAsmStreamer::emitWinCFIEndEpilogue(SMLoc Loc) {
   EmitEOL();
 }
 
+void MCAsmStreamer::emitWinCFIStateRule(unsigned Opcode, unsigned Register,
+                                        int64_t Operand, SMLoc Loc) {
+  MCStreamer::emitWinCFIStateRule(Opcode, Register, Operand, Loc);
+
+  const char *Name = NTRISCWinEH::getDirectiveName(Opcode);
+  if (!Name)
+    return;
+  OS << "	.seh_" << Name;
+  const char *Separator = " ";
+  if (NTRISCWinEH::directiveHasRegister(Opcode)) {
+    OS << Separator << Register;
+    Separator = ", ";
+  }
+  if (NTRISCWinEH::directiveHasOperand(Opcode))
+    OS << Separator << Operand;
+  EmitEOL();
+}
+
+void MCAsmStreamer::emitWinCFIEstablisher(unsigned Register, int64_t Offset,
+                                          SMLoc Loc) {
+  MCStreamer::emitWinCFIEstablisher(Register, Offset, Loc);
+
+  OS << "	.seh_establisher ";
+  if (Register)
+    OS << Register;
+  else
+    OS << "cfa";
+  OS << ", " << Offset;
+  EmitEOL();
+}
+
 void MCAsmStreamer::emitWinCFIUnwindV2Start(SMLoc Loc) {
   MCStreamer::emitWinCFIUnwindV2Start(Loc);
 
@@ -2644,6 +2680,9 @@ void MCAsmStreamer::emitInstruction(const MCInst &Inst,
                                     const MCSubtargetInfo &STI) {
   if (LFIRewriter && LFIRewriter->rewriteInst(Inst, *this, STI))
     return;
+
+  if (InstructionObserver *Observer = getInstructionObserver())
+    Observer->observeInstruction(Inst, STI);
 
   if (CurFrag) {
     MCSection *Sec = getCurrentSectionOnly();

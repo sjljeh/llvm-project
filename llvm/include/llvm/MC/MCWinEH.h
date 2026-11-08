@@ -12,6 +12,8 @@
 #include "llvm/ADT/MapVector.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/SMLoc.h"
+#include <optional>
+#include <utility>
 #include <vector>
 
 namespace llvm {
@@ -65,6 +67,9 @@ struct FrameInfo {
 
   int LastFrameInst = -1;
   FrameInfo *ChainedParent = nullptr;
+  /// NTUW: the establisher frame as {register, offset}, where register 0
+  /// means CFA-relative. Unset means the CFA itself.
+  std::optional<std::pair<uint8_t, int32_t>> Establisher;
   std::vector<Instruction> Instructions;
   struct Epilog {
     std::vector<Instruction> Instructions;

@@ -1,10 +1,10 @@
 // REQUIRES: powerpc-registered-target
 //
-// RUN: %clangxx -target powerpcle-pc-windows-msvc -fexceptions -fcxx-exceptions \
+// RUN: %clangxx -target powerpcle-pc-windows-msvc12.0 -fexceptions -fcxx-exceptions \
 // RUN:   -O0 -S -o - %s | FileCheck %s --check-prefix=ASM
-// RUN: %clangxx -target powerpcle-pc-windows-msvc -fexceptions -fcxx-exceptions \
+// RUN: %clangxx -target powerpcle-pc-windows-msvc12.0 -fexceptions -fcxx-exceptions \
 // RUN:   -O0 -c -o %t.O0.obj %s
-// RUN: %clangxx -target powerpcle-pc-windows-msvc -fexceptions -fcxx-exceptions \
+// RUN: %clangxx -target powerpcle-pc-windows-msvc12.0 -fexceptions -fcxx-exceptions \
 // RUN:   -O2 -c -o %t.O2.obj %s
 
 struct E {

@@ -89,6 +89,7 @@ static_library("LLVMPowerPCCodeGen") {
     "PPCMachineFunctionInfo.cpp",
     "PPCMachineScheduler.cpp",
     "PPCMacroFusion.cpp",
+    "PPCNTUWRuleTracker.cpp",
     "PPCPreEmitPeephole.cpp",
     "PPCPrepareIFuncsOnAIX.cpp",
     "PPCReduceCRLogicals.cpp",

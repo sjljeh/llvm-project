@@ -19,6 +19,12 @@
 #include "llvm/Target/TargetMachine.h"
 
 namespace llvm {
+class AsmPrinter;
+class AsmPrinterHandler;
+
+/// Synthesizes NTUW unwind rules from emitted instructions.
+std::unique_ptr<AsmPrinterHandler> createAlphaNTUWRuleTracker(AsmPrinter &AP);
+
   namespace Alpha {
     // These describe LDAx
 

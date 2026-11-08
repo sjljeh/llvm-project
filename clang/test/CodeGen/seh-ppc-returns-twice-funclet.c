@@ -2,7 +2,7 @@
 
 // REQUIRES: powerpc-registered-target
 //
-// RUN: %clang -target powerpcle-pc-windows-msvc -fms-extensions -fexceptions \
+// RUN: %clang -target powerpcle-pc-windows-msvc12.0 -fms-extensions -fexceptions \
 // RUN:   -O0 -S -o - %s | FileCheck %s --check-prefix=ASM
 
 extern int setjmp(void *) __attribute__((returns_twice));

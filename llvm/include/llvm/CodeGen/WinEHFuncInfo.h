@@ -120,6 +120,10 @@ struct WinEHFuncInfo {
   SmallVector<ClrEHUnwindMapEntry, 4> ClrEHUnwindMap;
   int UnwindHelpFrameIdx = std::numeric_limits<int>::max();
   int PSPSymFrameIdx = std::numeric_limits<int>::max();
+  /// NTUW: the slot, at the same offset in the parent and in each funclet
+  /// frame, where a funclet saves the establisher frame it was called with.
+  /// __CxxFrameHandler3 reads it as a catch handler's dispFrame.
+  int FuncletParentFrameIdx = std::numeric_limits<int>::max();
 
   int getLastStateNumber() const { return CxxUnwindMap.size() - 1; }
 

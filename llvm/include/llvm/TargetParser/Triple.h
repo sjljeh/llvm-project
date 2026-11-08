@@ -789,6 +789,19 @@ public:
     return isOSWindows() && getEnvironment() == Triple::MSVC;
   }
 
+  /// Tests whether Alpha, MIPS or PowerPC Windows code uses the NTUW
+  /// table-based unwind format rather than the NT 4.0 one. An MSVC
+  /// compatibility version of 13.0 (VC 7.0) or later in the environment
+  /// selects NTUW; an unversioned triple keeps the NT 4.0 format.
+  bool usesNTRISCTableUnwind() const {
+    if (!isKnownWindowsMSVCEnvironment())
+      return false;
+    if (getArch() != Triple::alpha && getArch() != Triple::mipsel &&
+        getArch() != Triple::ppcle)
+      return false;
+    return getEnvironmentVersion() >= VersionTuple(13);
+  }
+
   /// Checks if the environment could be MSVC.
   bool isWindowsMSVCEnvironment() const {
     return isKnownWindowsMSVCEnvironment() ||

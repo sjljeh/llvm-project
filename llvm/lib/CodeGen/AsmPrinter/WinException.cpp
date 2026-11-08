@@ -65,6 +65,13 @@ static bool usesLegacyRISCWindowsEH(const AsmPrinter &Asm) {
          usesAlphaWindowsEH(Asm);
 }
 
+/// Alpha, MIPS and PowerPC code that uses NTUW (MSVC 13.0 and later). Its
+/// frames have the NT 4.0 layout, with the establisher frame stated in the
+/// unwind record, so EH tables address them the same way.
+static bool usesNTUW(const AsmPrinter &Asm) {
+  return Asm.MAI.getWinEHEncodingType() == WinEH::EncodingType::NTUW;
+}
+
 WinException::WinException(AsmPrinter *A) : EHStreamer(A) {
   // MSVC's EH tables are always composed of 32-bit words. All known
   // modern architectures use an imagerel32 relocation to refer to symbols.
@@ -498,14 +505,17 @@ int WinException::getFrameIndexOffset(int FrameIndex,
                                       const WinEHFuncInfo &FuncInfo) {
   const TargetFrameLowering &TFI = *Asm->MF->getSubtarget().getFrameLowering();
   const Function &F = Asm->MF->getFunction();
-  if (isLegacyMSVCCXXPersonality(F) && usesMIPSWindowsEH(*Asm))
+  const Triple &TT = Asm->TM.getTargetTriple();
+  if ((isLegacyMSVCCXXPersonality(F) && usesMIPSWindowsEH(*Asm)) ||
+      (usesNTUW(*Asm) && TT.isMIPS()))
     // NT MIPS records frame displacements from the outermost parent's
     // establisher frame, which lies below the incoming SP by the first step
     // of a two-step allocation.
     return TFI.getFrameIndexReferenceFromSP(*Asm->MF, FrameIndex).getFixed() +
            TFI.getWinEHParentFrameOffset(*Asm->MF);
-  if (isLegacyMSVCCXXPersonality(F) &&
-      (usesPPCWindowsEH(*Asm) || usesAlphaWindowsEH(*Asm)))
+  if ((isLegacyMSVCCXXPersonality(F) &&
+       (usesPPCWindowsEH(*Asm) || usesAlphaWindowsEH(*Asm))) ||
+      (usesNTUW(*Asm) && !TT.isMIPS()))
     // NT PowerPC and Alpha record catch-object displacements from the
     // incoming SP, which is the establisher frame returned by
     // RtlVirtualUnwind (on Alpha, the virtual frame pointer).
@@ -812,8 +822,9 @@ void WinException::emitSEHActionsForRange(const WinEHFuncInfo &FuncInfo,
       // For an except, the filter can be 1 (catch-all) or a function
       // label.
       MCSymbol *Filter = UME.Filter ? Asm->getSymbol(UME.Filter) : nullptr;
-      if (Filter && usesPPCWindowsEH(*Asm)) {
-        // The NT PowerPC C runtime jumps directly to filter code, unlike
+      if (Filter && Asm->TM.getTargetTriple().isPPC32() &&
+          Asm->TM.getTargetTriple().isOSWindows()) {
+        // The Windows PowerPC C runtimes jump directly to filter code, unlike
         // ordinary calls through the two-word function descriptor.
         SmallString<128> EntryName("..");
         EntryName += Filter->getName();
@@ -1323,7 +1334,17 @@ void WinException::emitCXXFrameHandler3Table(
 
     // All funclets use the same parent frame offset currently.
     unsigned ParentFrameOffset = 0;
-    if (shouldEmitPersonality && !IsLegacyRISCEH) {
+    if (shouldEmitPersonality && usesNTUW(*Asm)) {
+      // Where a catch funclet saves the establisher frame it was called with,
+      // from its own establisher frame: just below it on MIPS (whose
+      // establisher can lie below the CFA), or in a fixed slot.
+      if (Asm->TM.getTargetTriple().isMIPS())
+        ParentFrameOffset = static_cast<unsigned>(-4);
+      else if (FuncInfo.FuncletParentFrameIdx !=
+               std::numeric_limits<int>::max())
+        ParentFrameOffset = static_cast<unsigned>(
+            MF->getFrameInfo().getObjectOffset(FuncInfo.FuncletParentFrameIdx));
+    } else if (shouldEmitPersonality && !IsLegacyRISCEH) {
       const TargetFrameLowering *TFI = MF->getSubtarget().getFrameLowering();
       ParentFrameOffset = TFI->getWinEHParentFrameOffset(*MF);
     }

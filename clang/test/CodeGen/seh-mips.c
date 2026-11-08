@@ -1,10 +1,10 @@
 // REQUIRES: mips-registered-target
 //
-// RUN: %clang -target mipsel-pc-windows-msvc -fms-extensions -O0 -S \
+// RUN: %clang -target mipsel-pc-windows-msvc12.0 -fms-extensions -O0 -S \
 // RUN:   -emit-llvm -o - %s | FileCheck %s --check-prefix=IR
-// RUN: %clang -target mipsel-pc-windows-msvc -fms-extensions -O2 -S \
+// RUN: %clang -target mipsel-pc-windows-msvc12.0 -fms-extensions -O2 -S \
 // RUN:   -o - %s | FileCheck %s --check-prefix=ASM
-// RUN: %clang -target mipsel-pc-windows-msvc -fms-extensions -O2 -c \
+// RUN: %clang -target mipsel-pc-windows-msvc12.0 -fms-extensions -O2 -c \
 // RUN:   -o %t.obj %s
 // RUN: llvm-readobj --relocations %t.obj | FileCheck %s --check-prefix=OBJ
 // RUN: not %clang_cc1 -triple mipsel-pc-windows-gnu -fms-extensions \

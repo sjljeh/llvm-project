@@ -33,6 +33,7 @@
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/NTRISCWinEH.h"
 #include "llvm/Support/Path.h"
 #include "llvm/TargetParser/Triple.h"
 #include <cstring>
@@ -107,7 +108,8 @@ static void checkAndSetWeakAlias(SymbolTable &symtab, InputFile *f,
 }
 
 static bool ignoredSymbolName(StringRef name) {
-  return name == "@feat.00" || name == "@comp.id";
+  return name == "@feat.00" || name == "@comp.id" ||
+         name == NTRISCWinEH::UnwindObjectMarker;
 }
 
 static coff_symbol_generic *cloneSymbol(COFFSymbolRef sym) {
@@ -918,6 +920,8 @@ std::optional<Symbol *> ObjFile::createDefined(
 
     if (name == "@feat.00")
       feat00Flags = sym.getValue();
+    if (name == NTRISCWinEH::UnwindObjectMarker)
+      usesNTUW = true;
     // Skip special symbols.
     if (ignoredSymbolName(name))
       return nullptr;

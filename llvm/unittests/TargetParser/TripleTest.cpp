@@ -4051,6 +4051,23 @@ TEST(DataLayoutTest, UEFI) {
   EXPECT_THAT(TT.computeDataLayout(), testing::HasSubstr("-m:w-"));
 }
 
+TEST(TripleTest, NTRISCTableUnwind) {
+  // MSVC 13.0 (VC 7.0) or later selects NTUW on Alpha, MIPS and PowerPC.
+  EXPECT_TRUE(Triple("mipsel-pc-windows-msvc13.0").usesNTRISCTableUnwind());
+  EXPECT_TRUE(Triple("alpha-pc-windows-msvc19.33").usesNTRISCTableUnwind());
+  EXPECT_TRUE(Triple("powerpcle-pc-windows-msvc14.0").usesNTRISCTableUnwind());
+  // Unversioned and VC 6.0 triples keep the NT 4.0 format.
+  EXPECT_FALSE(Triple("mipsel-pc-windows-msvc").usesNTRISCTableUnwind());
+  EXPECT_FALSE(Triple("alpha-pc-windows-msvc12.0").usesNTRISCTableUnwind());
+  EXPECT_FALSE(
+      Triple("powerpcle-pc-windows-msvc12.99").usesNTRISCTableUnwind());
+  // Only these machines, and only MSVC environments.
+  EXPECT_FALSE(Triple("x86_64-pc-windows-msvc19.33").usesNTRISCTableUnwind());
+  EXPECT_FALSE(Triple("riscv64-pc-windows-msvc19.33").usesNTRISCTableUnwind());
+  EXPECT_FALSE(Triple("mipsel-pc-windows-gnu").usesNTRISCTableUnwind());
+  EXPECT_FALSE(Triple("mipsel-unknown-linux-gnu").usesNTRISCTableUnwind());
+}
+
 TEST(TripleTest, WindowsOrUEFI) {
   EXPECT_TRUE(Triple("x86_64-pc-windows-msvc").isOSWindowsOrUEFI());
   EXPECT_TRUE(Triple("x86_64-w64-windows-gnu").isOSWindowsOrUEFI());

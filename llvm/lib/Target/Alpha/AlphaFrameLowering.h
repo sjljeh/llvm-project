@@ -79,8 +79,12 @@ namespace llvm {
 
     static bool isCalleeSaveSlot(const MachineFunction &MF, int FI);
     static bool isAlphaWinCXXEH(const MachineFunction &MF);
+    /// Whether MF uses NTUW's __CxxFrameHandler3.
+    static bool isNTUWCXXEH(const MachineFunction &MF);
 
   private:
+    void createNTUWCXXEHObjects(MachineFunction &MF,
+                                WinEHFuncInfo &EHInfo) const;
     void pinRuntimeFrameObjects(MachineFunction &MF,
                                 WinEHFuncInfo &EHInfo) const;
     /// Offset from the allocated $30 of the slot that saves the caller's $15.

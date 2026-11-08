@@ -1,9 +1,9 @@
 // Copyright (c) 2026 Ahmed ARIF
 
 // REQUIRES: powerpc-registered-target
-// RUN: %clang -target powerpcle-pc-windows-msvc -fms-extensions -fexceptions \
+// RUN: %clang -target powerpcle-pc-windows-msvc12.0 -fms-extensions -fexceptions \
 // RUN:   -O2 -S -o - %s | FileCheck %s
-// RUN: %clang -target powerpcle-pc-windows-msvc -fms-extensions -fexceptions \
+// RUN: %clang -target powerpcle-pc-windows-msvc12.0 -fms-extensions -fexceptions \
 // RUN:   -O2 -c -o %t.obj %s
 
 extern void may_fault(void);

@@ -62,6 +62,7 @@ static_library("MC") {
     "MCLinkerOptimizationHint.cpp",
     "MCMachOStreamer.cpp",
     "MCMachObjectTargetWriter.cpp",
+    "MCNTRISCWinEH.cpp",
     "MCNullStreamer.cpp",
     "MCObjectFileInfo.cpp",
     "MCObjectStreamer.cpp",

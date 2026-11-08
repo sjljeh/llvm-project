@@ -18,6 +18,7 @@
 #include "llvm/CodeGen/SelectionDAGISel.h"
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Target/TargetMachine.h"
+#include <memory>
 
 #define IsMFLOMFHI(instr)                                                      \
   (instr == Mips::MFLO || instr == Mips::MFLO64 || instr == Mips::MFHI ||      \
@@ -31,6 +32,8 @@
    instr == Mips::PseudoDMULT)
 
 namespace llvm {
+class AsmPrinter;
+class AsmPrinterHandler;
 class FunctionPass;
 class InstructionSelector;
 class MipsRegisterBankInfo;
@@ -39,6 +42,9 @@ class MipsTargetMachine;
 class MipsTargetMachine;
 class ModulePass;
 class PassRegistry;
+
+/// Synthesizes NTUW unwind rules from emitted instructions.
+std::unique_ptr<AsmPrinterHandler> createMipsNTUWRuleTracker(AsmPrinter &AP);
 
 class Mips16ISelDAGPass : public SelectionDAGISelPass {
 public:

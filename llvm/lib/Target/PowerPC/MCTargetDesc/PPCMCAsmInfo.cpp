@@ -280,7 +280,8 @@ PPCCOFFMCAsmInfo::PPCCOFFMCAsmInfo(const Triple &T,
   DollarIsPC = true;
   MinInstAlignment = 4;
   SupportsDebugInformation = true;
-  WinEHEncodingType = WinEH::EncodingType::PPC;
+  WinEHEncodingType = T.usesNTRISCTableUnwind() ? WinEH::EncodingType::NTUW
+                                                : WinEH::EncodingType::PPC;
   HasCOFFAssociativeComdats = T.isWindowsMSVCEnvironment();
   InternalSymbolPrefix = ".L";
   initializeAtSpecifiers(coffAtSpecifiers);

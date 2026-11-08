@@ -16,6 +16,7 @@
 #include "llvm/MC/MCParser/MCAsmParserExtension.h"
 #include "llvm/MC/MCSectionCOFF.h"
 #include "llvm/MC/MCStreamer.h"
+#include "llvm/Support/NTRISCWinEH.h"
 #include "llvm/Support/SMLoc.h"
 #include "llvm/TargetParser/Triple.h"
 #include <cassert>
@@ -150,6 +151,17 @@ class COFFAsmParser : public MCAsmParserExtension {
         ".seh_unwindv2start");
     addDirectiveHandler<&COFFAsmParser::ParseSEHDirectiveUnwindVersion>(
         ".seh_unwindversion");
+
+    // NTUW state-rule directives for Alpha, MIPS and PowerPC. RISC-V's
+    // target parser claims the same spellings for RVUW first.
+    if (Parser.getContext().getTargetTriple().usesNTRISCTableUnwind()) {
+      for (unsigned Opcode = 0; Opcode < 0x20; ++Opcode)
+        if (const char *Name = NTRISCWinEH::getDirectiveName(Opcode))
+          addDirectiveHandler<&COFFAsmParser::parseSEHDirectiveStateRule>(
+              (Twine(".seh_") + Name).str());
+      addDirectiveHandler<&COFFAsmParser::parseSEHDirectiveEstablisher>(
+          ".seh_establisher");
+    }
   }
 
   bool parseSectionDirectiveText(StringRef, SMLoc) {
@@ -200,6 +212,9 @@ class COFFAsmParser : public MCAsmParserExtension {
   bool parseSEHDirectiveHandler(StringRef, SMLoc);
   bool parseSEHDirectiveHandlerData(StringRef, SMLoc);
   bool parseSEHDirectiveAllocStack(StringRef, SMLoc);
+  bool parseSEHDirectiveStateRule(StringRef, SMLoc);
+  bool parseSEHDirectiveEstablisher(StringRef, SMLoc);
+  bool parseNTUWRegister(unsigned &Register, bool AllowCFA = false);
   bool parseSEHDirectiveEndProlog(StringRef, SMLoc);
   bool ParseSEHDirectiveBeginEpilog(StringRef, SMLoc);
   bool ParseSEHDirectiveEndEpilog(StringRef, SMLoc);
@@ -849,6 +864,101 @@ bool COFFAsmParser::parseSEHDirectiveAllocStack(StringRef, SMLoc Loc) {
 
   Lex();
   getStreamer().emitWinCFIAllocStack(Size, Loc);
+  return false;
+}
+
+/// Parses an NTUW register operand: a number, optionally written $N, rN, fN,
+/// $fN or $rN, or one of the PowerPC special registers lr, cr and ctr (their
+/// SPR index). With AllowCFA, "cfa" parses as register 0.
+bool COFFAsmParser::parseNTUWRegister(unsigned &Register, bool AllowCFA) {
+  if (getLexer().is(AsmToken::Dollar))
+    Lex();
+  if (getLexer().is(AsmToken::Integer)) {
+    int64_t Value = getTok().getIntVal();
+    if (Value < 0 || Value > 31)
+      return TokError("register number out of range");
+    Register = Value;
+    Lex();
+    return false;
+  }
+  if (getLexer().isNot(AsmToken::Identifier))
+    return TokError("expected a register");
+  std::string Lower = getTok().getIdentifier().lower();
+  StringRef Name = Lower;
+  if (AllowCFA && Name == "cfa") {
+    Register = 0;
+    Lex();
+    return false;
+  }
+  if (Name == "lr" || Name == "cr" || Name == "ctr") {
+    Register = Name == "lr"   ? NTRISCWinEH::SPR_LR
+               : Name == "cr" ? NTRISCWinEH::SPR_CR
+                              : NTRISCWinEH::SPR_CTR;
+    Lex();
+    return false;
+  }
+  Name.consume_front("$");
+  if (!Name.consume_front("r"))
+    Name.consume_front("f");
+  unsigned Value;
+  if (Name.getAsInteger(10, Value) || Value > 31)
+    return TokError("expected a register");
+  Register = Value;
+  Lex();
+  return false;
+}
+
+/// .seh_<rule> [register] [, operand]
+bool COFFAsmParser::parseSEHDirectiveStateRule(StringRef Directive, SMLoc Loc) {
+  StringRef Name = Directive.drop_front(strlen(".seh_"));
+  unsigned Opcode = 0;
+  for (unsigned Op = 0; Op < 0x20 && !Opcode; ++Op)
+    if (const char *N = NTRISCWinEH::getDirectiveName(Op); N && Name == N)
+      Opcode = Op;
+  if (!Opcode)
+    return Error(Loc, "unknown NTUW directive");
+
+  unsigned Register = 0;
+  int64_t Operand = 0;
+  bool NeedComma = false;
+  if (NTRISCWinEH::directiveHasRegister(Opcode)) {
+    if (parseNTUWRegister(Register))
+      return true;
+    NeedComma = true;
+  }
+  if (NTRISCWinEH::directiveHasOperand(Opcode)) {
+    if (NeedComma && getParser().parseComma())
+      return true;
+    bool IsRegisterOperand = Opcode == NTRISCWinEH::UOP_GPRFromGPR ||
+                             Opcode == NTRISCWinEH::UOP_FPRFromFPR ||
+                             Opcode == NTRISCWinEH::UOP_SPRFromGPR;
+    if (IsRegisterOperand) {
+      unsigned Source;
+      if (parseNTUWRegister(Source))
+        return true;
+      Operand = Source;
+    } else if (Opcode == NTRISCWinEH::UOP_ReturnFromGPR &&
+               getLexer().is(AsmToken::EndOfStatement)) {
+      Operand = 0;
+    } else if (getParser().parseAbsoluteExpression(Operand)) {
+      return true;
+    }
+  }
+  if (parseEOL())
+    return true;
+  getStreamer().emitWinCFIStateRule(Opcode, Register, Operand, Loc);
+  return false;
+}
+
+/// .seh_establisher (register | cfa), offset
+bool COFFAsmParser::parseSEHDirectiveEstablisher(StringRef, SMLoc Loc) {
+  unsigned Register;
+  int64_t Offset;
+  if (parseNTUWRegister(Register, /*AllowCFA=*/true) ||
+      getParser().parseComma() || getParser().parseAbsoluteExpression(Offset) ||
+      parseEOL())
+    return true;
+  getStreamer().emitWinCFIEstablisher(Register, Offset, Loc);
   return false;
 }
 

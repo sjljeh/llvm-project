@@ -31,6 +31,7 @@
 #include "llvm/Support/FileOutputBuffer.h"
 #include "llvm/Support/FormatAdapters.h"
 #include "llvm/Support/FormatVariadic.h"
+#include "llvm/Support/NTRISCWinEH.h"
 #include "llvm/Support/Parallel.h"
 #include "llvm/Support/RandomNumberGenerator.h"
 #include "llvm/Support/TimeProfiler.h"
@@ -227,6 +228,116 @@ public:
   }
 };
 
+// NTUW images on Alpha, MIPS and PowerPC
+// hold 8-byte .pdata entries. A 20-byte NT 4.0 entry from a legacy object is
+// embedded verbatim in an UNW_Legacy .xdata record, which an 8-byte entry
+// points to.
+class NTUWLegacyRecordsChunk : public NonSectionChunk {
+public:
+  NTUWLegacyRecordsChunk(COFFLinkerContext &ctx, SectionChunk *legacy)
+      : ctx(ctx), legacy(legacy) {
+    setAlignment(4);
+  }
+  static constexpr uint32_t recordSize =
+      NTRISCWinEH::UnwindHeaderSize + NTRISCWinEH::LegacyEntrySize;
+  size_t numEntries() const {
+    return legacy->getSize() / NTRISCWinEH::LegacyEntrySize;
+  }
+  size_t getSize() const override { return numEntries() * recordSize; }
+  MachineTypes getMachine() const override { return legacy->getMachine(); }
+
+  // The relocated value of the word at offset off of the legacy section, and
+  // whether it needs a base relocation.
+  std::pair<uint32_t, bool> field(uint32_t off) const {
+    ArrayRef<uint8_t> contents = legacy->getContents();
+    uint32_t value = read32le(contents.data() + off);
+    for (const coff_relocation &rel : legacy->getRelocs()) {
+      if (rel.VirtualAddress != off || !isAbsolute32(rel.Type))
+        continue;
+      Symbol *sym = legacy->file->getSymbol(rel.SymbolTableIndex);
+      auto *d = dyn_cast_or_null<Defined>(sym);
+      if (!d)
+        return {value, false};
+      if (auto *a = dyn_cast<DefinedAbsolute>(d))
+        return {uint32_t(a->getVA() + value), false};
+      return {uint32_t(ctx.config.imageBase + d->getRVA() + value), true};
+    }
+    return {value, false};
+  }
+
+  uint32_t beginRVA(size_t i) const {
+    return field(i * NTRISCWinEH::LegacyEntrySize).first - ctx.config.imageBase;
+  }
+
+  void writeTo(uint8_t *buf) const override {
+    for (size_t i = 0, e = numEntries(); i != e; ++i) {
+      uint8_t *p = buf + i * recordSize;
+      uint32_t base = i * NTRISCWinEH::LegacyEntrySize;
+      uint32_t words[5];
+      for (unsigned f = 0; f != 5; ++f)
+        words[f] = field(base + 4 * f).first;
+      memset(p, 0, recordSize);
+      write32le(p + 0, NTRISCWinEH::UnwindMagic);
+      write16le(p + 4, NTRISCWinEH::UnwindHeaderSize);
+      write32le(p + 8, recordSize);
+      write32le(p + 12, NTRISCWinEH::UNW_Legacy);
+      write32le(p + 16, words[4] - words[0]);
+      write16le(p + 30, NTRISCWinEH::STATE_Integer);
+      write32le(p + 32, words[1] - words[0]);
+      for (unsigned f = 0; f != 5; ++f)
+        write32le(p + NTRISCWinEH::UnwindHeaderSize + 4 * f, words[f]);
+    }
+  }
+
+  void getBaserels(std::vector<Baserel> *res) override {
+    for (size_t i = 0, e = numEntries(); i != e; ++i)
+      for (unsigned f = 0; f != 5; ++f)
+        if (field(i * NTRISCWinEH::LegacyEntrySize + 4 * f).second)
+          res->emplace_back(rva + i * recordSize +
+                                NTRISCWinEH::UnwindHeaderSize + 4 * f,
+                            getMachine());
+  }
+
+private:
+  bool isAbsolute32(uint16_t type) const {
+    switch (legacy->getMachine()) {
+    case IMAGE_FILE_MACHINE_ALPHA:
+      return type == IMAGE_REL_ALPHA_REFLONG;
+    case IMAGE_FILE_MACHINE_R4000:
+      return type == IMAGE_REL_MIPS_REFWORD;
+    case IMAGE_FILE_MACHINE_POWERPC:
+      return type == IMAGE_REL_PPC_ADDR32;
+    default:
+      return false;
+    }
+  }
+
+  COFFLinkerContext &ctx;
+  SectionChunk *legacy;
+};
+
+class NTUWLegacyPdataChunk : public NonSectionChunk {
+public:
+  explicit NTUWLegacyPdataChunk(NTUWLegacyRecordsChunk *records)
+      : records(records) {
+    setAlignment(4);
+  }
+  size_t getSize() const override {
+    return records->numEntries() * NTRISCWinEH::RuntimeFunctionSize;
+  }
+  MachineTypes getMachine() const override { return records->getMachine(); }
+  void writeTo(uint8_t *buf) const override {
+    for (size_t i = 0, e = records->numEntries(); i != e; ++i) {
+      write32le(buf + 8 * i, records->beginRVA(i));
+      write32le(buf + 8 * i + 4,
+                records->getRVA() + i * NTUWLegacyRecordsChunk::recordSize);
+    }
+  }
+
+private:
+  NTUWLegacyRecordsChunk *records;
+};
+
 class Writer {
 public:
   Writer(COFFLinkerContext &c)
@@ -340,6 +451,11 @@ private:
   void addBaserels();
   void addBaserelBlocks(std::vector<Baserel> &v);
   bool hasAbsolutePdata() const;
+  bool isNTRISCMachine() const;
+  void embedLegacyPdata();
+  // An Alpha, MIPS or PowerPC image whose exception directory holds NTUW
+  // entries.
+  bool ntuwImage = false;
   void orderAbsolutePdata(OutputSection *sec, std::vector<Baserel> &v);
   void createDynamicRelocs();
 
@@ -956,7 +1072,12 @@ void Writer::run() {
     if (ctx.config.machine == ARM64X)
       ctx.dynamicRelocs = make<DynamicRelocsChunk>();
     createImportTables();
+    ntuwImage = isNTRISCMachine() &&
+                llvm::any_of(ctx.objFileInstances,
+                             [](ObjFile *f) { return f->usesNTUW; });
     createSections();
+    if (ntuwImage)
+      embedLegacyPdata();
     appendImportThunks();
     // Import thunks must be added before the Control Flow Guard tables are
     // added.
@@ -3712,6 +3833,10 @@ void Writer::sortExceptionTables() {
   case IMAGE_FILE_MACHINE_ALPHA:
   case IMAGE_FILE_MACHINE_ALPHA64:
   case IMAGE_FILE_MACHINE_R4000:
+    if (ntuwImage) {
+      sortExceptionTable<EntryArm>(pdata);
+      break;
+    }
     if (pdataOrder.empty()) {
       sortExceptionTable<EntryRISC>(pdata);
       break;
@@ -3847,7 +3972,50 @@ void Writer::addBaserels() {
 // PowerPC, Alpha and MIPS function table entries hold absolute addresses, so
 // every nonzero field carries a base relocation. Sorting the table moves the
 // fields; the relocations have to move with them.
+bool Writer::isNTRISCMachine() const {
+  switch (ctx.config.machine) {
+  case IMAGE_FILE_MACHINE_POWERPC:
+  case IMAGE_FILE_MACHINE_ALPHA:
+  case IMAGE_FILE_MACHINE_ALPHA64:
+  case IMAGE_FILE_MACHINE_R4000:
+    return true;
+  default:
+    return false;
+  }
+}
+
+/// Replaces the .pdata of each legacy object in an NTUW image with 8-byte
+/// entries that point to UNW_Legacy records, which embed the NT 4.0 entries.
+void Writer::embedLegacyPdata() {
+  std::vector<Chunk *> chunks;
+  for (Chunk *c : pdataSec->chunks) {
+    auto *sc = dyn_cast<SectionChunk>(c);
+    if (!sc || !sc->file || sc->file->usesNTUW) {
+      chunks.push_back(c);
+      continue;
+    }
+    if (ctx.config.machine == IMAGE_FILE_MACHINE_ALPHA64) {
+      Err(ctx) << toString(sc->file)
+               << ": cannot embed AXP64 .pdata in an NTUW image";
+      continue;
+    }
+    if (sc->getSize() % NTRISCWinEH::LegacyEntrySize) {
+      Err(ctx) << toString(sc->file)
+               << ": NT 4.0 .pdata size is not a multiple of 20";
+      continue;
+    }
+    if (!sc->getSize())
+      continue;
+    auto *records = make<NTUWLegacyRecordsChunk>(ctx, sc);
+    rdataSec->addChunk(records);
+    chunks.push_back(make<NTUWLegacyPdataChunk>(records));
+  }
+  pdataSec->chunks = std::move(chunks);
+}
+
 bool Writer::hasAbsolutePdata() const {
+  if (ntuwImage)
+    return false;
   switch (ctx.config.machine) {
   case IMAGE_FILE_MACHINE_POWERPC:
   case IMAGE_FILE_MACHINE_ALPHA:

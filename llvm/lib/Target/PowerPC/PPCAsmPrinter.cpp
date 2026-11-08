@@ -42,6 +42,7 @@
 #include "llvm/CodeGen/MachineModuleInfoImpls.h"
 #include "llvm/CodeGen/MachineOperand.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
+#include "llvm/CodeGen/NTUWRuleTracker.h"
 #include "llvm/CodeGen/StackMaps.h"
 #include "llvm/CodeGen/TargetLoweringObjectFileImpl.h"
 #include "llvm/IR/DataLayout.h"
@@ -347,6 +348,7 @@ public:
   void emitFunctionEntryLabel() override;
   void emitFunctionDescriptor() override;
   void emitGlobalAlias(const Module &M, const GlobalAlias &GA) override;
+  void emitStartOfAsmFile(Module &M) override;
   void emitEndOfAsmFile(Module &M) override;
 };
 
@@ -2406,6 +2408,16 @@ void PPCWinCOFFAsmPrinter::emitGlobalAlias(const Module &M, const GlobalAlias &G
     OutStreamer->emitSymbolAttribute(Entry, MCSA_WeakReference);
   emitVisibility(Entry, GA.getVisibility());
   OutStreamer->emitAssignment(Entry, MCSymbolRefExpr::create(getFunctionEntryPointSymbol(Aliasee), OutContext));
+}
+
+void PPCWinCOFFAsmPrinter::emitStartOfAsmFile(Module &M) {
+  if (M.getTargetTriple().usesNTRISCTableUnwind()) {
+    std::unique_ptr<AsmPrinterHandler> Tracker =
+        createPPCNTUWRuleTracker(*this);
+    OutStreamer->setInstructionObserver(
+        static_cast<NTUWRuleTracker *>(Tracker.get()));
+    addAsmPrinterHandler(std::move(Tracker));
+  }
 }
 
 void PPCWinCOFFAsmPrinter::emitEndOfAsmFile(Module &M) {

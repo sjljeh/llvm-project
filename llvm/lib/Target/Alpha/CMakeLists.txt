@@ -18,6 +18,7 @@ set(LLVM_OPTIONAL_SOURCES
   AlphaISelDAGToDAG.cpp
   AlphaISelLowering.cpp
   AlphaLLRP.cpp
+  AlphaNTUWRuleTracker.cpp
   AlphaRegisterInfo.cpp
   AlphaSelectionDAGInfo.cpp
   AlphaSubtarget.cpp
@@ -32,6 +33,7 @@ add_llvm_target(AlphaCodeGen
   AlphaISelDAGToDAG.cpp
   AlphaISelLowering.cpp
   AlphaLLRP.cpp
+  AlphaNTUWRuleTracker.cpp
   AlphaRegisterInfo.cpp
   AlphaSelectionDAGInfo.cpp
   AlphaSubtarget.cpp

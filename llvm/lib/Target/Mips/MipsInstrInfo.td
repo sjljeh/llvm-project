@@ -2395,6 +2395,9 @@ def PseudoReturn : PseudoReturnBase<GPR32Opnd>;
 
 let isCodeGenOnly = 1, hasSideEffects = 1, hasNoSchedulingInfo = 1 in
 def SEH_PrologEnd : MipsPseudo<(outs), (ins), []>;
+// NTUW: the establisher frame is the CFA less $offset (two-step frames).
+let isCodeGenOnly = 1, hasSideEffects = 1, hasNoSchedulingInfo = 1 in
+def SEH_Establisher : MipsPseudo<(outs), (ins i32imm:$offset), []>;
 
 // Windows stack probes. PROBED_ALLOCA_NT touches each page between $sp and
 // the new $sp, then sets $sp (MipsTargetLowering::emitProbedAlloca).

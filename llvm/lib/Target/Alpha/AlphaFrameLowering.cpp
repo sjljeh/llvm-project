@@ -474,17 +474,42 @@ void AlphaFrameLowering::emitPrologue(MachineFunction &MF,
             .addReg(Alpha::R1)
             .setMIFlag(MachineInstr::FrameSetup);
       } else if (MBB.isEHFuncletEntry()) {
-        MBB.addLiveIn(Alpha::R1);
+        // NTUW passes the establisher frame as the second argument.
+        const unsigned Establisher =
+            STI.getTargetTriple().usesNTRISCTableUnwind() ? Alpha::R17
+                                                          : Alpha::R1;
+        MBB.addLiveIn(Establisher);
         int64_t ParentSize = MFI.getStackSize();
+        // Save the establisher frame where __CxxFrameHandler3 looks for it.
+        const WinEHFuncInfo *EHInfo = MF.getWinEHFuncInfo();
+        if (EHInfo &&
+            EHInfo->FuncletParentFrameIdx != std::numeric_limits<int>::max()) {
+          int64_t Slot =
+              MFI.getObjectOffset(EHInfo->FuncletParentFrameIdx) + ParentSize;
+          Register Base = Alpha::R30;
+          if (!isInt<16>(Slot)) {
+            BuildMI(MBB, PrologEnd, dl, TII.get(Alpha::LDAH), Alpha::R28)
+                .addImm(getUpper16(Slot))
+                .addReg(Alpha::R30)
+                .setMIFlag(MachineInstr::FrameSetup);
+            Base = Alpha::R28;
+            Slot = getLower16(Slot);
+          }
+          BuildMI(MBB, PrologEnd, dl, TII.get(Alpha::STQ))
+              .addReg(Establisher)
+              .addImm(Slot)
+              .addReg(Base)
+              .setMIFlag(MachineInstr::FrameSetup);
+        }
         if (-ParentSize >= Alpha::IMM_LOW) {
           BuildMI(MBB, PrologEnd, dl, TII.get(Alpha::LDA), Alpha::R15)
               .addImm(-ParentSize)
-              .addReg(Alpha::R1)
+              .addReg(Establisher)
               .setMIFlag(MachineInstr::FrameSetup);
         } else {
           BuildMI(MBB, PrologEnd, dl, TII.get(Alpha::LDAH), Alpha::R15)
               .addImm(getUpper16(-ParentSize))
-              .addReg(Alpha::R1)
+              .addReg(Establisher)
               .setMIFlag(MachineInstr::FrameSetup);
           BuildMI(MBB, PrologEnd, dl, TII.get(Alpha::LDA), Alpha::R15)
               .addImm(getLower16(-ParentSize))
@@ -678,8 +703,54 @@ void AlphaFrameLowering::processFunctionBeforeFrameFinalized(
     }
   }
 
+  if (EHInfo && MF.hasEHFunclets() && isNTUWCXXEH(MF))
+    createNTUWCXXEHObjects(MF, *EHInfo);
+
   if (EHInfo && STI.getTargetTriple().isOSWindows() && isRealigned(MF))
     pinRuntimeFrameObjects(MF, *EHInfo);
+}
+
+bool AlphaFrameLowering::isNTUWCXXEH(const MachineFunction &MF) {
+  const Function &F = MF.getFunction();
+  if (!MF.getSubtarget().getTargetTriple().usesNTRISCTableUnwind() ||
+      !F.hasPersonalityFn())
+    return false;
+  const auto *PerFn =
+      dyn_cast<Function>(F.getPersonalityFn()->stripPointerCasts());
+  return PerFn && PerFn->getName() == "__CxxFrameHandler3";
+}
+
+/// NTUW's __CxxFrameHandler3 reads two words at fixed offsets from an
+/// establisher frame (the CFA): UnwindHelp, the try-block state of a parent
+/// being unwound, which starts as -2; and, in a catch funclet's frame, the
+/// establisher frame the funclet was called with. Funclet frames have the
+/// parent's layout, so one fixed object serves every funclet.
+void AlphaFrameLowering::createNTUWCXXEHObjects(MachineFunction &MF,
+                                                WinEHFuncInfo &EHInfo) const {
+  MachineFrameInfo &MFI = MF.getFrameInfo();
+  int64_t Top = 0;
+  for (int FI = MFI.getObjectIndexBegin(); FI != 0; ++FI)
+    if (!MFI.isDeadObjectIndex(FI))
+      Top = std::max(Top, -MFI.getObjectOffset(FI));
+  Top = alignTo(Top + 8, 8);
+  EHInfo.FuncletParentFrameIdx =
+      MFI.CreateFixedObject(8, -Top, /*IsImmutable=*/false);
+  Top += 8;
+  int UnwindHelp = MFI.CreateFixedObject(8, -Top, /*IsImmutable=*/false);
+  EHInfo.UnwindHelpFrameIdx = UnwindHelp;
+
+  MachineBasicBlock &Entry = MF.front();
+  MachineBasicBlock::iterator I = Entry.begin();
+  while (I != Entry.end() && I->getFlag(MachineInstr::FrameSetup))
+    ++I;
+  const TargetInstrInfo &TII = *MF.getSubtarget().getInstrInfo();
+  BuildMI(Entry, I, DebugLoc(), TII.get(Alpha::LDA), Alpha::R28)
+      .addImm(-2)
+      .addReg(Alpha::R31);
+  BuildMI(Entry, I, DebugLoc(), TII.get(Alpha::STL))
+      .addReg(Alpha::R28, RegState::Kill)
+      .addFrameIndex(UnwindHelp)
+      .addReg(Alpha::F31);
 }
 
 /// The NT C++ runtime finds catch objects at fixed offsets from the

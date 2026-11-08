@@ -1983,9 +1983,11 @@ Address CodeGenFunction::recoverAddrOfEscapedLocal(CodeGenFunction &ParentCGF,
 /// the first argument register, the filter's own address in the second, and
 /// the establisher frame in the third (and in the static link register).
 /// Model the filter as taking three parameters so that the
-/// frame is read from the third.
+/// frame is read from the third. NTUW filters take the frame as an ordinary
+/// second argument.
 static bool sehFilterFrameIsThirdArg(const llvm::Triple &T) {
-  return T.isOSWindows() && (T.isAlpha() || T.isMIPS32());
+  return T.isOSWindows() && (T.isAlpha() || T.isMIPS32()) &&
+         !T.usesNTRISCTableUnwind();
 }
 
 void CodeGenFunction::EmitCapturedLocals(CodeGenFunction &ParentCGF,
@@ -2004,11 +2006,15 @@ void CodeGenFunction::EmitCapturedLocals(CodeGenFunction &ParentCGF,
         getLLVMContext(), llvm::MDString::get(getLLVMContext(), "r2"));
     llvm::Value *RegNameValue =
         llvm::MetadataAsValue::get(getLLVMContext(), RegName);
-    llvm::Function *ReadRegister =
-        CGM.getIntrinsic(llvm::Intrinsic::read_register, Int32Ty);
-    llvm::Value *EntryFPInt =
-        Builder.CreateCall(ReadRegister, {RegNameValue}, "seh.entryfp");
-    PPCEntryFP = Builder.CreateIntToPtr(EntryFPInt, Int8PtrTy);
+    // NT 4.0 passes the frame in r2; NTUW passes it as the second argument.
+    // Both enter the filter at its code address, so it sets up its TOC.
+    if (!Triple.usesNTRISCTableUnwind()) {
+      llvm::Function *ReadRegister =
+          CGM.getIntrinsic(llvm::Intrinsic::read_register, Int32Ty);
+      llvm::Value *EntryFPInt =
+          Builder.CreateCall(ReadRegister, {RegNameValue}, "seh.entryfp");
+      PPCEntryFP = Builder.CreateIntToPtr(EntryFPInt, Int8PtrTy);
+    }
 
     // The incoming r2 is not a TOC. The filter belongs to the parent's image,
     // so materialize that image's TOC directly. The TOC save word of the

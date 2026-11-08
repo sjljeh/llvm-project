@@ -50,6 +50,7 @@ enum class EncodingType {
   ARM,     /// Windows NT (Windows on ARM)
   CE,      /// Windows CE ARM, PowerPC, SH3, SH4
   Itanium, /// Windows x64, Windows Itanium (IA-64)
+  NTUW,    /// Alpha, MIPS and PowerPC NTUW, for MSVC 13.0 and later
   PPC,     /// Windows NT PowerPC
   RISCV64, /// ReactOS RISC-V64 RVUW
   X86,     /// Windows x86, uses no CFI, just EH tables

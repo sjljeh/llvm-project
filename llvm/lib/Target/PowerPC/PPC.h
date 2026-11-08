@@ -15,11 +15,18 @@
 #define LLVM_LIB_TARGET_POWERPC_PPC_H
 
 #include "llvm/Support/CodeGen.h"
+#include <memory>
 
 // GCC #defines PPC on Linux but we use it as our namespace name
 #undef PPC
 
 namespace llvm {
+class AsmPrinter;
+class AsmPrinterHandler;
+
+/// Synthesizes NTUW unwind rules from emitted instructions.
+std::unique_ptr<AsmPrinterHandler> createPPCNTUWRuleTracker(AsmPrinter &AP);
+
 class PPCRegisterBankInfo;
 class PPCSubtarget;
 class PPCTargetMachine;
