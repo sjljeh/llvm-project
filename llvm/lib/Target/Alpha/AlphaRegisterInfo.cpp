@@ -12,26 +12,27 @@
 //===----------------------------------------------------------------------===//
 
 #define DEBUG_TYPE "reginfo"
+#include "AlphaRegisterInfo.h"
 #include "Alpha.h"
 #include "AlphaFrameLowering.h"
-#include "AlphaRegisterInfo.h"
-#include "llvm/IR/Constants.h"
-#include "llvm/IR/Type.h"
-#include "llvm/IR/Function.h"
-#include "llvm/CodeGen/ValueTypes.h"
-#include "llvm/CodeGen/MachineInstrBuilder.h"
-#include "llvm/CodeGen/MachineFunction.h"
+#include "AlphaMachineFunctionInfo.h"
+#include "llvm/ADT/BitVector.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
+#include "llvm/CodeGen/MachineFunction.h"
+#include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/TargetFrameLowering.h"
-#include "llvm/Target/TargetMachine.h"
-#include "llvm/Target/TargetOptions.h"
 #include "llvm/CodeGen/TargetInstrInfo.h"
+#include "llvm/CodeGen/ValueTypes.h"
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/Function.h"
+#include "llvm/IR/Type.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/ADT/BitVector.h"
-#include "llvm/ADT/STLExtras.h"
+#include "llvm/Target/TargetMachine.h"
+#include "llvm/Target/TargetOptions.h"
 #include <cstdlib>
 
 #define GET_REGINFO_TARGET_DESC
@@ -45,10 +46,9 @@ AlphaRegisterInfo::AlphaRegisterInfo(const TargetInstrInfo &tii)
 }
 
 static long getUpper16(long l) {
-  long y = l / Alpha::IMM_MULT;
-  if (l % Alpha::IMM_MULT > Alpha::IMM_HIGH)
-    ++y;
-  return y;
+  // ldah adds hi << 16 and the following lda adds a sign-extended lo, so round
+  // to the nearest multiple of 65536 (arithmetic shift for negative values).
+  return (l + 0x8000) >> 16;
 }
 
 static long getLower16(long l) {
@@ -58,6 +58,8 @@ static long getLower16(long l) {
 
 const MCPhysReg *AlphaRegisterInfo::getCalleeSavedRegs(
     const MachineFunction *MF) const {
+  if (MF && MF->getSubtarget().getTargetTriple().isOSWindows())
+    return CSR_Alpha_NT_SaveList;
   return CSR_Alpha_SaveList;
 }
 
@@ -73,6 +75,7 @@ const uint32_t *AlphaRegisterInfo::getNoPreservedMask() const {
 BitVector AlphaRegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   BitVector Reserved(getNumRegs());
   Reserved.set(Alpha::R15);
+  Reserved.set(Alpha::R28); // AT: frame index elimination scratch
   Reserved.set(Alpha::R29);
   Reserved.set(Alpha::R30);
   Reserved.set(Alpha::R31);
@@ -148,7 +151,19 @@ AlphaRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
 
   int FrameIndex = MI.getOperand(i).getIndex();
 
-  // Add the base register of R30 (SP) or R15 (FP).
+  // LOCAL_ESCAPE names a constant that llvm.localrecover adds to
+  // llvm.localaddress, which Windows lowers to the incoming $30.
+  if (MI.getOpcode() == TargetOpcode::LOCAL_ESCAPE) {
+    MI.getOperand(i).ChangeToImmediate(
+        MF.getFrameInfo().getObjectOffset(FrameIndex));
+    return false;
+  }
+
+  // Add the base register of R30 (SP) or R15 (FP). Windows addresses
+  // callee-saved slots from $30; see AlphaFrameLowering::isCalleeSaveSlot.
+  if (FP && MF.getSubtarget().getTargetTriple().isOSWindows() &&
+      AlphaFrameLowering::isCalleeSaveSlot(MF, FrameIndex))
+    FP = false;
   MI.getOperand(i + 1).ChangeToRegister(FP ? Alpha::R15 : Alpha::R30, false);
 
   // Now add the frame object offset to the offset from the virtual frame index.
@@ -156,7 +171,14 @@ AlphaRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
 
   LLVM_DEBUG(errs() << "FI: " << FrameIndex << " Offset: " << Offset << "\n");
 
-  Offset += MF.getFrameInfo().getStackSize();
+  // A callee save in a two-step Windows prologue runs before the second
+  // allocation step (see AlphaFrameLowering::emitPrologue).
+  long SaveArea = MF.getInfo<AlphaMachineFunctionInfo>()->getWinSaveAreaSize();
+  if (SaveArea && MI.getFlag(MachineInstr::FrameSetup) &&
+      AlphaFrameLowering::isCalleeSaveSlot(MF, FrameIndex))
+    Offset += SaveArea;
+  else
+    Offset += MF.getFrameInfo().getStackSize();
 
   LLVM_DEBUG(errs() << "Corrected Offset " << Offset
        << " for stack size: " << MF.getFrameInfo().getStackSize() << "\n");

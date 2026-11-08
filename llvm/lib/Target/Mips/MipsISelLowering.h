@@ -146,6 +146,10 @@ using TargetRegisterClass = MCRegisterClass;
     Register
     getExceptionPointerRegister(ExceptionHandling EH,
                                 const Constant *PersonalityFn) const override {
+      // NT RtlUnwind enters an SEH __except block with the exception code in
+      // $v0.
+      if (EH == ExceptionHandling::WinEH)
+        return ABI.IsN64() ? Mips::R2_64 : Mips::R2;
       return ABI.getArgRegPtr(0);
     }
 

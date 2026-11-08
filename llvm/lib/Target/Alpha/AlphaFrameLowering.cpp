@@ -13,21 +13,24 @@
 
 #include "AlphaFrameLowering.h"
 #include "AlphaInstrInfo.h"
-#include "AlphaSubtarget.h"
 #include "AlphaMachineFunctionInfo.h"
-#include "llvm/IR/Function.h"
+#include "AlphaSubtarget.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
-#include "llvm/ADT/Twine.h"
+#include "llvm/CodeGen/TargetInstrInfo.h"
+#include "llvm/CodeGen/WinEHFuncInfo.h"
+#include "llvm/IR/EHPersonalities.h"
+#include "llvm/IR/Function.h"
+#include "llvm/Support/MathExtras.h"
 
 using namespace llvm;
 
 static long getUpper16(long l) {
-  long y = l / Alpha::IMM_MULT;
-  if (l % Alpha::IMM_MULT > Alpha::IMM_HIGH)
-    ++y;
-  return y;
+  // ldah adds hi << 16 and the following lda adds a sign-extended lo, so round
+  // to the nearest multiple of 65536 (arithmetic shift for negative values).
+  return (l + 0x8000) >> 16;
 }
 
 static long getLower16(long l) {
@@ -41,7 +44,21 @@ static long getLower16(long l) {
 //
 bool AlphaFrameLowering::hasFPImpl(const MachineFunction &MF) const {
   const MachineFrameInfo &MFI = MF.getFrameInfo();
-  return MFI.hasVarSizedObjects();
+  // A Windows EH funclet addresses its parent's frame through $15.
+  return MFI.hasVarSizedObjects() ||
+         (MF.hasEHFunclets() &&
+          MF.getSubtarget().getTargetTriple().isOSWindows());
+}
+
+/// The NT unwinder recovers saved registers only from `stq/stt r, n($30)`.
+/// Callee-saved slots are therefore always addressed from $30: in the
+/// prologue, in a funclet (whose $15 addresses its parent's frame), and in
+/// an epilogue, which first moves $15 back into $30.
+bool AlphaFrameLowering::isCalleeSaveSlot(const MachineFunction &MF, int FI) {
+  for (const CalleeSavedInfo &I : MF.getFrameInfo().getCalleeSavedInfo())
+    if (!I.isSpilledToReg() && I.getFrameIdx() == FI)
+      return true;
+  return false;
 }
 
 MachineBasicBlock::iterator AlphaFrameLowering::eliminateCallFramePseudoInstr(
@@ -92,10 +109,20 @@ void AlphaFrameLowering::emitPrologue(MachineFunction &MF,
         .setMIFlag(MachineInstr::FrameSetup);
   }
 
+  // SEH filters receive the parent's establisher frame, its incoming $30,
+  // which is already llvm.localaddress (see lowerWinEHIntrinsic).
+  if (STI.getTargetTriple().isOSWindows() && !MBB.isEHFuncletEntry() &&
+      MF.hasEHFunclets() &&
+      classifyEHPersonality(MF.getFunction().getPersonalityFn()) ==
+          EHPersonality::MSVC_TableSEH)
+    MF.getWinEHFuncInfo()->SEHSetFrameOffset = 0;
+
   // Get the number of bytes to allocate from the FrameInfo
   long NumBytes = MFI.getStackSize();
 
-  if (FP)
+  // The parent's prologue finalizes the frame size, below. A funclet's
+  // prologue, emitted afterwards, allocates a frame of that same size.
+  if (FP && !MBB.isEHFuncletEntry())
     NumBytes += 8; //reserve space for the old FP
 
   // Leaf functions still need a prologue-end label in their Windows runtime
@@ -114,24 +141,51 @@ void AlphaFrameLowering::emitPrologue(MachineFunction &MF,
   MFI.setStackSize(NumBytes);
 
   // adjust stack pointer: r30 -= numbytes
-  NumBytes = -NumBytes;
-  if (NumBytes >= Alpha::IMM_LOW) {
-    BuildMI(MBB, MBBI, dl, TII.get(Alpha::LDA), Alpha::R30)
-        .addImm(NumBytes)
-        .addReg(Alpha::R30)
-        .setMIFlag(MachineInstr::FrameSetup);
-  } else if (getUpper16(NumBytes) >= Alpha::IMM_LOW) {
-    BuildMI(MBB, MBBI, dl, TII.get(Alpha::LDAH), Alpha::R30)
-        .addImm(getUpper16(NumBytes))
-        .addReg(Alpha::R30)
-        .setMIFlag(MachineInstr::FrameSetup);
-    BuildMI(MBB, MBBI, dl, TII.get(Alpha::LDA), Alpha::R30)
-        .addImm(getLower16(NumBytes))
-        .addReg(Alpha::R30)
-        .setMIFlag(MachineInstr::FrameSetup);
-  } else {
-    report_fatal_error("Too big a stack frame at " + Twine(NumBytes));
+  auto EmitAllocation = [&](long Bytes) {
+    long Neg = -Bytes;
+    if (Neg >= Alpha::IMM_LOW) {
+      BuildMI(MBB, MBBI, dl, TII.get(Alpha::LDA), Alpha::R30)
+          .addImm(Neg)
+          .addReg(Alpha::R30)
+          .setMIFlag(MachineInstr::FrameSetup);
+    } else if (getUpper16(Neg) >= Alpha::IMM_LOW) {
+      BuildMI(MBB, MBBI, dl, TII.get(Alpha::LDAH), Alpha::R30)
+          .addImm(getUpper16(Neg))
+          .addReg(Alpha::R30)
+          .setMIFlag(MachineInstr::FrameSetup);
+      BuildMI(MBB, MBBI, dl, TII.get(Alpha::LDA), Alpha::R30)
+          .addImm(getLower16(Neg))
+          .addReg(Alpha::R30)
+          .setMIFlag(MachineInstr::FrameSetup);
+    } else {
+      report_fatal_error("Too big a stack frame at " + Twine(Bytes));
+    }
+  };
+
+  // The NT unwinder recovers a saved register only from `stq/stt r, n($30)`
+  // with a 16-bit n. When the callee-saved area, at the top of the frame, is
+  // out of reach of the final $30, allocate it first and save from there, then
+  // allocate the rest. NT reverse-executes each `lda/ldah $30` step.
+  AlphaMachineFunctionInfo *AFI = MF.getInfo<AlphaMachineFunctionInfo>();
+  long SaveArea = 0;
+  if (STI.getTargetTriple().isOSWindows() && NumBytes > Alpha::IMM_HIGH) {
+    for (const CalleeSavedInfo &CS : MFI.getCalleeSavedInfo())
+      if (!CS.isSpilledToReg())
+        SaveArea =
+            std::max<long>(SaveArea, -MFI.getObjectOffset(CS.getFrameIdx()));
+    SaveArea = alignTo(SaveArea, StackAlign);
   }
+  AFI->setWinSaveAreaSize(SaveArea);
+  if (SaveArea) {
+    EmitAllocation(SaveArea);
+    // Step over the callee saves, which PEI inserted before emitPrologue.
+    while (MBBI != MBB.end() && MBBI->getFlag(MachineInstr::FrameSetup))
+      ++MBBI;
+    EmitAllocation(NumBytes - SaveArea);
+  } else {
+    EmitAllocation(NumBytes);
+  }
+  NumBytes = -NumBytes;
 
   if (STI.getTargetTriple().isOSBinFormatELF() && MF.needsFrameMoves() &&
       NumBytes != 0) {
@@ -143,17 +197,20 @@ void AlphaFrameLowering::emitPrologue(MachineFunction &MF,
   }
 
   // Now if we need to, save the old FP and set the new
+  const bool IsNT = STI.getTargetTriple().isOSWindows();
   if (FP) {
     BuildMI(MBB, MBBI, dl, TII.get(Alpha::STQ))
         .addReg(Alpha::R15)
         .addImm(0)
         .addReg(Alpha::R30)
         .setMIFlag(MachineInstr::FrameSetup);
-    // This must be the last instr in the prolog
-    BuildMI(MBB, MBBI, dl, TII.get(Alpha::BISr), Alpha::R15)
-        .addReg(Alpha::R30)
-        .addReg(Alpha::R30)
-        .setMIFlag(MachineInstr::FrameSetup);
+    // This must be the last instr in the prolog. On Windows it follows the
+    // callee saves, which PEI inserted before emitPrologue, below.
+    if (!IsNT)
+      BuildMI(MBB, MBBI, dl, TII.get(Alpha::BISr), Alpha::R15)
+          .addReg(Alpha::R30)
+          .addReg(Alpha::R30)
+          .setMIFlag(MachineInstr::FrameSetup);
 
     if (STI.getTargetTriple().isOSBinFormatELF() && MF.needsFrameMoves()) {
       const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
@@ -212,6 +269,37 @@ void AlphaFrameLowering::emitPrologue(MachineFunction &MF,
       ++PrologEnd;
     }
 
+    // NT reverse-executes `bis $30, $30, $15` to recover $30 when the body
+    // has moved it (alloca), so the copy must follow every prologue store.
+    // A funclet instead points $15 at its parent's frame: the runtime passes
+    // the parent's establisher frame (its incoming $30) in $1.
+    if (FP && IsNT) {
+      if (MBB.isEHFuncletEntry()) {
+        MBB.addLiveIn(Alpha::R1);
+        int64_t ParentSize = MFI.getStackSize();
+        if (-ParentSize >= Alpha::IMM_LOW) {
+          BuildMI(MBB, PrologEnd, dl, TII.get(Alpha::LDA), Alpha::R15)
+              .addImm(-ParentSize)
+              .addReg(Alpha::R1)
+              .setMIFlag(MachineInstr::FrameSetup);
+        } else {
+          BuildMI(MBB, PrologEnd, dl, TII.get(Alpha::LDAH), Alpha::R15)
+              .addImm(getUpper16(-ParentSize))
+              .addReg(Alpha::R1)
+              .setMIFlag(MachineInstr::FrameSetup);
+          BuildMI(MBB, PrologEnd, dl, TII.get(Alpha::LDA), Alpha::R15)
+              .addImm(getLower16(-ParentSize))
+              .addReg(Alpha::R15)
+              .setMIFlag(MachineInstr::FrameSetup);
+        }
+      } else {
+        BuildMI(MBB, PrologEnd, dl, TII.get(Alpha::BISr), Alpha::R15)
+            .addReg(Alpha::R30)
+            .addReg(Alpha::R30)
+            .setMIFlag(MachineInstr::FrameSetup);
+      }
+    }
+
     BuildMI(MBB, PrologEnd, dl, TII.get(Alpha::SEH_PrologEnd))
         .setMIFlag(MachineInstr::FrameSetup);
   }
@@ -232,17 +320,40 @@ void AlphaFrameLowering::emitEpilogue(MachineFunction &MF,
   const TargetInstrInfo &TII = *MF.getSubtarget().getInstrInfo();
 
   assert((MBBI->getOpcode() == Alpha::RETDAG ||
-          MBBI->getOpcode() == Alpha::RETDAGp)
-         && "Can only insert epilog into returning blocks");
+          MBBI->getOpcode() == Alpha::RETDAGp ||
+          MBBI->getOpcode() == Alpha::CATCHRET ||
+          MBBI->getOpcode() == Alpha::CLEANUPRET) &&
+         "Can only insert epilog into returning blocks");
   DebugLoc dl = MBBI->getDebugLoc();
 
   bool FP = hasFP(MF);
+  const bool IsFuncletReturn = MBBI->getOpcode() == Alpha::CATCHRET ||
+                               MBBI->getOpcode() == Alpha::CLEANUPRET;
 
   // Get the number of bytes allocated from the FrameInfo...
   long NumBytes = MFI.getStackSize();
 
-  //now if we need to, restore the old FP
-  if (FP) {
+  if (FP && MF.getSubtarget().getTargetTriple().isOSWindows()) {
+    // The callee-saved reloads, inserted before emitEpilogue, address their
+    // slots from $30. Restore $30 from $15 ahead of them (not in a funclet,
+    // whose $15 is its parent's frame). Then reload $15 last, so that NT,
+    // which treats every PC before the final deallocation as body code, can
+    // still reverse-execute the prologue's `bis $30, $30, $15`.
+    if (!IsFuncletReturn) {
+      MachineBasicBlock::iterator I = MBBI;
+      for (size_t N = MFI.getCalleeSavedInfo().size(); N && I != MBB.begin();
+           --N)
+        --I;
+      BuildMI(MBB, I, dl, TII.get(Alpha::BISr), Alpha::R30)
+          .addReg(Alpha::R15)
+          .addReg(Alpha::R15);
+    }
+    if (NumBytes > Alpha::IMM_HIGH)
+      emitNTFrameSize(MBB, MBBI, dl, NumBytes);
+    BuildMI(MBB, MBBI, dl, TII.get(Alpha::LDQ), Alpha::R15)
+        .addImm(0)
+        .addReg(Alpha::R30);
+  } else if (FP) {
     //copy the FP into the SP (discards allocas)
     BuildMI(MBB, MBBI, dl, TII.get(Alpha::BISr), Alpha::R30).addReg(Alpha::R15)
       .addReg(Alpha::R15);
@@ -251,7 +362,16 @@ void AlphaFrameLowering::emitEpilogue(MachineFunction &MF,
       .addImm(0).addReg(Alpha::R15);
   }
 
-  if (NumBytes != 0) {
+  if (NumBytes > Alpha::IMM_HIGH &&
+      MF.getSubtarget().getTargetTriple().isOSWindows()) {
+    // NT recognizes an epilogue only at the ret, or at a single `lda $30` or
+    // `addq $30, Rx, $30` directly before it.
+    if (!FP)
+      emitNTFrameSize(MBB, MBBI, dl, NumBytes);
+    BuildMI(MBB, MBBI, dl, TII.get(Alpha::ADDQr), Alpha::R30)
+        .addReg(Alpha::R30)
+        .addReg(Alpha::R28);
+  } else if (NumBytes != 0) {
     if (NumBytes <= Alpha::IMM_HIGH) {
       BuildMI(MBB, MBBI, dl, TII.get(Alpha::LDA), Alpha::R30).addImm(NumBytes)
         .addReg(Alpha::R30);
@@ -264,6 +384,21 @@ void AlphaFrameLowering::emitEpilogue(MachineFunction &MF,
       report_fatal_error("Too big a stack frame at " + Twine(NumBytes));
     }
   }
+}
+
+void AlphaFrameLowering::emitNTFrameSize(MachineBasicBlock &MBB,
+                                         MachineBasicBlock::iterator MBBI,
+                                         const DebugLoc &DL,
+                                         long NumBytes) const {
+  const TargetInstrInfo &TII = *MBB.getParent()->getSubtarget().getInstrInfo();
+  if (getUpper16(NumBytes) > Alpha::IMM_HIGH)
+    report_fatal_error("Too big a stack frame at " + Twine(NumBytes));
+  BuildMI(MBB, MBBI, DL, TII.get(Alpha::LDAH), Alpha::R28)
+      .addImm(getUpper16(NumBytes))
+      .addReg(Alpha::R31);
+  BuildMI(MBB, MBBI, DL, TII.get(Alpha::LDA), Alpha::R28)
+      .addImm(getLower16(NumBytes))
+      .addReg(Alpha::R28);
 }
 
 bool AlphaFrameLowering::spillCalleeSavedRegisters(

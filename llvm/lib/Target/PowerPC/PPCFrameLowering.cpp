@@ -1988,6 +1988,29 @@ void PPCFrameLowering::emitEpilogue(MachineFunction &MF,
     BuildMI(MBB, StackUpdateLoc, dl, MTLRInst).addReg(ScratchReg);
   }
 
+  // The NT unwinder recognizes an epilogue only at the blr and reverse-executes
+  // the prologue at every earlier PC, which requires r1 to still address this
+  // frame. Sink the instruction that releases the frame past any trailing
+  // instructions that neither read nor write r1 (mtlr, mtcrf, ...), so that it
+  // immediately precedes the return.
+  if (Subtarget.isWin32ABI() && !isPPC64 && MBBI != MBB.end() &&
+      MBBI != MBB.begin()) {
+    const TargetRegisterInfo *TRI = Subtarget.getRegisterInfo();
+    MachineBasicBlock::iterator I = std::prev(MBBI);
+    while (I != MBB.begin() && !I->modifiesRegister(SPReg, TRI) &&
+           !I->readsRegister(SPReg, TRI) && !I->isCall() && !I->isDebugInstr())
+      --I;
+    if (I != std::prev(MBBI) && I->modifiesRegister(SPReg, TRI) &&
+        !I->mayStore()) {
+      bool Movable = true;
+      for (MachineBasicBlock::iterator J = std::next(I); J != MBBI; ++J)
+        if (J->readsRegister(SPReg, TRI) || J->modifiesRegister(SPReg, TRI))
+          Movable = false;
+      if (Movable)
+        MBB.splice(MBBI, &MBB, I);
+    }
+  }
+
   // Callee pop calling convention. Pop parameter/linkage area. Used for tail
   // call optimization
   if (IsReturnBlock) {

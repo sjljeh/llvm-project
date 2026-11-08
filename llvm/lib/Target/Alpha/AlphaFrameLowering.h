@@ -48,6 +48,13 @@ public:
       MachineFunction &MF, RegScavenger *RS = nullptr) const override;
 
   bool hasFPImpl(const MachineFunction &MF) const override;
+
+  static bool isCalleeSaveSlot(const MachineFunction &MF, int FI);
+
+private:
+  /// Materialize a large frame size in $28 for an NT `addq $30, $28, $30`.
+  void emitNTFrameSize(MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI,
+                       const DebugLoc &DL, long NumBytes) const;
 };
 
 } // End llvm namespace

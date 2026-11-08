@@ -148,6 +148,13 @@ void MipsFunctionInfo::initGlobalBaseReg(MachineFunction &MF) {
       .addReg(T9);
 }
 
+int MipsFunctionInfo::getWinEHLocalAddressFI(MachineFunction &MF) {
+  if (WinEHLocalAddressFI == INT_MAX)
+    WinEHLocalAddressFI =
+        MF.getFrameInfo().CreateFixedObject(4, 0, /*IsImmutable=*/true);
+  return WinEHLocalAddressFI;
+}
+
 void MipsFunctionInfo::createEhDataRegsFI(MachineFunction &MF) {
   const TargetRegisterInfo &TRI = *MF.getSubtarget().getRegisterInfo();
   for (int &I : EhDataRegFI) {

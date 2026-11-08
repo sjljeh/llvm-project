@@ -1698,10 +1698,12 @@ public:
   /// Whether the target supports SEH __try.
   bool isSEHTrySupported() const {
     return getTriple().isOSWindows() &&
-           (getTriple().isX86() ||
-            getTriple().isPPC32() ||
+           (getTriple().isX86() || getTriple().isPPC32() ||
             getTriple().getArch() == llvm::Triple::aarch64 ||
-            getTriple().isThumb() || getTriple().isRISCV64());
+            getTriple().isThumb() || getTriple().isRISCV64() ||
+            (getTriple().isWindowsMSVCEnvironment() &&
+             (getTriple().isAlpha() ||
+              getTriple().getArch() == llvm::Triple::mipsel)));
   }
 
   /// Return true if {|} are normal characters in the asm string.

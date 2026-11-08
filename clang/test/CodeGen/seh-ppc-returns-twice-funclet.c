@@ -26,7 +26,8 @@ int seh_with_setjmp(void *buffer) {
 // ASM: addi 31, 2, -[[SIZE]]
 // ASM: bl "..?fin$
 // ASM-NOT: mr 1, 31
+// NT recognizes the epilogue only at the blr, so the frame is released last.
 // ASM: lwz 31, {{[0-9]+}}(1)
-// ASM-NEXT: addi 1, 1, [[SIZE]]
 // ASM-NEXT: mtlr 0
+// ASM-NEXT: addi 1, 1, [[SIZE]]
 // ASM-NEXT: blr

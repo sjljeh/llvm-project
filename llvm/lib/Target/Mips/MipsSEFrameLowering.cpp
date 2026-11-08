@@ -35,6 +35,7 @@
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/CodeGen/WinEHFuncInfo.h"
 #include "llvm/IR/DebugLoc.h"
+#include "llvm/IR/EHPersonalities.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/Support/CodeGen.h"
@@ -476,6 +477,16 @@ void MipsSEFrameLowering::emitPrologue(MachineFunction &MF,
           .setMIFlag(MachineInstr::FrameSetup);
   };
 
+  // SEH filters reach the parent's llvm.localaddress (its incoming $sp) by
+  // adding this offset to the establisher frame (see eh_recoverfp lowering).
+  const bool IsSEHParent =
+      STI.getTargetTriple().isOSWindows() && !MBB.isEHFuncletEntry() &&
+      MF.hasEHFunclets() &&
+      classifyEHPersonality(MF.getFunction().getPersonalityFn()) ==
+          EHPersonality::MSVC_TableSEH;
+  if (IsSEHParent)
+    MF.getWinEHFuncInfo()->SEHSetFrameOffset = 0;
+
   // No need to allocate space on the stack.
   if (StackSize == 0 && !MFI.adjustsStack()) {
     EmitPrologEnd();
@@ -484,8 +495,57 @@ void MipsSEFrameLowering::emitPrologue(MachineFunction &MF,
 
   CFIInstBuilder CFIBuilder(MBB, MBBI, MachineInstr::NoFlags);
 
+  // The NT unwinder reverse-executes the prologue. It recognizes a register
+  // save only as `sw rt, imm16($sp)` and a large allocation only as
+  // `ori t, $zero, n` or `lui t, hi; ori t, t, lo` followed by
+  // `subu $sp, $sp, t`. A frame too large for one addiu is therefore allocated
+  // in two steps, with the callee-saved area first so that its stores reach
+  // every slot from the intermediate $sp.
+  const bool IsNT = STI.getTargetTriple().isOSWindows() && !ABI.IsN64();
+  uint64_t WinSaveArea = 0;
+  if (IsNT && !isInt<16>(StackSize)) {
+    for (const CalleeSavedInfo &I : MFI.getCalleeSavedInfo())
+      WinSaveArea = std::max<uint64_t>(WinSaveArea,
+                                       -MFI.getObjectOffset(I.getFrameIdx()));
+    if (MF.hasEHFunclets())
+      WinSaveArea = std::max<uint64_t>(WinSaveArea, 4);
+    WinSaveArea = alignTo(WinSaveArea, getStackAlign());
+  }
+  MipsFI->setWinPrologueSaveAreaSize(WinSaveArea);
+  if (IsSEHParent)
+    MF.getWinEHFuncInfo()->SEHSetFrameOffset = static_cast<int>(WinSaveArea);
+
+  auto EmitNTStackDecrement = [&](uint64_t Amount) {
+    assert(Amount <= UINT32_MAX && "Windows MIPS frame too large");
+    Register Tmp = MF.getRegInfo().createVirtualRegister(&Mips::GPR32RegClass);
+    if (Amount <= 0xffff) {
+      BuildMI(MBB, MBBI, dl, TII.get(Mips::ORi), Tmp)
+          .addReg(ZERO)
+          .addImm(Amount)
+          .setMIFlag(MachineInstr::FrameSetup);
+    } else {
+      // NT reads the low half only from the ori, so emit it even when zero.
+      BuildMI(MBB, MBBI, dl, TII.get(Mips::LUi), Tmp)
+          .addImm(Amount >> 16)
+          .setMIFlag(MachineInstr::FrameSetup);
+      BuildMI(MBB, MBBI, dl, TII.get(Mips::ORi), Tmp)
+          .addReg(Tmp, RegState::Kill)
+          .addImm(Amount & 0xffff)
+          .setMIFlag(MachineInstr::FrameSetup);
+    }
+    BuildMI(MBB, MBBI, dl, TII.get(Mips::SUBu), SP)
+        .addReg(SP)
+        .addReg(Tmp, RegState::Kill)
+        .setMIFlag(MachineInstr::FrameSetup);
+  };
+
   // Adjust stack.
-  TII.adjustStackPtr(SP, -StackSize, MBB, MBBI);
+  if (WinSaveArea)
+    TII.adjustStackPtr(SP, -(int64_t)WinSaveArea, MBB, MBBI);
+  else if (IsNT && !isInt<16>(StackSize))
+    EmitNTStackDecrement(StackSize);
+  else
+    TII.adjustStackPtr(SP, -StackSize, MBB, MBBI);
   CFIBuilder.buildDefCFAOffset(StackSize);
 
   if (MF.getFunction().hasFnAttribute("interrupt"))
@@ -554,9 +614,12 @@ void MipsSEFrameLowering::emitPrologue(MachineFunction &MF,
     BuildMI(MBB, MBBI, dl, TII.get(Mips::SW))
         .addReg(Mips::R2)
         .addReg(SP)
-        .addImm(StackSize - 4)
+        .addImm((WinSaveArea ? WinSaveArea : StackSize) - 4)
         .setMIFlag(MachineInstr::FrameSetup);
   }
+
+  if (WinSaveArea)
+    EmitNTStackDecrement(StackSize - WinSaveArea);
 
   // If framepointer enabled, set it to the local frame for a parent function
   // or to the outermost parent frame passed in $v0 for a funclet.
@@ -739,8 +802,14 @@ void MipsSEFrameLowering::emitEpilogue(MachineFunction &MF,
   unsigned ZERO = ABI.GetNullPtr();
   unsigned MOVE = ABI.GetGPRMoveOp();
 
+  // A funclet's $fp addresses its parent's frame, so a funclet return block
+  // (which need not be the funclet's entry block) must not take $sp from it.
+  const bool IsFuncletReturn =
+      MBBI != MBB.end() && (MBBI->getOpcode() == Mips::CATCHRET ||
+                            MBBI->getOpcode() == Mips::CLEANUPRET);
+
   // if framepointer enabled, restore the stack pointer.
-  if (hasFP(MF) && !MBB.isEHFuncletEntry()) {
+  if (hasFP(MF) && !MBB.isEHFuncletEntry() && !IsFuncletReturn) {
     // Find the first instruction that restores a callee-saved register.
     MachineBasicBlock::iterator I = MBBI;
 
@@ -774,6 +843,39 @@ void MipsSEFrameLowering::emitEpilogue(MachineFunction &MF,
   uint64_t StackSize = MFI.getStackSize();
 
   if (!StackSize)
+    return;
+
+  // The NT unwinder reverse-executes `move $fp, $sp` at every epilogue PC
+  // before `jr $ra`, so the reload of $fp, restored last, must immediately
+  // precede the return, whose delay slot releases the frame. When the frame
+  // is too large for 16-bit offsets, form the frame size and the incoming $sp
+  // first so that nothing else follows the reload.
+  if (STI.getTargetTriple().isOSWindows() && !ABI.IsN64() && hasFP(MF) &&
+      !IsFuncletReturn && !isInt<16>(StackSize) && MBBI != MBB.begin()) {
+    MachineBasicBlock::iterator FPLoad = std::prev(MBBI);
+    if (FPLoad->getOpcode() == Mips::LW && FPLoad->getOperand(0).isReg() &&
+        FPLoad->getOperand(0).getReg() == FP && FPLoad->getOperand(1).isFI()) {
+      int64_t FPSlot = MFI.getObjectOffset(FPLoad->getOperand(1).getIndex()) +
+                       FPLoad->getOperand(2).getImm();
+      FPLoad->eraseFromParent();
+      unsigned Size = TII.loadImmediate(StackSize, MBB, MBBI, DL, nullptr);
+      Register CFA =
+          MF.getRegInfo().createVirtualRegister(&Mips::GPR32RegClass);
+      BuildMI(MBB, MBBI, DL, TII.get(Mips::ADDu), CFA).addReg(SP).addReg(Size);
+      BuildMI(MBB, MBBI, DL, TII.get(Mips::LW), FP)
+          .addReg(CFA, RegState::Kill)
+          .addImm(FPSlot);
+      BuildMI(MBB, MBBI, DL, TII.get(Mips::ADDu), SP)
+          .addReg(SP)
+          .addReg(Size, RegState::Kill);
+      return;
+    }
+  }
+
+  // A funclet's frame is released in the delay slot of the `jr $ra` that
+  // MipsAsmPrinter emits for CATCHRET and CLEANUPRET, after a catch funclet
+  // has formed its continuation address.
+  if (IsFuncletReturn && STI.getTargetTriple().isOSWindows())
     return;
 
   // Adjust stack.
@@ -860,13 +962,49 @@ bool MipsSEFrameLowering::spillCalleeSavedRegisters(
           .setMIFlag(MachineInstr::FrameSetup);
     }
 
-    // Insert the spill to the stack frame.
+    // Insert the spill to the stack frame. On Windows, mark it as part of the
+    // prologue: frame index elimination addresses it from the intermediate
+    // $sp of a two-step allocation (see emitPrologue).
     bool IsKill = !IsRAAndRetAddrIsTaken;
     const TargetRegisterClass *RC = TRI->getMinimalPhysRegClass(Reg);
     TII.storeRegToStackSlot(MBB, MI, Reg, IsKill, I.getFrameIdx(), RC,
                             Register());
+    if (STI.getTargetTriple().isOSWindows())
+      std::prev(MI)->setFlag(MachineInstr::FrameSetup);
   }
 
+  return true;
+}
+
+bool MipsSEFrameLowering::restoreCalleeSavedRegisters(
+    MachineBasicBlock &MBB, MachineBasicBlock::iterator MI,
+    MutableArrayRef<CalleeSavedInfo> CSI, const TargetRegisterInfo *TRI) const {
+  if (!STI.getTargetTriple().isOSWindows() ||
+      llvm::any_of(CSI,
+                   [](const CalleeSavedInfo &I) { return I.isSpilledToReg(); }))
+    return false;
+
+  // The NT unwinder treats every PC before the final `jr $ra` as body code
+  // and reverse-executes `move $fp, $sp`, which takes $sp from $fp. Reload
+  // $fp last so that it still holds this frame's value at every such PC.
+  const MachineFunction &MF = *MBB.getParent();
+  const TargetInstrInfo &TII = *STI.getInstrInfo();
+  const MCRegister FP = STI.getABI().GetFramePtr();
+  const CalleeSavedInfo *FPSave = nullptr;
+  auto Restore = [&](const CalleeSavedInfo &I) {
+    MCRegister Reg = I.getReg();
+    TII.loadRegFromStackSlot(MBB, MI, Reg, I.getFrameIdx(),
+                             TRI->getMinimalPhysRegClass(Reg), Register());
+  };
+  for (const CalleeSavedInfo &I : reverse(CSI)) {
+    if (hasFP(MF) && I.getReg() == FP) {
+      FPSave = &I;
+      continue;
+    }
+    Restore(I);
+  }
+  if (FPSave)
+    Restore(*FPSave);
   return true;
 }
 

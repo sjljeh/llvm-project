@@ -43,6 +43,7 @@ public:
   const uint32_t *getCallPreservedMask(const MachineFunction &MF,
                                        CallingConv::ID) const override;
   static const uint32_t *getMips16RetHelperMask();
+  const uint32_t *getNoPreservedMask() const override;
 
   BitVector getReservedRegs(const MachineFunction &MF) const override;
 

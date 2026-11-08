@@ -48,3 +48,9 @@ def CSR_Alpha : CalleeSavedRegs<
     (add R9, R10, R11, R12, R13, R14,
          F2, F3, F4, F5, F6, F7, F8, F9)>;
 def CSR_Alpha_NoRegs : CalleeSavedRegs<(add)>;
+
+// Windows NT reverse-executes the prologue to unwind, and recovers the return
+// address only from a `stq ra, n(sp)` (or a register copy) there. Save $26
+// like a callee-saved register so that it is stored in the prologue whenever
+// the function makes a call. Calls still clobber it (CSR_Alpha_RegMask).
+def CSR_Alpha_NT : CalleeSavedRegs<(add R26, CSR_Alpha)>;
