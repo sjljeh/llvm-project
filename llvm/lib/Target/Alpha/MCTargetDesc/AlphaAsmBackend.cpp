@@ -112,6 +112,11 @@ public:
       return;
     }
     case Alpha::fixup_Alpha_REFHI: {
+      // A value resolved here is consumed by `ldah hi; lda lo`, and lda
+      // sign-extends lo, so round hi to compensate. A relocated value keeps
+      // its raw high half for the linker, which pairs it with the low half.
+      if (IsResolved)
+        Value += 0x8000;
       uint32_t Inst = support::endian::read32le(Data);
       support::endian::write32le(
           Data, (Inst & 0xffff0000) |

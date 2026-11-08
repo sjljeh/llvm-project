@@ -741,6 +741,30 @@ bool MipsDelaySlotFiller::runOnMachineBasicBlock(
       SkipForFixR5900 = true;
     }
 
+    // The NT unwinder recognizes an epilogue only at `jr $ra` and only an $sp
+    // release in its delay slot. Any earlier PC is unwound as body code by
+    // reverse-executing the prologue, which is wrong once $sp has moved or a
+    // frame pointer has been reloaded. Keep the final $sp adjustment in the
+    // return's delay slot at every optimization level.
+    if (STI.getTargetTriple().isOSWindows() && I->isReturn() &&
+        I != MBB.begin()) {
+      MachineBasicBlock::instr_iterator Prev = std::prev(I.getInstrIterator());
+      unsigned SP = STI.getABI().GetStackPtr();
+      bool IsSPRelease =
+          !Prev->isBundled() && Prev->getNumOperands() >= 3 &&
+          Prev->getOperand(0).isReg() && Prev->getOperand(0).getReg() == SP &&
+          Prev->getOperand(1).isReg() && Prev->getOperand(1).getReg() == SP &&
+          (Prev->getOpcode() == STI.getABI().GetPtrAddiuOp() ||
+           Prev->getOpcode() == STI.getABI().GetPtrAdduOp());
+      if (IsSPRelease) {
+        MBB.splice(std::next(I), &MBB, Prev);
+        MIBundleBuilder(MBB, I, std::next(I, 2));
+        ++FilledSlots;
+        Changed = true;
+        continue;
+      }
+    }
+
     // Delay slot filling is disabled at -O0, in microMIPS32R6, or for R5900
     // short loop branches.
     if (!CLOpts->disable_mips_delay_filler &&

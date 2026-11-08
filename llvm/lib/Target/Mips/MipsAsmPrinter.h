@@ -137,6 +137,7 @@ public:
   }
 
   void emitInstruction(const MachineInstr *MI) override;
+  void emitFuncletReturn();
   void printSavedRegsBitmask();
   void emitFrameDirective();
   void emitFunctionEntryLabel() override;

@@ -102,13 +102,15 @@ public:
 
   void addMachineLateOptimization() override {
     addPass(&MachineLateInstrsCleanupID);
-    addPass(createAlphaBranchSelectionPass());
     if (!getAlphaTargetMachine().requiresStructuredCFG())
       addPass(&TailDuplicateLegacyID);
     addPass(&MachineCopyPropagationID);
   }
 
   void addPreEmitPass() override {
+    // Lower the COND_BRANCH pseudos at every optimization level; late
+    // optimization does not run at -O0.
+    addPass(createAlphaBranchSelectionPass());
     addPass(createAlphaLLRPPass());
   }
 };

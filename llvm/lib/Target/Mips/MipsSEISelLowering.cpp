@@ -232,6 +232,9 @@ MipsSETargetLowering::MipsSETargetLowering(const MipsTargetMachine &TM,
 
   setOperationAction(ISD::INTRINSIC_WO_CHAIN, MVT::i64, Custom);
   setOperationAction(ISD::INTRINSIC_W_CHAIN,  MVT::i64, Custom);
+  // llvm.localaddress and llvm.eh.recoverfp for Windows SEH.
+  if (Subtarget.getTargetTriple().isOSWindows())
+    setOperationAction(ISD::INTRINSIC_WO_CHAIN, MVT::i32, Custom);
 
   setOperationAction(ISD::SDIVREM, MVT::i32, Custom);
   setOperationAction(ISD::UDIVREM, MVT::i32, Custom);
@@ -1734,6 +1737,33 @@ SDValue MipsSETargetLowering::lowerINTRINSIC_WO_CHAIN(SDValue Op,
   switch (Intrinsic) {
   default:
     return SDValue();
+  case Intrinsic::localaddress: {
+    // Outlined SEH code addresses the parent's escaped locals from its
+    // incoming $sp. Frame index elimination resolves that from $sp or $fp in
+    // the parent and from the NT establisher frame in a funclet.
+    MachineFunction &MF = DAG.getMachineFunction();
+    int FI = MF.getInfo<MipsFunctionInfo>()->getWinEHLocalAddressFI(MF);
+    return DAG.getFrameIndex(FI, Op.getValueType());
+  }
+  case Intrinsic::eh_recoverfp: {
+    // The NT dispatcher passes a filter the parent's establisher frame. It is
+    // the parent's incoming $sp, less the first step of a two-step frame
+    // allocation, which the parent publishes as $parent_frame_offset.
+    SDValue IncomingFP = Op.getOperand(2);
+    auto *GSD = dyn_cast<GlobalAddressSDNode>(Op.getOperand(1));
+    auto *Fn = dyn_cast_or_null<Function>(GSD ? GSD->getGlobal() : nullptr);
+    if (!Fn || !Fn->hasPersonalityFn())
+      return IncomingFP;
+    MCSymbol *OffsetSym =
+        DAG.getMachineFunction()
+            .getContext()
+            .getOrCreateParentFrameOffsetSymbol(
+                GlobalValue::dropLLVMManglingEscape(Fn->getName()));
+    EVT VT = Op.getValueType();
+    SDValue Offset =
+        DAG.getNode(ISD::LOCAL_RECOVER, DL, VT, DAG.getMCSymbol(OffsetSym, VT));
+    return DAG.getNode(ISD::ADD, DL, VT, IncomingFP, Offset);
+  }
   case Intrinsic::mips_shilo:
     return lowerDSPIntr(Op, DAG, MipsISD::SHILO);
   case Intrinsic::mips_dpau_h_qbl:

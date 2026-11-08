@@ -395,6 +395,9 @@ def CSR_Mips16RetHelper :
                    (sequence "R%u", 7, 4), (sequence "R%u", 23, 16),
                    (sequence "D%u", 15, 10))>;
 
+// Nothing is preserved, e.g. across the dispatcher's entry into an SEH pad.
+def CSR_Mips_NoRegs : CalleeSavedRegs<(add)>;
+
 def CSR_Interrupt_32R6 : CalleeSavedRegs<(add (sequence "R%u", 7, 4),
                                               (sequence "R%u", 23, 16),
                                               (sequence "R%u", 3, 2),

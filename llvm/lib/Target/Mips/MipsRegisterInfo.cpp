@@ -160,6 +160,10 @@ const uint32_t *MipsRegisterInfo::getMips16RetHelperMask() {
   return CSR_Mips16RetHelper_RegMask;
 }
 
+const uint32_t *MipsRegisterInfo::getNoPreservedMask() const {
+  return CSR_Mips_NoRegs_RegMask;
+}
+
 BitVector MipsRegisterInfo::
 getReservedRegs(const MachineFunction &MF) const {
   static const MCPhysReg ReservedGPR32[] = {Mips::R0, Mips::R26, Mips::R27,
@@ -276,6 +280,13 @@ eliminateFrameIndex(MachineBasicBlock::iterator II, int SPAdj,
   int FrameIndex = MI.getOperand(FIOperandNum).getIndex();
   uint64_t stackSize = MF.getFrameInfo().getStackSize();
   int64_t spOffset = MF.getFrameInfo().getObjectOffset(FrameIndex);
+
+  // LOCAL_ESCAPE names a constant that llvm.localrecover adds to
+  // llvm.localaddress, which Windows lowers to the frame's incoming $sp.
+  if (MI.getOpcode() == TargetOpcode::LOCAL_ESCAPE) {
+    MI.getOperand(FIOperandNum).ChangeToImmediate(spOffset);
+    return false;
+  }
 
   LLVM_DEBUG(errs() << "FrameIndex : " << FrameIndex << "\n"
                     << "spOffset   : " << spOffset << "\n"

@@ -34,6 +34,12 @@ public:
                                  ArrayRef<CalleeSavedInfo> CSI,
                                  const TargetRegisterInfo *TRI) const override;
 
+  bool
+  restoreCalleeSavedRegisters(MachineBasicBlock &MBB,
+                              MachineBasicBlock::iterator MI,
+                              MutableArrayRef<CalleeSavedInfo> CSI,
+                              const TargetRegisterInfo *TRI) const override;
+
   bool hasReservedCallFrame(const MachineFunction &MF) const override;
 
   void determineCalleeSaves(MachineFunction &MF, BitVector &SavedRegs,

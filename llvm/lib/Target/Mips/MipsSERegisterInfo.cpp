@@ -203,8 +203,18 @@ void MipsSERegisterInfo::eliminateFI(MachineBasicBlock::iterator II,
   int64_t Offset;
 
   Offset = SPOffset;
-  if (!IsWinEHFunclet || FrameReg != ABI.GetFramePtr())
+  if (uint64_t SaveArea = MipsFI->getWinPrologueSaveAreaSize();
+      SaveArea && MI.getFlag(MachineInstr::FrameSetup) &&
+      FrameIndex >= MinCSFI && FrameIndex <= MaxCSFI)
+    // A callee-saved register spill in a two-step Windows prologue runs
+    // before the second allocation step (see emitPrologue).
+    Offset += (int64_t)SaveArea;
+  else if (!IsWinEHFunclet || FrameReg != ABI.GetFramePtr())
     Offset += (int64_t)StackSize;
+  else
+    // A funclet's $fp is the parent's NT establisher frame: the incoming $sp
+    // less any first allocation step (see MipsSEFrameLowering::emitPrologue).
+    Offset += (int64_t)MipsFI->getWinPrologueSaveAreaSize();
   Offset += MI.getOperand(OpNo + 1).getImm();
 
   LLVM_DEBUG(errs() << "Offset     : " << Offset << "\n"

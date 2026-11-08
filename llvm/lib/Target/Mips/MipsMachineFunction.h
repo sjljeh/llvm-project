@@ -16,6 +16,7 @@
 #include "Mips16HardFloatInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineMemOperand.h"
+#include <climits>
 #include <map>
 
 namespace llvm {
@@ -81,6 +82,18 @@ public:
   void setSaveS2() { SaveS2 = true; }
   bool hasSaveS2() const { return SaveS2; }
 
+  /// The NT unwinder recognizes only `sw rt, imm16($sp)` as a register save.
+  /// A Windows frame too large for those offsets is allocated in two steps:
+  /// first this many bytes holding the callee-saved area, whose stores are
+  /// relative to the intermediate $sp, then the remainder. Zero if the frame
+  /// is allocated in one step.
+  uint64_t getWinPrologueSaveAreaSize() const { return WinSaveAreaSize; }
+  void setWinPrologueSaveAreaSize(uint64_t Size) { WinSaveAreaSize = Size; }
+
+  /// A fixed object at the incoming $sp, whose address is the Windows
+  /// llvm.localaddress value.
+  int getWinEHLocalAddressFI(MachineFunction &MF);
+
   int getMoveF64ViaSpillFI(MachineFunction &MF, const TargetRegisterClass *RC);
 
   std::map<const char *, const Mips16HardFloatInfo::FuncSignature *>
@@ -122,6 +135,9 @@ private:
 
   // saveS2
   bool SaveS2 = false;
+
+  uint64_t WinSaveAreaSize = 0;
+  int WinEHLocalAddressFI = INT_MAX;
 
   /// FrameIndex for expanding BuildPairF64 nodes to spill and reload when the
   /// O32 FPXX ABI is enabled. -1 is used to denote invalid index.

@@ -15,6 +15,7 @@
 #define ALPHAMACHINEFUNCTIONINFO_H
 
 #include "llvm/CodeGen/MachineFunction.h"
+#include <climits>
 
 namespace llvm {
 class Function;
@@ -36,6 +37,10 @@ class AlphaMachineFunctionInfo : public MachineFunctionInfo {
   int VarArgsOffset;
   /// VarArgsBase - What is the base FrameIndex
   int VarArgsBase;
+
+  /// A fixed object at the incoming $30, the Windows llvm.localaddress.
+  int WinEHLocalAddressFI = INT_MAX;
+  long WinSaveAreaSize = 0;
 
 public:
   AlphaMachineFunctionInfo() : GlobalBaseReg(0), GlobalRetAddr(0),
@@ -59,6 +64,14 @@ public:
 
   int getVarArgsBase() const { return VarArgsBase; }
   void setVarArgsBase(int Base) { VarArgsBase = Base; }
+
+  /// The first step of a two-step Windows frame allocation, holding the
+  /// callee-saved area (see AlphaFrameLowering::emitPrologue), or 0.
+  long getWinSaveAreaSize() const { return WinSaveAreaSize; }
+  void setWinSaveAreaSize(long Size) { WinSaveAreaSize = Size; }
+
+  int getWinEHLocalAddressFI() const { return WinEHLocalAddressFI; }
+  void setWinEHLocalAddressFI(int FI) { WinEHLocalAddressFI = FI; }
 };
 
 } // End llvm namespace

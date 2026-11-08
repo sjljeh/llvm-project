@@ -72,6 +72,19 @@ namespace {
         EmitToStreamer(*OutStreamer, MCInstBuilder(Alpha::RETDAGp));
         return;
       }
+      if (MI->getOpcode() == Alpha::SEH_LocalRecover) {
+        const MCSymbolRefExpr *Sym = MCSymbolRefExpr::create(
+            MI->getOperand(1).getMCSymbol(), OutContext);
+        Register Dst = MI->getOperand(0).getReg();
+        EmitToStreamer(*OutStreamer, MCInstBuilder(Alpha::LDAHr)
+                                         .addReg(Dst)
+                                         .addExpr(Sym)
+                                         .addReg(Alpha::R31));
+        EmitToStreamer(
+            *OutStreamer,
+            MCInstBuilder(Alpha::LDAr).addReg(Dst).addExpr(Sym).addReg(Dst));
+        return;
+      }
       if (MI->getOpcode() == Alpha::CLEANUPRET) {
         EmitToStreamer(*OutStreamer, MCInstBuilder(Alpha::RETDAGp));
         return;

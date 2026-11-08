@@ -171,6 +171,37 @@ void MipsAsmPrinter::emitDirectiveRelocJalr(const MachineInstr &MI,
   }
 }
 
+/// Return from a Windows EH funclet. The NT unwinder treats every PC before
+/// `jr $ra` as body code, so the funclet's frame is released in its delay
+/// slot (MipsSEFrameLowering::emitEpilogue leaves it to this point).
+void MipsAsmPrinter::emitFuncletReturn() {
+  uint64_t StackSize = MF->getFrameInfo().getStackSize();
+  MCInst Release;
+  if (!Subtarget->getTargetTriple().isOSWindows() || StackSize == 0) {
+    Release =
+        MCInstBuilder(Mips::SLL).addReg(Mips::R0).addReg(Mips::R0).addImm(0);
+  } else if (isInt<16>(StackSize)) {
+    Release = MCInstBuilder(Mips::ADDiu)
+                  .addReg(Mips::R29)
+                  .addReg(Mips::R29)
+                  .addImm(StackSize);
+  } else {
+    EmitToStreamer(
+        *OutStreamer,
+        MCInstBuilder(Mips::LUi).addReg(Mips::R1).addImm(StackSize >> 16));
+    EmitToStreamer(
+        *OutStreamer,
+        MCInstBuilder(Mips::ORi).addReg(Mips::R1).addReg(Mips::R1).addImm(
+            StackSize & 0xffff));
+    Release = MCInstBuilder(Mips::ADDu)
+                  .addReg(Mips::R29)
+                  .addReg(Mips::R29)
+                  .addReg(Mips::R1);
+  }
+  EmitToStreamer(*OutStreamer, MCInstBuilder(Mips::JR).addReg(Mips::RA));
+  EmitToStreamer(*OutStreamer, Release);
+}
+
 void MipsAsmPrinter::emitInstruction(const MachineInstr *MI) {
   // FIXME: Enable feature predicate checks once all the test pass.
   // Mips_MC::verifyInstructionPredicates(MI->getOpcode(),
@@ -258,6 +289,21 @@ void MipsAsmPrinter::emitInstruction(const MachineInstr *MI) {
       continue;
     }
 
+    if (I->getOpcode() == Mips::SEH_RecoverFrameOffset) {
+      const MCSymbolRefExpr *Offset =
+          MCSymbolRefExpr::create(I->getOperand(1).getMCSymbol(), OutContext);
+      Register Dst = I->getOperand(0).getReg();
+      EmitToStreamer(*OutStreamer, MCInstBuilder(Mips::LUi).addReg(Dst).addExpr(
+                                       MCSpecifierExpr::create(
+                                           Offset, Mips::S_HI, OutContext)));
+      EmitToStreamer(*OutStreamer, MCInstBuilder(Mips::ADDiu)
+                                       .addReg(Dst)
+                                       .addReg(Dst)
+                                       .addExpr(MCSpecifierExpr::create(
+                                           Offset, Mips::S_LO, OutContext)));
+      continue;
+    }
+
     if (I->getOpcode() == Mips::CATCHRET) {
       const MCSymbolRefExpr *Target = MCSymbolRefExpr::create(
           I->getOperand(0).getMBB()->getSymbol(), OutContext);
@@ -271,20 +317,12 @@ void MipsAsmPrinter::emitInstruction(const MachineInstr *MI) {
                                          .addReg(Mips::R2)
                                          .addReg(Mips::R2)
                                          .addExpr(Lo));
-      EmitToStreamer(*OutStreamer, MCInstBuilder(Mips::JR).addReg(Mips::RA));
-      EmitToStreamer(*OutStreamer, MCInstBuilder(Mips::SLL)
-                                       .addReg(Mips::R0)
-                                       .addReg(Mips::R0)
-                                       .addImm(0));
+      emitFuncletReturn();
       continue;
     }
 
     if (I->getOpcode() == Mips::CLEANUPRET) {
-      EmitToStreamer(*OutStreamer, MCInstBuilder(Mips::JR).addReg(Mips::RA));
-      EmitToStreamer(*OutStreamer, MCInstBuilder(Mips::SLL)
-                                       .addReg(Mips::R0)
-                                       .addReg(Mips::R0)
-                                       .addImm(0));
+      emitFuncletReturn();
       continue;
     }
 

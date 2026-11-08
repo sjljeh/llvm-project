@@ -2396,6 +2396,17 @@ def PseudoReturn : PseudoReturnBase<GPR32Opnd>;
 let isCodeGenOnly = 1, hasSideEffects = 1, hasNoSchedulingInfo = 1 in
 def SEH_PrologEnd : MipsPseudo<(outs), (ins), []>;
 
+// The assembler-time offset from a parent function's NT establisher frame to
+// its llvm.localaddress, used by llvm.eh.recoverfp in SEH filters.
+def MipsLocalRecover : SDNode<"ISD::LOCAL_RECOVER",
+                              SDTypeProfile<1, 1, [SDTCisSameAs<0, 1>,
+                                                   SDTCisInt<1>]>>;
+let isCodeGenOnly = 1, hasSideEffects = 0, hasNoSchedulingInfo = 1,
+    Size = 8 in
+def SEH_RecoverFrameOffset : MipsPseudo<
+    (outs GPR32Opnd:$dst), (ins i32imm:$offset),
+    [(set GPR32Opnd:$dst, (MipsLocalRecover mcsym:$offset))]>;
+
 let isTerminator = 1, hasSideEffects = 1, isBarrier = 1, hasCtrlDep = 1,
     isCodeGenOnly = 1, isReturn = 1, isEHScopeReturn = 1,
     hasNoSchedulingInfo = 1 in {

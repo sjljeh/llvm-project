@@ -1979,6 +1979,15 @@ Address CodeGenFunction::recoverAddrOfEscapedLocal(CodeGenFunction &ParentCGF,
   return ParentVar.withPointer(ChildVar, KnownNonNull);
 }
 
+/// Windows NT on Alpha and MIPS enters a filter with the exception pointers in
+/// the first argument register, the filter's own address in the second, and
+/// the establisher frame in the third (and in the static link register).
+/// Model the filter as taking three parameters so that the
+/// frame is read from the third.
+static bool sehFilterFrameIsThirdArg(const llvm::Triple &T) {
+  return T.isOSWindows() && (T.isAlpha() || T.isMIPS32());
+}
+
 void CodeGenFunction::EmitCapturedLocals(CodeGenFunction &ParentCGF,
                                          const Stmt *OutlinedStmt,
                                          bool IsFilter) {
@@ -2033,6 +2042,8 @@ void CodeGenFunction::EmitCapturedLocals(CodeGenFunction &ParentCGF,
     // pointer in r2. The filter entry has already replaced r2 with its TOC
     // before evaluating an expression that can call arbitrary code.
     EntryFP = PPCEntryFP;
+  } else if (IsFilter && sehFilterFrameIsThirdArg(Triple)) {
+    EntryFP = CurFn->getArg(2);
   } else {
     // Otherwise, for x64 and 32-bit finally functions, the parent FP is the
     // second parameter.
@@ -2180,12 +2191,18 @@ void CodeGenFunction::startOutlinedSEHHelper(CodeGenFunction &ParentCGF,
   FunctionArgList Args;
   if (CGM.getTarget().getTriple().getArch() != llvm::Triple::x86 || !IsFilter) {
     // All SEH finally functions take two parameters. Win64 filters take two
-    // parameters. Win32 filters take no parameters.
+    // parameters. Win32 filters take no parameters. NT Alpha and MIPS
+    // filters take three; see sehFilterFrameIsThirdArg.
     if (IsFilter) {
       Args.push_back(ImplicitParamDecl::Create(
           getContext(), /*DC=*/nullptr, StartLoc,
           &getContext().Idents.get("exception_pointers"),
           getContext().VoidPtrTy, ImplicitParamKind::Other));
+      if (sehFilterFrameIsThirdArg(CGM.getTarget().getTriple()))
+        Args.push_back(ImplicitParamDecl::Create(
+            getContext(), /*DC=*/nullptr, StartLoc,
+            &getContext().Idents.get("filter_address"), getContext().VoidPtrTy,
+            ImplicitParamKind::Other));
     } else {
       Args.push_back(ImplicitParamDecl::Create(
           getContext(), /*DC=*/nullptr, StartLoc,

@@ -176,6 +176,16 @@ def ADJUSTSTACKDOWN : PseudoInstAlpha<(outs), (ins s64imm:$amt1, s64imm:$amt2),
 let isCodeGenOnly = 1, hasSideEffects = 1, hasNoSchedulingInfo = 1 in
 def SEH_PrologEnd : PseudoInstAlpha<(outs), (ins), "", [], s_pseudo>;
 
+// An assembler-time constant from llvm.localescape: the frame offset that
+// llvm.localrecover adds to a parent frame in outlined SEH code.
+def AlphaLocalRecover : SDNode<"ISD::LOCAL_RECOVER",
+                               SDTypeProfile<1, 1, [SDTCisSameAs<0, 1>,
+                                                    SDTCisInt<1>]>>;
+let isCodeGenOnly = 1, hasSideEffects = 0 in
+def SEH_LocalRecover : PseudoInstAlpha<(outs GPRC:$dst), (ins s64imm:$sym),
+    "# SEH_LocalRecover $dst",
+    [(set GPRC:$dst, (AlphaLocalRecover mcsym:$sym))], s_pseudo>;
+
 def ALTENT : PseudoInstAlpha<(outs), (ins s64imm:$TARGET), "$$$TARGET..ng:\n", [], s_pseudo>;
 def PCLABEL : PseudoInstAlpha<(outs), (ins s64imm:$num), "PCMARKER_$num:\n",[], s_pseudo>;
 def MEMLABEL : PseudoInstAlpha<(outs), (ins s64imm:$i, s64imm:$j, s64imm:$k, s64imm:$m),
@@ -435,7 +445,9 @@ let isBranch = 1, isTerminator = 1, isBarrier = 1, isIndirectBranch = 1, Ra = 31
 def JMP : MbrpForm< 0x1A, 0x00, (ins GPRC:$RS), "jmp $$31,($RS),0", 
           [(brind GPRC:$RS)], s_jsr>; //Jump
 
-let isCall = 1, Ra = 26,
+// BFormD is the branch format and marks its instructions as terminators, but
+// a call is not one: PEI must place callee-saved reloads after it.
+let isCall = 1, isBranch = 0, isTerminator = 0, Ra = 26,
     Defs = [R0, R1, R2, R3, R4, R5, R6, R7, R8, R16, R17, R18, R19,
             R20, R21, R22, R23, R24, R25, R26, R27, R28, R29,
             F0, F1,

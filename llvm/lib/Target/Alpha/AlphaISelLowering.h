@@ -67,6 +67,16 @@ namespace llvm {
     explicit AlphaTargetLowering(const TargetMachine &TM,
                                  const AlphaSubtarget &STI);
 
+    /// NT RtlUnwind enters an SEH __except block with the exception code in
+    /// $0.
+    Register
+    getExceptionPointerRegister(ExceptionHandling EH,
+                                const Constant *PersonalityFn) const override {
+      return EH == ExceptionHandling::WinEH ? Register(Alpha::R0) : Register();
+    }
+
+    SDValue lowerWinEHIntrinsic(SDNode *N, SelectionDAG &DAG) const;
+
     MVT getPointerTy(const DataLayout &DL, uint32_t AS = 0) const override {
       return MVT::i64;
     }

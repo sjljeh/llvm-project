@@ -101,6 +101,12 @@ AlphaTargetLowering::AlphaTargetLowering(const TargetMachine &TM,
 
   // We want to custom lower some of our intrinsics.
   setOperationAction(ISD::INTRINSIC_WO_CHAIN, MVT::Other, Custom);
+  // llvm.localaddress and llvm.eh.recoverfp for Windows SEH, whose pointer
+  // results are i32 under -mtaso (see ReplaceNodeResults).
+  if (STI.getTargetTriple().isOSWindows()) {
+    setOperationAction(ISD::INTRINSIC_WO_CHAIN, MVT::i32, Custom);
+    setOperationAction(ISD::INTRINSIC_WO_CHAIN, MVT::i64, Custom);
+  }
 
   setLoadExtAction(ISD::EXTLOAD, MVT::i64, MVT::i1, Promote);
   setLoadExtAction(ISD::EXTLOAD, MVT::f64, MVT::f32, Expand);
@@ -560,16 +566,25 @@ AlphaTargetLowering::LowerReturn(SDValue Chain,
                                  const SmallVectorImpl<SDValue> &OutVals,
                                   const SDLoc &dl, SelectionDAG &DAG) const {
 
-  SDValue Copy = DAG.getCopyToReg(Chain, dl, Alpha::R26,
-                                  DAG.getNode(AlphaISD::GlobalRetAddr,
-                                              dl, MVT::i64),
-                                  SDValue());
+  // The return address normally lives in a virtual register copied from $26
+  // at entry. Windows instead saves $26 as a callee-saved register in the
+  // prologue, where the NT unwinder can find it, so it is already in place.
+  SDValue Glue;
+  if (!isWindowsAlpha(DAG)) {
+    Chain = DAG.getCopyToReg(Chain, dl, Alpha::R26,
+                             DAG.getNode(AlphaISD::GlobalRetAddr, dl, MVT::i64),
+                             SDValue());
+    Glue = Chain.getValue(1);
+  }
+  auto CopyOut = [&](unsigned Reg, SDValue Val) {
+    Chain = DAG.getCopyToReg(Chain, dl, Reg, Val, Glue);
+    Glue = Chain.getValue(1);
+  };
   switch (Outs.size()) {
   default:
     llvm_unreachable("Do not know how to return this many arguments!");
   case 0:
     break;
-    //return SDValue(); // ret void is legal
   case 1: {
     EVT ArgVT = Outs[0].VT;
     unsigned ArgReg;
@@ -579,15 +594,12 @@ AlphaTargetLowering::LowerReturn(SDValue Chain,
       assert(ArgVT.isFloatingPoint());
       ArgReg = Alpha::F0;
     }
-    Copy = DAG.getCopyToReg(Copy, dl, ArgReg,
-                            ArgVT == MVT::i32
-                                ? (isWindowsAlpha(DAG)
-                                       ? signExtendWindowsI32(DAG, dl,
-                                                             OutVals[0])
-                                       : DAG.getNode(ISD::ANY_EXTEND, dl,
-                                                     MVT::i64, OutVals[0]))
-                                : OutVals[0],
-                            Copy.getValue(1));
+    CopyOut(ArgReg,
+            ArgVT == MVT::i32
+                ? (isWindowsAlpha(DAG)
+                       ? signExtendWindowsI32(DAG, dl, OutVals[0])
+                       : DAG.getNode(ISD::ANY_EXTEND, dl, MVT::i64, OutVals[0]))
+                : OutVals[0]);
     break;
   }
   case 2: {
@@ -601,15 +613,15 @@ AlphaTargetLowering::LowerReturn(SDValue Chain,
       ArgReg1 = Alpha::F0;
       ArgReg2 = Alpha::F1;
     }
-    Copy = DAG.getCopyToReg(Copy, dl, ArgReg1,
-                            OutVals[0], Copy.getValue(1));
-    Copy = DAG.getCopyToReg(Copy, dl, ArgReg2,
-                             OutVals[1], Copy.getValue(1));
+    CopyOut(ArgReg1, OutVals[0]);
+    CopyOut(ArgReg2, OutVals[1]);
     break;
   }
   }
-  return DAG.getNode(AlphaISD::RET_FLAG, dl,
-                     MVT::Other, Copy, Copy.getValue(1));
+  SmallVector<SDValue, 2> Ops = {Chain};
+  if (Glue.getNode())
+    Ops.push_back(Glue);
+  return DAG.getNode(AlphaISD::RET_FLAG, dl, MVT::Other, Ops);
 }
 
 void AlphaTargetLowering::LowerVAARG(SDNode *N, SDValue &Chain,
@@ -654,6 +666,8 @@ SDValue AlphaTargetLowering::LowerOperation(SDValue Op,
   case ISD::JumpTable: return LowerJumpTable(Op, DAG);
 
   case ISD::INTRINSIC_WO_CHAIN:
+    if (SDValue V = lowerWinEHIntrinsic(Op.getNode(), DAG))
+      return V;
     break;
 
   case ISD::SRL_PARTS: {
@@ -884,10 +898,47 @@ SDValue AlphaTargetLowering::LowerOperation(SDValue Op,
   return SDValue();
 }
 
+/// Windows SEH frame recovery. llvm.localaddress is the frame's incoming $30:
+/// the address of a fixed object at offset 0, which frame index elimination
+/// resolves from $30 or $15 in the parent and from $15 in a funclet, where
+/// $15 is the parent's frame. The NT dispatcher hands an SEH filter the
+/// parent's establisher frame, which is that same incoming $30, so
+/// llvm.eh.recoverfp returns it unchanged.
+SDValue AlphaTargetLowering::lowerWinEHIntrinsic(SDNode *N,
+                                                 SelectionDAG &DAG) const {
+  if (!DAG.getSubtarget().getTargetTriple().isOSWindows())
+    return SDValue();
+  SDLoc dl(N);
+  switch (N->getConstantOperandVal(0)) {
+  case Intrinsic::localaddress: {
+    MachineFunction &MF = DAG.getMachineFunction();
+    auto *FuncInfo = MF.getInfo<AlphaMachineFunctionInfo>();
+    int FI = FuncInfo->getWinEHLocalAddressFI();
+    if (FI == INT_MAX) {
+      FI = MF.getFrameInfo().CreateFixedObject(8, 0, /*IsImmutable=*/true);
+      FuncInfo->setWinEHLocalAddressFI(FI);
+    }
+    SDValue Addr = DAG.getFrameIndex(FI, MVT::i64);
+    return N->getValueType(0) == MVT::i64
+               ? Addr
+               : DAG.getNode(ISD::TRUNCATE, dl, N->getValueType(0), Addr);
+  }
+  case Intrinsic::eh_recoverfp:
+    return N->getOperand(2);
+  default:
+    return SDValue();
+  }
+}
+
 void AlphaTargetLowering::ReplaceNodeResults(SDNode *N,
                                              SmallVectorImpl<SDValue>&Results,
                                              SelectionDAG &DAG) const {
   SDLoc dl(N);
+  if (N->getOpcode() == ISD::INTRINSIC_WO_CHAIN) {
+    if (SDValue V = lowerWinEHIntrinsic(N, DAG))
+      Results.push_back(V);
+    return;
+  }
   assert(N->getValueType(0) == MVT::i32 &&
          N->getOpcode() == ISD::VAARG &&
          "Unknown node to custom promote!");
