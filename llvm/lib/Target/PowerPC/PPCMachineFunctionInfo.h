@@ -59,6 +59,8 @@ private:
   /// PEI.
   bool MustSaveLR = false;
 
+  int64_t NTFuncletRelease = -1;
+
   /// MustSaveTOC - Indicates that the TOC save needs to be performed in the
   /// prologue of the function. This is typically the case when there are
   /// indirect calls in the function and it is more profitable to save the
@@ -194,6 +196,12 @@ public:
   /// which is used in PIC generation), or if the LR stack slot is explicitly
   /// referenced by builtin_return_address.
   void setMustSaveLR(bool U) { MustSaveLR = U; }
+
+  /// Windows NT funclet returns release the funclet frame in the
+  /// CATCHRET/CLEANUPRET expansion, after the continuation address is loaded:
+  /// -1 = not used, 0 = "mr r1,r12", N > 0 = "addi r1,r1,N".
+  int64_t getNTFuncletRelease() const { return NTFuncletRelease; }
+  void setNTFuncletRelease(int64_t V) { NTFuncletRelease = V; }
   bool mustSaveLR() const    { return MustSaveLR; }
 
   void setMustSaveTOC(bool U) { MustSaveTOC = U; }

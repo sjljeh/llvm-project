@@ -40,28 +40,28 @@ void inner(int mode) {
 // ASM-NEXT: "$handlerMap$0$?inner@@YAXH@Z":
 // ASM-NEXT: .long 8{{.*}}# Adjectives
 // ASM-NEXT: .long "??_R0?AUE@@@8"{{.*}}# Type
-// ASM-NEXT: .long -4{{.*}}# CatchObjOffset
+// ASM-NEXT: .long -8{{.*}}# CatchObjOffset
 // ASM-NEXT: .long "?catch$7@?0??inner@@YAXH@Z@4HA"{{.*}}# Handler
 // ASM-NEXT: .long 0{{.*}}# Adjectives
 // ASM-NEXT: .long "??_R0H@8"{{.*}}# Type
-// ASM-NEXT: .long -8{{.*}}# CatchObjOffset
+// ASM-NEXT: .long -12{{.*}}# CatchObjOffset
 // ASM-NEXT: .long "?catch$11@?0??inner@@YAXH@Z@4HA"{{.*}}# Handler
 
 // Both catch funclets and the destructor cleanup receive the establisher frame
 // in r2 and then materialize their image's TOC. A rethrow from the first catch
 // calls the VC4 throw helper with null object and ThrowInfo pointers.
 // ASM: "?catch$7@?0??inner@@YAXH@Z@4HA":
-// ASM: addi 31, 2, -80
+// ASM: addi 31, 2, -96
 // ASM-NEXT: lis 2, .toc@ha
 // ASM-NEXT: addi 2, 2, .toc@l
 // ASM: li 4, 0
 // ASM-NEXT: mr 3, 4
 // ASM-NEXT: bl .._CxxThrowException
 // ASM: "?catch$11@?0??inner@@YAXH@Z@4HA":
-// ASM: addi 31, 2, -80
+// ASM: addi 31, 2, -96
 // ASM-NEXT: lis 2, .toc@ha
 // ASM-NEXT: addi 2, 2, .toc@l
 // ASM: "?dtor$12@?0??inner@@YAXH@Z@4HA":
-// ASM: addi 31, 2, -80
+// ASM: addi 31, 2, -96
 // ASM-NEXT: lis 2, .toc@ha
 // ASM-NEXT: addi 2, 2, .toc@l

@@ -171,6 +171,8 @@ protected:
   // non-TOC-based local-exec variables.
   MapVector<const GlobalValue *, uint64_t> TLSVarsToAddressMapping;
 
+  void emitNTFuncletRelease();
+
 public:
   explicit PPCAsmPrinter(TargetMachine &TM,
                          std::unique_ptr<MCStreamer> Streamer, char &ID)
@@ -865,6 +867,25 @@ const MCExpr *PPCAsmPrinter::symbolWithSpecifier(const MCSymbol *S,
 /// EmitInstruction -- Print out a single PowerPC MI in Darwin syntax to
 /// the current output stream.
 ///
+// The NT unwinder treats every PC before a funclet's blr as inside the
+// funclet's frame, so the frame is released by the instruction directly before
+// the blr, after CATCHRET has loaded the continuation address.
+void PPCAsmPrinter::emitNTFuncletRelease() {
+  int64_t Release = MF->getInfo<PPCFunctionInfo>()->getNTFuncletRelease();
+  if (Release < 0)
+    return;
+  if (Release == 0)
+    EmitToStreamer(
+        *OutStreamer,
+        MCInstBuilder(PPC::OR).addReg(PPC::R1).addReg(PPC::R12).addReg(
+            PPC::R12));
+  else
+    EmitToStreamer(
+        *OutStreamer,
+        MCInstBuilder(PPC::ADDI).addReg(PPC::R1).addReg(PPC::R1).addImm(
+            Release));
+}
+
 void PPCAsmPrinter::emitInstruction(const MachineInstr *MI) {
   PPC_MC::verifyInstructionPredicates(MI->getOpcode(),
                                       getSubtargetInfo().getFeatureBits());
@@ -1022,10 +1043,12 @@ void PPCAsmPrinter::emitInstruction(const MachineInstr *MI) {
     EmitToStreamer(
         *OutStreamer,
         MCInstBuilder(PPC::ADDI).addReg(PPC::R3).addReg(PPC::R3).addExpr(Lo));
+    emitNTFuncletRelease();
     EmitToStreamer(*OutStreamer, MCInstBuilder(PPC::BLR));
     return;
   }
   case PPC::CLEANUPRET:
+    emitNTFuncletRelease();
     EmitToStreamer(*OutStreamer, MCInstBuilder(PPC::BLR));
     return;
   case TargetOpcode::PATCHABLE_FUNCTION_ENTER: {
