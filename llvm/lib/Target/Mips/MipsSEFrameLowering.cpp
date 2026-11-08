@@ -21,6 +21,7 @@
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/CodeGen/Analysis.h"
 #include "llvm/CodeGen/CFIInstBuilder.h"
+#include "llvm/CodeGen/LivePhysRegs.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
@@ -412,6 +413,71 @@ static unsigned getFuncletFrameNestLevel(const MachineBasicBlock &MBB) {
   return Level;
 }
 
+// The NT4 MIPS __CxxFrameHandler keeps one "already unwound" byte per state
+// at dispUnwindHelp from the outermost parent's
+// establisher frame: an action runs only if its byte is zero, and the
+// runtime sets the byte first. A catch funclet's
+// FuncInfo can reach the parent's states through the same map, so these
+// bytes keep each action from running twice. Allocate the bytes, clear them
+// on entry, and clear the states of a try block again where its catches
+// return, so that a state entered again after a catch can be unwound again.
+static void createLegacyCXXUnwindHelp(MachineFunction &MF,
+                                      WinEHFuncInfo &EHInfo,
+                                      const TargetInstrInfo &TII) {
+  MachineFrameInfo &MFI = MF.getFrameInfo();
+  const unsigned NumStates = EHInfo.CxxUnwindMap.size();
+  const unsigned Size = alignTo(NumStates, 4);
+  const int FI = MFI.CreateStackObject(Size, Align(4), /*isSpillSlot=*/false);
+  EHInfo.UnwindHelpFrameIdx = FI;
+
+  auto Clear = [&](MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
+                   unsigned Lo, unsigned Hi) {
+    for (unsigned B = Lo; B <= Hi;) {
+      bool Word = B % 4 == 0 && B + 3 <= Hi;
+      BuildMI(MBB, I, DebugLoc(), TII.get(Word ? Mips::SW : Mips::SB))
+          .addReg(Mips::R0)
+          .addFrameIndex(FI)
+          .addImm(B);
+      B += Word ? 4 : 1;
+    }
+  };
+
+  // After the callee-saved register spills, which emitPrologue expects at the
+  // start of the entry block.
+  MachineBasicBlock &Entry = MF.front();
+  MachineBasicBlock::iterator EntryI = Entry.begin();
+  while (EntryI != Entry.end() && EntryI->getFlag(MachineInstr::FrameSetup))
+    ++EntryI;
+  Clear(Entry, EntryI, 0, Size - 1);
+
+  DenseMap<MachineBasicBlock *, std::pair<int, int>> Continuations;
+  for (MachineBasicBlock &MBB : MF) {
+    MachineBasicBlock::iterator Term = MBB.getFirstTerminator();
+    if (Term == MBB.end() || Term->getOpcode() != Mips::CATCHRET)
+      continue;
+    auto Scope = EHInfo.EHScopeMembership.find(&MBB);
+    if (Scope == EHInfo.EHScopeMembership.end())
+      continue;
+    const MachineBasicBlock *Funclet = MF.getBlockNumbered(Scope->second);
+    for (const WinEHTryBlockMapEntry &TBME : EHInfo.TryBlockMap) {
+      if (llvm::none_of(TBME.HandlerArray, [&](const WinEHHandlerType &H) {
+            return dyn_cast_if_present<MachineBasicBlock *>(H.Handler) ==
+                   Funclet;
+          }))
+        continue;
+      MachineBasicBlock *Dst = Term->getOperand(0).getMBB();
+      auto [It, New] = Continuations.try_emplace(
+          Dst, std::make_pair(TBME.TryLow, TBME.CatchHigh));
+      if (!New) {
+        It->second.first = std::min(It->second.first, TBME.TryLow);
+        It->second.second = std::max(It->second.second, TBME.CatchHigh);
+      }
+    }
+  }
+  for (auto &[Dst, Range] : Continuations)
+    Clear(*Dst, Dst->begin(), Range.first, Range.second);
+}
+
 void MipsSEFrameLowering::processFunctionBeforeFrameFinalized(
     MachineFunction &MF, RegScavenger *) const {
   if (!STI.getTargetTriple().isOSWindows())
@@ -428,7 +494,26 @@ void MipsSEFrameLowering::processFunctionBeforeFrameFinalized(
   WinEHFuncInfo &EHInfo = *MF.getWinEHFuncInfo();
   EHInfo.EHScopeMembership = getEHScopeMembership(MF);
 
-  // The legacy runtime follows a funclet's static link at incoming SP - 4.
+  // Funclets share the parent's frame size but never move $sp in their bodies
+  // (see eliminateCallFramePseudoInstr), so when the parent has no reserved
+  // call frame, its frame must still be large enough for a funclet's
+  // outgoing arguments at the bottom of the funclet's copy.
+  if (!hasReservedCallFrame(MF) && MFI.getMaxCallFrameSize())
+    MFI.CreateStackObject(alignTo(MFI.getMaxCallFrameSize(), getStackAlign()),
+                          getStackAlign(), /*isSpillSlot=*/false);
+
+  const Function &F = MF.getFunction();
+  const auto *PerFn =
+      F.hasPersonalityFn()
+          ? dyn_cast<Function>(F.getPersonalityFn()->stripPointerCasts())
+          : nullptr;
+  if (PerFn && PerFn->getName() == "__CxxFrameHandler" &&
+      !EHInfo.CxxUnwindMap.empty())
+    createLegacyCXXUnwindHelp(MF, EHInfo, *STI.getInstrInfo());
+
+  // The legacy runtime follows a funclet's static link at its establisher
+  // frame - 4, which is the incoming SP - 4 unless the frame is allocated in
+  // two steps.
   int64_t CurrentOffset = -4;
   MFI.CreateFixedObject(/*Size=*/4, CurrentOffset, /*IsImmutable=*/false);
   for (WinEHTryBlockMapEntry &TBME : EHInfo.TryBlockMap) {
@@ -539,7 +624,23 @@ void MipsSEFrameLowering::emitPrologue(MachineFunction &MF,
         .setMIFlag(MachineInstr::FrameSetup);
   };
 
-  // Adjust stack.
+  // NT commits a stack only through the guard page below it, so a frame
+  // larger than a probe interval touches each of its pages before $sp
+  // moves. inlineStackProbe expands this marker, placed
+  // directly before the allocation step that crosses the pages.
+  const MipsTargetLowering &TLI = *STI.getTargetLowering();
+  const bool Probe = IsNT && TLI.hasInlineStackProbe(MF) &&
+                     StackSize > TLI.getStackProbeSize(MF);
+  auto EmitProbe = [&](uint64_t Current) {
+    BuildMI(MBB, MBBI, dl, TII.get(Mips::NT_PROBE_STACK))
+        .addImm(Current)
+        .addImm(StackSize)
+        .setMIFlag(MachineInstr::FrameSetup);
+  };
+
+  // Adjust stack. A two-step allocation probes before its second step.
+  if (!WinSaveArea && Probe)
+    EmitProbe(0);
   if (WinSaveArea)
     TII.adjustStackPtr(SP, -(int64_t)WinSaveArea, MBB, MBBI);
   else if (IsNT && !isInt<16>(StackSize))
@@ -608,18 +709,53 @@ void MipsSEFrameLowering::emitPrologue(MachineFunction &MF,
     }
   }
 
+  // A funclet stores the frame it was called with (its static link, in $v0)
+  // at its own establisher frame - 4, where the runtime and nested funclets
+  // (below) look for it. The establisher frame is the
+  // incoming $sp less any first allocation step, so a two-step frame stores
+  // it once the whole frame is allocated.
   const bool IsFunclet = MBB.isEHFuncletEntry();
-  if (IsFunclet && STI.getTargetTriple().isOSWindows()) {
+  const bool StoresStaticLink =
+      IsFunclet && STI.getTargetTriple().isOSWindows();
+  if (StoresStaticLink) {
     MBB.addLiveIn(Mips::R2);
-    BuildMI(MBB, MBBI, dl, TII.get(Mips::SW))
-        .addReg(Mips::R2)
-        .addReg(SP)
-        .addImm((WinSaveArea ? WinSaveArea : StackSize) - 4)
-        .setMIFlag(MachineInstr::FrameSetup);
+    if (!WinSaveArea)
+      BuildMI(MBB, MBBI, dl, TII.get(Mips::SW))
+          .addReg(Mips::R2)
+          .addReg(SP)
+          .addImm(StackSize - 4)
+          .setMIFlag(MachineInstr::FrameSetup);
   }
 
-  if (WinSaveArea)
+  if (WinSaveArea) {
+    if (Probe)
+      EmitProbe(WinSaveArea);
     EmitNTStackDecrement(StackSize - WinSaveArea);
+
+    if (StoresStaticLink) {
+      // The funclet's copy of the frame below the callee-saved area is free
+      // above its outgoing arguments.
+      int64_t Offset = StackSize - WinSaveArea - 4;
+      assert(Offset >= (int64_t)MFI.getMaxCallFrameSize() &&
+             "Static link overlaps the funclet's outgoing arguments");
+      Register Base = SP;
+      if (!isInt<16>(Offset)) {
+        unsigned NewImm = 0;
+        Register Reg = TII.loadImmediate(Offset, MBB, MBBI, dl, &NewImm);
+        BuildMI(MBB, MBBI, dl, TII.get(Mips::ADDu), Reg)
+            .addReg(SP)
+            .addReg(Reg, RegState::Kill)
+            .setMIFlag(MachineInstr::FrameSetup);
+        Base = Reg;
+        Offset = SignExtend64<16>(NewImm);
+      }
+      BuildMI(MBB, MBBI, dl, TII.get(Mips::SW))
+          .addReg(Mips::R2)
+          .addReg(Base, getKillRegState(Base != SP))
+          .addImm(Offset)
+          .setMIFlag(MachineInstr::FrameSetup);
+    }
+  }
 
   // If framepointer enabled, set it to the local frame for a parent function
   // or to the outermost parent frame passed in $v0 for a funclet.
@@ -784,6 +920,125 @@ void MipsSEFrameLowering::emitInterruptPrologueStub(
   BuildMI(MBB, MBBI, DL, STI.getInstrInfo()->get(Mips::MTC0), Mips::COP012)
       .addReg(Mips::R27)
       .setMIFlag(MachineInstr::FrameSetup);
+}
+
+// Expand NT_PROBE_STACK, which sits directly before the allocation step that
+// moves $sp from CFA - Cur down to CFA - Final (CFA = incoming $sp). Store
+// $zero at CFA - k * PS for k = 1..N, N = (Final - 1) / PS, then at
+// CFA - Final, so that no store is a page or more below the one before it and
+// the page holding the new $sp is committed, as Windows' own stack check
+// does.
+//
+// The NT unwinder reverse-executes every prologue instruction: `sw rt, n($sp)`
+// reloads rt, `or/addu rd, rs, $zero` copies rd back into rs, and `addiu/ori
+// rt, $zero, n` or `lui rt, n` adds to $sp when rt is the register of the `subu
+// $sp, $sp, rt` that follows. The probes therefore address memory through $t8
+// only, set it with `addiu $t8, $sp, n`, and count in $t7; none of these is
+// reversed, and none writes $sp. The scavenged register of the allocation is
+// $at.
+void MipsSEFrameLowering::inlineStackProbe(MachineFunction &MF,
+                                           MachineBasicBlock &MBB) const {
+  auto Where = llvm::find_if(MBB, [](const MachineInstr &MI) {
+    return MI.getOpcode() == Mips::NT_PROBE_STACK;
+  });
+  if (Where == MBB.end())
+    return;
+  MachineInstr &MI = *Where;
+  const MipsSEInstrInfo &TII =
+      *static_cast<const MipsSEInstrInfo *>(STI.getInstrInfo());
+  const MipsTargetLowering &TLI = *STI.getTargetLowering();
+  const unsigned SP = Mips::SP, ZERO = Mips::R0;
+  const unsigned Ptr = Mips::R24, Count = Mips::R15; // $t8, $t7
+  DebugLoc DL = MI.getDebugLoc();
+  MachineBasicBlock::iterator MBBI = MI;
+  int64_t Cur = MI.getOperand(0).getImm();
+  int64_t Final = MI.getOperand(1).getImm();
+  int64_t PS = TLI.getStackProbeSize(MF);
+  int64_t N = (Final - 1) / PS;
+  assert(N > 0 && isInt<16>(Cur - PS) && "Unexpected probed frame");
+
+  auto Flag = [](MachineInstrBuilder MIB) {
+    return MIB.setMIFlag(MachineInstr::FrameSetup);
+  };
+  // The implicit $sp use keeps each store ahead of the allocation.
+  auto Store = [&](MachineBasicBlock &B, MachineBasicBlock::iterator I,
+                   int64_t Off) {
+    Flag(BuildMI(B, I, DL, TII.get(Mips::SW))
+             .addReg(ZERO)
+             .addReg(Ptr)
+             .addImm(Off)
+             .addReg(SP, RegState::Implicit));
+  };
+  auto Step = [&](MachineBasicBlock &B, MachineBasicBlock::iterator I) {
+    Flag(BuildMI(B, I, DL, TII.get(Mips::ADDiu), Ptr).addReg(Ptr).addImm(-PS));
+  };
+
+  // $t8 = CFA - PS.
+  Flag(BuildMI(MBB, MBBI, DL, TII.get(Mips::ADDiu), Ptr)
+           .addReg(SP)
+           .addImm(Cur - PS));
+  if (N <= 4) {
+    Store(MBB, MBBI, 0);
+    for (int64_t K = 2; K <= N; ++K) {
+      Step(MBB, MBBI);
+      Store(MBB, MBBI, 0);
+    }
+    // $t8 = CFA - N * PS, and N * PS < Final <= (N + 1) * PS.
+    Store(MBB, MBBI, N * PS - Final);
+    MI.eraseFromParent();
+    return;
+  }
+
+  if (isInt<16>(N)) {
+    Flag(BuildMI(MBB, MBBI, DL, TII.get(Mips::ADDiu), Count)
+             .addReg(ZERO)
+             .addImm(N));
+  } else {
+    Flag(BuildMI(MBB, MBBI, DL, TII.get(Mips::LUi), Count).addImm(N >> 16));
+    Flag(BuildMI(MBB, MBBI, DL, TII.get(Mips::ORi), Count)
+             .addReg(Count)
+             .addImm(N & 0xffff));
+  }
+
+  // loop: sw $zero, 0($t8); addiu $t7, $t7, -1; addiu $t8, $t8, -PS;
+  //       bne $t7, $zero, loop
+  // The pointer step is last so that the delay slot filler moves it, and not
+  // the store, under the branch.
+  const BasicBlock *BB = MBB.getBasicBlock();
+  MachineFunction::iterator InsertPt = std::next(MBB.getIterator());
+  MachineBasicBlock *LoopMBB = MF.CreateMachineBasicBlock(BB);
+  MF.insert(InsertPt, LoopMBB);
+  MachineBasicBlock *ExitMBB = MF.CreateMachineBasicBlock(BB);
+  MF.insert(InsertPt, ExitMBB);
+  Store(*LoopMBB, LoopMBB->end(), 0);
+  Flag(BuildMI(LoopMBB, DL, TII.get(Mips::ADDiu), Count)
+           .addReg(Count)
+           .addImm(-1));
+  Step(*LoopMBB, LoopMBB->end());
+  Flag(BuildMI(LoopMBB, DL, TII.get(Mips::BNE))
+           .addReg(Count)
+           .addReg(ZERO)
+           .addMBB(LoopMBB));
+  LoopMBB->addSuccessor(LoopMBB);
+  LoopMBB->addSuccessor(ExitMBB);
+  ExitMBB->splice(ExitMBB->end(), &MBB, std::next(MBBI), MBB.end());
+  ExitMBB->transferSuccessorsAndUpdatePHIs(&MBB);
+  // Frame indices in a funclet resolve against the parent's frame, so the new
+  // blocks of a funclet prologue stay in the funclet's scope.
+  if (MF.hasEHFunclets() && MF.getWinEHFuncInfo()) {
+    auto &Scopes = MF.getWinEHFuncInfo()->EHScopeMembership;
+    auto It = Scopes.find(&MBB);
+    if (It != Scopes.end()) {
+      int Scope = It->second;
+      Scopes[LoopMBB] = Scope;
+      Scopes[ExitMBB] = Scope;
+    }
+  }
+  MBB.addSuccessor(LoopMBB);
+  // $t8 = CFA - (N + 1) * PS.
+  Store(*ExitMBB, ExitMBB->begin(), (N + 1) * PS - Final);
+  MI.eraseFromParent();
+  fullyRecomputeLiveIns({ExitMBB, LoopMBB});
 }
 
 void MipsSEFrameLowering::emitEpilogue(MachineFunction &MF,

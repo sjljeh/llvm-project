@@ -403,6 +403,11 @@ unsigned AlphaInstrInfo::getGlobalBaseReg(MachineFunction *MF) const {
   if (GlobalBaseReg != 0)
     return GlobalBaseReg;
 
+  // Windows NT has no global pointer: COFF REFHI/REFLO pairs hold absolute
+  // addresses, which MSVC forms as `ldah rx, sym($31)`.
+  if (MF->getSubtarget().getTargetTriple().isOSBinFormatCOFF())
+    return Alpha::R31;
+
   // Insert the set of GlobalBaseReg into the first MBB of the function
   MachineBasicBlock &FirstMBB = MF->front();
   MachineBasicBlock::iterator MBBI = FirstMBB.begin();

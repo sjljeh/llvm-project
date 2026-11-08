@@ -95,6 +95,12 @@ public:
     return getTM<AlphaTargetMachine>();
   }
 
+  bool addPreISel() override {
+    if (TM->getTargetTriple().isOSWindows())
+      addPass(createAlphaWinEHStatePass());
+    return false;
+  }
+
   bool addInstSelector() override {
     addPass(createAlphaISelDag(getAlphaTargetMachine()));
     return false;
@@ -107,9 +113,11 @@ public:
     addPass(&MachineCopyPropagationID);
   }
 
-  void addPreEmitPass() override {
+  void addPreEmitPass2() override {
     // Lower the COND_BRANCH pseudos at every optimization level; late
-    // optimization does not run at -O0.
+    // optimization does not run at -O0. Both passes depend on the final block
+    // order, so they run after FuncletLayout: alignment nops after a funclet
+    // return would otherwise hide it from EH scope analysis.
     addPass(createAlphaBranchSelectionPass());
     addPass(createAlphaLLRPPass());
   }

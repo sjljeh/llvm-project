@@ -43,9 +43,10 @@ public:
     return true;
   }
 
-  unsigned getWinEHParentFrameOffset(const MachineFunction &) const override {
-    return 0;
-  }
+  /// The NT EstablisherFrame of a Windows MIPS function lies this many bytes
+  /// below its incoming $sp (the first step of a two-step allocation, see
+  /// MipsFunctionInfo::getWinPrologueSaveAreaSize).
+  unsigned getWinEHParentFrameOffset(const MachineFunction &MF) const override;
 
   MachineBasicBlock::iterator
   eliminateCallFramePseudoInstr(MachineFunction &MF,

@@ -21,6 +21,7 @@ set(LLVM_OPTIONAL_SOURCES
   AlphaRegisterInfo.cpp
   AlphaSelectionDAGInfo.cpp
   AlphaSubtarget.cpp
+  AlphaWinEHState.cpp
   )
 
 add_llvm_target(AlphaCodeGen
@@ -35,6 +36,7 @@ add_llvm_target(AlphaCodeGen
   AlphaSelectionDAGInfo.cpp
   AlphaSubtarget.cpp
   AlphaTargetMachine.cpp
+  AlphaWinEHState.cpp
 
   LINK_COMPONENTS
   AlphaDesc

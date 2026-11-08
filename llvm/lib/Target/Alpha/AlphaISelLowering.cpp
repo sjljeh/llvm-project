@@ -195,7 +195,10 @@ AlphaTargetLowering::AlphaTargetLowering(const TargetMachine &TM,
   // Not implemented yet.
   setOperationAction(ISD::STACKSAVE, MVT::Other, Expand);
   setOperationAction(ISD::STACKRESTORE, MVT::Other, Expand);
-  setOperationAction(ISD::DYNAMIC_STACKALLOC, MVT::i64, Expand);
+  // Windows probes alloca'd stack when the function asks for inline probes;
+  // lowerDYNAMIC_STACKALLOC otherwise defers to the expansion.
+  setOperationAction(ISD::DYNAMIC_STACKALLOC, MVT::i64,
+                     STI.getTargetTriple().isOSWindows() ? Custom : Expand);
 
   // We want to legalize GlobalAddress and ConstantPool and
   // ExternalSymbols nodes into the appropriate instructions to
@@ -257,6 +260,8 @@ const char *AlphaTargetLowering::getTargetNodeName(unsigned Opcode) const {
   case AlphaISD::RET_FLAG: return "Alpha::RET_FLAG";
   case AlphaISD::COND_BRANCH_I: return "Alpha::COND_BRANCH_I";
   case AlphaISD::COND_BRANCH_F: return "Alpha::COND_BRANCH_F";
+  case AlphaISD::PROBED_ALLOCA:
+    return "Alpha::PROBED_ALLOCA";
   }
 }
 
@@ -656,6 +661,150 @@ void AlphaTargetLowering::LowerVAARG(SDNode *N, SDValue &Chain,
                        MachinePointerInfo(VAListS));
 }
 
+bool AlphaTargetLowering::hasInlineStackProbe(const MachineFunction &MF) const {
+  if (!MF.getSubtarget().getTargetTriple().isOSWindows())
+    return false;
+  const Function &F = MF.getFunction();
+  return F.hasFnAttribute("probe-stack") &&
+         F.getFnAttribute("probe-stack").getValueAsString() == "inline-asm";
+}
+
+unsigned
+AlphaTargetLowering::getStackProbeSize(const MachineFunction &MF) const {
+  unsigned StackAlign =
+      MF.getSubtarget().getFrameLowering()->getStackAlign().value();
+  unsigned Size =
+      MF.getFunction().getFnAttributeAsParsedInteger("stack-probe-size", 4096);
+  Size = std::min(Size, 16384u) & ~(StackAlign - 1);
+  return std::max(Size, StackAlign);
+}
+
+// NT grows a stack only through the guard page directly below its committed
+// part, so an alloca must touch each page it skips before $30 moves past
+// it, down to the new bottom.
+SDValue AlphaTargetLowering::lowerDYNAMIC_STACKALLOC(SDValue Op,
+                                                     SelectionDAG &DAG) const {
+  MachineFunction &MF = DAG.getMachineFunction();
+  if (!hasInlineStackProbe(MF))
+    return SDValue();
+
+  SDLoc DL(Op);
+  EVT VT = Op.getValueType();
+  SDValue Chain = Op.getOperand(0);
+  SDValue Size = Op.getOperand(1);
+  MaybeAlign Alignment =
+      cast<ConstantSDNode>(Op.getOperand(2))->getMaybeAlignValue();
+
+  SDValue NewSP = DAG.getCopyFromReg(Chain, DL, Alpha::R30, VT);
+  Chain = NewSP.getValue(1);
+  NewSP = DAG.getNode(ISD::SUB, DL, VT, NewSP, Size);
+  if (Alignment &&
+      *Alignment > MF.getSubtarget().getFrameLowering()->getStackAlign())
+    NewSP = DAG.getNode(ISD::AND, DL, VT, NewSP,
+                        DAG.getSignedConstant(-Alignment->value(), DL, VT));
+  Chain = DAG.getNode(AlphaISD::PROBED_ALLOCA, DL, MVT::Other, Chain, NewSP);
+  return DAG.getMergeValues({NewSP, Chain}, DL);
+}
+
+// Probe the pages between $30 and NewSP, top to bottom, then set $30:
+//
+//   [MBB]   old = $30; lim = new + PS; cur = old - PS
+//           beq (lim <u old), Last
+//   [Loop]  stq $31, 0(cur); c = lim <u cur; cur -= PS; bne c, Loop
+//   [Last]  beq (new <u old), Done
+//   [Touch] stq $31, 0(new)
+//   [Done]  $30 = new
+//
+// Every probe lies less than one page below the previous one (or below the old
+// $30), and the page holding the new $30 is touched.
+MachineBasicBlock *
+AlphaTargetLowering::emitProbedAlloca(MachineInstr &MI,
+                                      MachineBasicBlock *MBB) const {
+  MachineFunction &MF = *MBB->getParent();
+  const TargetInstrInfo &TII = *MF.getSubtarget().getInstrInfo();
+  MachineRegisterInfo &MRI = MF.getRegInfo();
+  const TargetRegisterClass *RC = &Alpha::GPRCRegClass;
+  DebugLoc DL = MI.getDebugLoc();
+  Register NewSP = MI.getOperand(0).getReg();
+  int64_t ProbeSize = getStackProbeSize(MF);
+
+  const BasicBlock *LLVMBB = MBB->getBasicBlock();
+  MachineFunction::iterator InsertPt = std::next(MBB->getIterator());
+  MachineBasicBlock *LoopMBB = MF.CreateMachineBasicBlock(LLVMBB);
+  MachineBasicBlock *LastMBB = MF.CreateMachineBasicBlock(LLVMBB);
+  MachineBasicBlock *TouchMBB = MF.CreateMachineBasicBlock(LLVMBB);
+  MachineBasicBlock *DoneMBB = MF.CreateMachineBasicBlock(LLVMBB);
+  MF.insert(InsertPt, LoopMBB);
+  MF.insert(InsertPt, LastMBB);
+  MF.insert(InsertPt, TouchMBB);
+  MF.insert(InsertPt, DoneMBB);
+  DoneMBB->splice(DoneMBB->begin(), MBB,
+                  std::next(MachineBasicBlock::iterator(MI)), MBB->end());
+  DoneMBB->transferSuccessorsAndUpdatePHIs(MBB);
+
+  auto CondBranch = [&](MachineBasicBlock *From, unsigned Opc, Register Cond,
+                        MachineBasicBlock *To) {
+    BuildMI(From, DL, TII.get(Alpha::COND_BRANCH_I))
+        .addImm(Opc)
+        .addReg(Cond)
+        .addMBB(To);
+  };
+
+  Register OldSP = MRI.createVirtualRegister(RC);
+  Register Lim = MRI.createVirtualRegister(RC);
+  Register Start = MRI.createVirtualRegister(RC);
+  Register C0 = MRI.createVirtualRegister(RC);
+  BuildMI(*MBB, MI, DL, TII.get(TargetOpcode::COPY), OldSP).addReg(Alpha::R30);
+  BuildMI(*MBB, MI, DL, TII.get(Alpha::LDA), Lim)
+      .addImm(ProbeSize)
+      .addReg(NewSP);
+  BuildMI(*MBB, MI, DL, TII.get(Alpha::LDA), Start)
+      .addImm(-ProbeSize)
+      .addReg(OldSP);
+  BuildMI(*MBB, MI, DL, TII.get(Alpha::CMPULT), C0).addReg(Lim).addReg(OldSP);
+  MI.eraseFromParent();
+  CondBranch(MBB, Alpha::BEQ, C0, LastMBB);
+  MBB->addSuccessor(LoopMBB);
+  MBB->addSuccessor(LastMBB);
+
+  Register Cur = MRI.createVirtualRegister(RC);
+  Register Next = MRI.createVirtualRegister(RC);
+  Register C = MRI.createVirtualRegister(RC);
+  BuildMI(LoopMBB, DL, TII.get(TargetOpcode::PHI), Cur)
+      .addReg(Start)
+      .addMBB(MBB)
+      .addReg(Next)
+      .addMBB(LoopMBB);
+  BuildMI(LoopMBB, DL, TII.get(Alpha::STQ))
+      .addReg(Alpha::R31)
+      .addImm(0)
+      .addReg(Cur);
+  BuildMI(LoopMBB, DL, TII.get(Alpha::CMPULT), C).addReg(Lim).addReg(Cur);
+  BuildMI(LoopMBB, DL, TII.get(Alpha::LDA), Next)
+      .addImm(-ProbeSize)
+      .addReg(Cur);
+  CondBranch(LoopMBB, Alpha::BNE, C, LoopMBB);
+  LoopMBB->addSuccessor(LoopMBB);
+  LoopMBB->addSuccessor(LastMBB);
+
+  Register C2 = MRI.createVirtualRegister(RC);
+  BuildMI(LastMBB, DL, TII.get(Alpha::CMPULT), C2).addReg(NewSP).addReg(OldSP);
+  CondBranch(LastMBB, Alpha::BEQ, C2, DoneMBB);
+  LastMBB->addSuccessor(TouchMBB);
+  LastMBB->addSuccessor(DoneMBB);
+
+  BuildMI(TouchMBB, DL, TII.get(Alpha::STQ))
+      .addReg(Alpha::R31)
+      .addImm(0)
+      .addReg(NewSP);
+  TouchMBB->addSuccessor(DoneMBB);
+
+  BuildMI(*DoneMBB, DoneMBB->begin(), DL, TII.get(TargetOpcode::COPY),
+          Alpha::R30)
+      .addReg(NewSP);
+  return DoneMBB;
+}
+
 /// LowerOperation - Provide custom lowering hooks for some operations.
 ///
 SDValue AlphaTargetLowering::LowerOperation(SDValue Op,
@@ -664,6 +813,8 @@ SDValue AlphaTargetLowering::LowerOperation(SDValue Op,
   switch (Op.getOpcode()) {
   default: llvm_unreachable("Wasn't expecting to be able to lower this!");
   case ISD::JumpTable: return LowerJumpTable(Op, DAG);
+  case ISD::DYNAMIC_STACKALLOC:
+    return lowerDYNAMIC_STACKALLOC(Op, DAG);
 
   case ISD::INTRINSIC_WO_CHAIN:
     if (SDValue V = lowerWinEHIntrinsic(Op.getNode(), DAG))
@@ -923,8 +1074,28 @@ SDValue AlphaTargetLowering::lowerWinEHIntrinsic(SDNode *N,
                ? Addr
                : DAG.getNode(ISD::TRUNCATE, dl, N->getValueType(0), Addr);
   }
-  case Intrinsic::eh_recoverfp:
-    return N->getOperand(2);
+  case Intrinsic::eh_recoverfp: {
+    // A filter receives its parent's establisher frame, the parent's incoming
+    // $30. The parent's llvm.localaddress is that frame rounded down to the
+    // parent's frame alignment (AlphaFrameLowering, isRealigned), a mask the
+    // parent publishes as $parent_frame_mask.
+    SDValue EstablisherFrame = N->getOperand(2);
+    auto *GSD = dyn_cast<GlobalAddressSDNode>(N->getOperand(1));
+    auto *Fn = dyn_cast_or_null<Function>(GSD ? GSD->getGlobal() : nullptr);
+    if (!Fn || !Fn->hasPersonalityFn())
+      return EstablisherFrame;
+    MCSymbol *MaskSym = getAlphaParentFrameMaskSymbol(
+        DAG.getMachineFunction().getContext(),
+        GlobalValue::dropLLVMManglingEscape(Fn->getName()));
+    SDValue Mask = DAG.getNode(ISD::LOCAL_RECOVER, dl, MVT::i64,
+                               DAG.getMCSymbol(MaskSym, MVT::i64));
+    EVT VT = N->getValueType(0);
+    SDValue Frame = VT == MVT::i64 ? EstablisherFrame
+                                   : DAG.getNode(ISD::ANY_EXTEND, dl, MVT::i64,
+                                                 EstablisherFrame);
+    SDValue Addr = DAG.getNode(ISD::AND, dl, MVT::i64, Frame, Mask);
+    return VT == MVT::i64 ? Addr : DAG.getNode(ISD::TRUNCATE, dl, VT, Addr);
+  }
   default:
     return SDValue();
   }
@@ -1019,6 +1190,8 @@ getRegForInlineAsmConstraint(const TargetRegisterInfo *TRI,
 MachineBasicBlock *
 AlphaTargetLowering::EmitInstrWithCustomInserter(MachineInstr &MI,
                                                  MachineBasicBlock *BB) const {
+  if (MI.getOpcode() == Alpha::PROBED_ALLOCA_NT)
+    return emitProbedAlloca(MI, BB);
   const TargetInstrInfo *TII = BB->getParent()->getSubtarget().getInstrInfo();
   assert((MI.getOpcode() == Alpha::CAS32 ||
           MI.getOpcode() == Alpha::CAS64 ||

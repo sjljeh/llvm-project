@@ -20,7 +20,11 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/BinaryFormat/ELF.h"
 #include "llvm/CodeGen/AsmPrinter.h"
+#include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/TargetLoweringObjectFileImpl.h"
+#include "llvm/CodeGen/TargetRegisterInfo.h"
+#include "llvm/CodeGen/TargetSubtargetInfo.h"
+#include "llvm/IR/EHPersonalities.h"
 #include "llvm/IR/Mangler.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
@@ -55,20 +59,7 @@ namespace {
         return;
       }
       if (MI->getOpcode() == Alpha::CATCHRET) {
-        const MachineBasicBlock *TargetMBB = MI->getOperand(0).getMBB();
-        const MCSymbol *TargetSym = TargetMBB->isEHContTarget()
-                                        ? TargetMBB->getEHContSymbol()
-                                        : TargetMBB->getSymbol();
-        const MCSymbolRefExpr *Target =
-            MCSymbolRefExpr::create(TargetSym, OutContext);
-        EmitToStreamer(*OutStreamer, MCInstBuilder(Alpha::LDAHr)
-                                           .addReg(Alpha::R0)
-                                           .addExpr(Target)
-                                           .addReg(Alpha::R31));
-        EmitToStreamer(*OutStreamer, MCInstBuilder(Alpha::LDAr)
-                                           .addReg(Alpha::R0)
-                                           .addExpr(Target)
-                                           .addReg(Alpha::R0));
+        // The epilogue has loaded the continuation address into $0.
         EmitToStreamer(*OutStreamer, MCInstBuilder(Alpha::RETDAGp));
         return;
       }
@@ -99,8 +90,12 @@ namespace {
         } else if (MO.isImm()) {
           TmpInst.addOperand(MCOperand::createImm(MO.getImm()));
         } else if (MO.isMBB()) {
-          TmpInst.addOperand(MCOperand::createExpr(
-              MCSymbolRefExpr::create(MO.getMBB()->getSymbol(), OutContext)));
+          // A catchret target is addressed through its EH continuation label.
+          const MachineBasicBlock *MBB = MO.getMBB();
+          const MCSymbol *Sym =
+              MBB->isEHContTarget() ? MBB->getEHContSymbol() : MBB->getSymbol();
+          TmpInst.addOperand(
+              MCOperand::createExpr(MCSymbolRefExpr::create(Sym, OutContext)));
         } else if (MO.isGlobal()) {
           TmpInst.addOperand(MCOperand::createExpr(
               MCSymbolRefExpr::create(getSymbol(MO.getGlobal()), OutContext)));
@@ -219,6 +214,20 @@ void AlphaAsmPrinter::emitFunctionBodyStart() {
 /// EmitFunctionBodyEnd - Targets can override this to emit stuff after
 /// the last basic block in the function.
 void AlphaAsmPrinter::emitFunctionBodyEnd() {
+  // Publish the mask that SEH filters apply to this function's establisher
+  // frame in llvm.eh.recoverfp (AlphaTargetLowering::lowerWinEHIntrinsic).
+  const Function &F = MF->getFunction();
+  if (!TM.getTargetTriple().isOSWindows() || !F.hasPersonalityFn() ||
+      classifyEHPersonality(F.getPersonalityFn()) !=
+          EHPersonality::MSVC_TableSEH)
+    return;
+  int64_t Mask = -1;
+  if (MF->getSubtarget().getRegisterInfo()->hasStackRealignment(*MF))
+    Mask = -static_cast<int64_t>(MF->getFrameInfo().getMaxAlign().value());
+  OutStreamer->emitAssignment(
+      getAlphaParentFrameMaskSymbol(
+          OutContext, GlobalValue::dropLLVMManglingEscape(F.getName())),
+      MCConstantExpr::create(Mask, OutContext));
 }
 
 void AlphaAsmPrinter::emitStartOfAsmFile(Module &M) {

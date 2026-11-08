@@ -23,43 +23,53 @@ namespace llvm {
   class AlphaSubtarget;
 
   namespace AlphaISD {
-    enum NodeType {
-      // Start the numbering where the builting ops and target ops leave off.
-      FIRST_NUMBER = ISD::BUILTIN_OP_END,
-      //These corrospond to the identical Instruction
-      CVTQT_, CVTQS_, CVTTQ_,
+  enum NodeType {
+    // Start the numbering where the builting ops and target ops leave off.
+    FIRST_NUMBER = ISD::BUILTIN_OP_END,
+    // These corrospond to the identical Instruction
+    CVTQT_,
+    CVTQS_,
+    CVTTQ_,
 
-      /// GPRelHi/GPRelLo - These represent the high and low 16-bit
-      /// parts of a global address respectively.
-      GPRelHi, GPRelLo,
+    /// GPRelHi/GPRelLo - These represent the high and low 16-bit
+    /// parts of a global address respectively.
+    GPRelHi,
+    GPRelLo,
 
-      /// RetLit - Literal Relocation of a Global
-      RelLit,
+    /// RetLit - Literal Relocation of a Global
+    RelLit,
 
-      /// Alpha ELF TLS address materialization.
-      TPRelHi, TPRelLo, GOTTPRel, RDUNIQUE,
+    /// Alpha ELF TLS address materialization.
+    TPRelHi,
+    TPRelLo,
+    GOTTPRel,
+    RDUNIQUE,
 
-      /// GlobalRetAddr - used to restore the return address
-      GlobalRetAddr,
+    /// GlobalRetAddr - used to restore the return address
+    GlobalRetAddr,
 
-      /// CALL - Normal call.
-      CALL,
+    /// CALL - Normal call.
+    CALL,
 
-      /// DIVCALL - used for special library calls for div and rem
-      DivCall,
+    /// DIVCALL - used for special library calls for div and rem
+    DivCall,
 
-      /// return flag operand
-      RET_FLAG,
+    /// return flag operand
+    RET_FLAG,
 
-      /// CHAIN = COND_BRANCH CHAIN, OPC, (G|F)PRC, DESTBB [, INFLAG] - This
-      /// corresponds to the COND_BRANCH pseudo instruction.
-      /// *PRC is the input register to compare to zero,
-      /// OPC is the branch opcode to use (e.g. Alpha::BEQ),
-      /// DESTBB is the destination block to branch to, and INFLAG is
-      /// an optional input flag argument.
-      COND_BRANCH_I, COND_BRANCH_F
+    /// CHAIN = COND_BRANCH CHAIN, OPC, (G|F)PRC, DESTBB [, INFLAG] - This
+    /// corresponds to the COND_BRANCH pseudo instruction.
+    /// *PRC is the input register to compare to zero,
+    /// OPC is the branch opcode to use (e.g. Alpha::BEQ),
+    /// DESTBB is the destination block to branch to, and INFLAG is
+    /// an optional input flag argument.
+    COND_BRANCH_I,
+    COND_BRANCH_F,
 
-    };
+    /// CHAIN = PROBED_ALLOCA CHAIN, NEWSP - Touch every page between $30
+    /// and NEWSP, then set $30 to NEWSP (Windows stack probes).
+    PROBED_ALLOCA
+  };
   }
 
   class AlphaTargetLowering : public TargetLowering {
@@ -75,7 +85,20 @@ namespace llvm {
       return EH == ExceptionHandling::WinEH ? Register(Alpha::R0) : Register();
     }
 
+    /// The NT C++ runtime builds a catch object at EstablisherFrame +
+    /// dispCatchObj, a CFA-relative offset known once the frame is laid out.
+    bool needsFixedCatchObjects() const override { return false; }
+
     SDValue lowerWinEHIntrinsic(SDNode *N, SelectionDAG &DAG) const;
+
+    /// Windows Alpha touches every page of a large frame or alloca before
+    /// moving $30 past it, for functions with "probe-stack"="inline-asm"
+    /// (clang's default on Windows).
+    bool hasInlineStackProbe(const MachineFunction &MF) const override;
+    /// The probe interval: "stack-probe-size" (default 4096), at least the
+    /// stack alignment and at most 16384, so that every probe offset fits an
+    /// lda or stq displacement.
+    unsigned getStackProbeSize(const MachineFunction &MF) const;
 
     MVT getPointerTy(const DataLayout &DL, uint32_t AS = 0) const override {
       return MVT::i64;
@@ -134,6 +157,9 @@ namespace llvm {
     // Helpers for custom lowering.
     void LowerVAARG(SDNode *N, SDValue &Chain, SDValue &DataPtr,
                     SelectionDAG &DAG) const;
+    SDValue lowerDYNAMIC_STACKALLOC(SDValue Op, SelectionDAG &DAG) const;
+    MachineBasicBlock *emitProbedAlloca(MachineInstr &MI,
+                                        MachineBasicBlock *BB) const;
 
     SDValue
       LowerFormalArguments(SDValue Chain,

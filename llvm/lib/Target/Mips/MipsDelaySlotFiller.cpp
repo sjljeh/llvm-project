@@ -644,9 +644,12 @@ static int getEquivalentCallShort(int Opcode) {
 }
 
 static bool terminateSearch(const MachineInstr &Candidate) {
+  // LOCAL_ESCAPE emits no instruction, only the frame-escape symbols, which
+  // a delay slot would not define.
   return (Candidate.isTerminator() || Candidate.isCall() ||
           Candidate.isPosition() || Candidate.isInlineAsm() ||
-          Candidate.hasUnmodeledSideEffects());
+          Candidate.hasUnmodeledSideEffects() ||
+          Candidate.getOpcode() == TargetOpcode::LOCAL_ESCAPE);
 }
 
 /// Returns true if putting the candidate in the delay slot could let the

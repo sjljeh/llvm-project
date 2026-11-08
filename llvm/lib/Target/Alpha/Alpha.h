@@ -27,7 +27,11 @@ namespace llvm {
     static const int IMM_MULT = 65536;
   }
 
+  class AllocaInst;
   class AlphaTargetMachine;
+  class MCContext;
+  class MCSymbol;
+  class StringRef;
   class FunctionPass;
   class formatted_raw_ostream;
 
@@ -35,6 +39,17 @@ namespace llvm {
   FunctionPass *createAlphaPatternInstructionSelector(TargetMachine &TM);
   FunctionPass *createAlphaLLRPPass();
   FunctionPass *createAlphaBranchSelectionPass();
+  FunctionPass *createAlphaWinEHStatePass();
+
+  /// Whether \p AI is the Windows C++ EH context record that
+  /// AlphaWinEHState allocates.
+  bool isAlphaWinCXXEHContext(const AllocaInst &AI);
+
+  /// `<FuncName>$parent_frame_mask`: the mask that llvm.eh.recoverfp applies
+  /// to a Windows SEH parent's establisher frame to form its
+  /// llvm.localaddress, -(frame alignment) when the parent's frame is
+  /// realigned and -1 otherwise (AlphaFrameLowering, isRealigned).
+  MCSymbol *getAlphaParentFrameMaskSymbol(MCContext &Ctx, StringRef FuncName);
 
 } // end namespace llvm;
 
