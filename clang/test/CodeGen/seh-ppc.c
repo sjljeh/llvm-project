@@ -60,9 +60,11 @@ int seh_filter(volatile int *p, int selector) {
 // ASM-LABEL: ..seh_filter:
 // ASM: .seh_handler __C_specific_handler, @unwind, @except
 // ASM-NOT: stw 2,
-// ASM: stwu 1, -80(1)
-// ASM: stw 0, 88(1)
-// ASM: mr 31, 1
+// ASM: mflr 0
+// ASM-NEXT: stw 0, 8(1)
+// ASM-NEXT: stw 31, -4(1)
+// ASM-NEXT: stwu 1, -80(1)
+// ASM-NEXT: mr 31, 1
 // ASM: .seh_endprologue
 // ASM: .Lseh_filter$frame_escape_0 = 64
 // ASM: .Lseh_filter$parent_frame_offset = -80

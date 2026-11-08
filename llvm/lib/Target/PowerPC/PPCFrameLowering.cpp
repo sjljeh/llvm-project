@@ -617,8 +617,470 @@ bool PPCFrameLowering::stackUpdateCanBeMoved(MachineFunction &MF) const {
   return !RegInfo->requiresFrameIndexScavenging(MF);
 }
 
+// Windows NT PowerPC frames.
+//
+// The NT unwinder (RtlVirtualUnwind) has no unwind codes. At any PC other
+// than a blr it reverse-executes the prologue from
+// PrologEnd (or the PC) back to the function start, honouring only:
+//   mflr rX / mfcr rX        -> LR / CR = rX
+//   stw rX,d(r1) / stfd fX,d(r1) -> rX / fX = mem[r1 + d]
+//   stwu r1,d(r1) / stwux r1,r1,rY -> r1 = mem[r1]  (the back chain)
+// Every other instruction is ignored, and at a blr the context is taken as is.
+// Hence:
+//  * Saved registers are stored with plain stw/stfd at negative offsets from
+//    the incoming r1 (the CFA) *before* the frame is allocated, as Windows'
+//    own code does. Reverse execution reaches those stores only after it
+//    has reloaded r1 from the back chain, so they are found even if r1 has
+//    since moved (alloca). Windows keeps 232 bytes below r1 intact for
+//    this.
+//  * The frame is allocated by a single stwu/stwux r1. Stack pages are probed
+//    beforehand through r12 without moving r1, as Windows' own stack check
+//    does.
+//  * Epilogues keep r1 at the body value until the instruction directly
+//    before the blr, restoring registers relative to the CFA.
+bool PPCFrameLowering::usesNTFrame(const MachineFunction &MF) const {
+  if (!Subtarget.isWin32ABI() || Subtarget.isPPC64())
+    return false;
+  if (MF.getFunction().hasFnAttribute(Attribute::Naked) ||
+      MF.getTarget().Options.GuaranteedTailCallOpt || Subtarget.hasROPProtect())
+    return false;
+  const MachineFrameInfo &MFI = MF.getFrameInfo();
+  if (!MFI.isCalleeSavedInfoValid())
+    return false;
+  for (const CalleeSavedInfo &I : MFI.getCalleeSavedInfo()) {
+    MCRegister Reg = I.getReg();
+    if (I.isSpilledToReg())
+      return false;
+    if (!PPC::GPRCRegClass.contains(Reg) && !PPC::F8RCRegClass.contains(Reg) &&
+        !(PPC::CR2 <= Reg && Reg <= PPC::CR4))
+      return false;
+  }
+  return true;
+}
+
+bool PPCFrameLowering::isNTEpilogueBlock(const MachineBasicBlock &MBB) const {
+  MachineBasicBlock::const_iterator MBBI = MBB.getFirstTerminator();
+  if (MBBI == MBB.end())
+    return false;
+  // Tail calls are not NT returns.
+  switch (MBBI->getOpcode()) {
+  case PPC::BLR:
+  case PPC::CATCHRET:
+  case PPC::CLEANUPRET:
+    return usesNTFrame(*MBB.getParent());
+  default:
+    return false;
+  }
+}
+
+namespace {
+struct NTSavedRegs {
+  SmallVector<std::pair<MCRegister, int64_t>, 20> GPRs;
+  SmallVector<std::pair<MCRegister, int64_t>, 18> FPRs;
+  SmallVector<MCRegister, 3> CRs;
+  int64_t CROffset = 0;
+  int64_t MinOffset = 0;
+};
+} // namespace
+
+static NTSavedRegs getNTSavedRegs(const MachineFunction &MF) {
+  const MachineFrameInfo &MFI = MF.getFrameInfo();
+  NTSavedRegs Regs;
+  for (const CalleeSavedInfo &I : MFI.getCalleeSavedInfo()) {
+    MCRegister Reg = I.getReg();
+    int64_t Offset = MFI.getObjectOffset(I.getFrameIdx());
+    assert(MFI.isFixedObjectIndex(I.getFrameIdx()) && Offset < 0 &&
+           "NT callee saves must be at fixed offsets below the CFA");
+    Regs.MinOffset = std::min(Regs.MinOffset, Offset);
+    if (PPC::CR2 <= Reg && Reg <= PPC::CR4) {
+      Regs.CRs.push_back(Reg);
+      Regs.CROffset = Offset;
+    } else if (PPC::F8RCRegClass.contains(Reg)) {
+      Regs.FPRs.push_back({Reg, Offset});
+    } else {
+      Regs.GPRs.push_back({Reg, Offset});
+    }
+  }
+  return Regs;
+}
+
+void PPCFrameLowering::emitNTPrologue(MachineFunction &MF,
+                                      MachineBasicBlock &MBB) const {
+  MachineBasicBlock::iterator MBBI = MBB.begin();
+  MachineFrameInfo &MFI = MF.getFrameInfo();
+  const PPCInstrInfo &TII = *Subtarget.getInstrInfo();
+  const PPCRegisterInfo *RegInfo = Subtarget.getRegisterInfo();
+  const PPCTargetLowering &TLI = *Subtarget.getTargetLowering();
+  const MCRegisterInfo *MRI = MF.getContext().getRegisterInfo();
+  const MachineRegisterInfo &MRInfo = MF.getRegInfo();
+  PPCFunctionInfo *FI = MF.getInfo<PPCFunctionInfo>();
+  const bool NeedsCFI = MF.needsFrameMoves();
+  DebugLoc DL;
+
+  // A funclet allocates a frame of the parent's layout. Its callee saves
+  // belong to its own frame, at the same CFA-relative offsets.
+  const bool IsFunclet = MBB.isEHFuncletEntry();
+  uint64_t FrameSize =
+      IsFunclet ? MFI.getStackSize() : determineFrameLayoutAndUpdate(MF);
+  int64_t NegFrameSize = -(int64_t)FrameSize;
+  if (!isInt<32>(NegFrameSize))
+    llvm_unreachable("Unhandled stack size!");
+
+  if (!IsFunclet && MF.getFunction().hasPersonalityFn() &&
+      classifyEHPersonality(MF.getFunction().getPersonalityFn()) ==
+          EHPersonality::MSVC_TableSEH)
+    MF.getWinEHFuncInfo()->SEHSetFrameOffset = static_cast<int>(NegFrameSize);
+
+  if (MFI.isFrameAddressTaken())
+    replaceFPWithRealFP(MF);
+
+  auto EmitPrologEnd = [&]() {
+    if (MF.usesWindowsUnwindInfo() &&
+        (MF.hasWinCFI() || MF.hasEHFunclets() ||
+         MF.getFunction().needsUnwindTableEntry()))
+      BuildMI(MBB, MBBI, DL, TII.get(PPC::SEH_PrologEnd))
+          .setMIFlag(MachineInstr::FrameSetup);
+  };
+
+  const bool MustSaveLR = FI->mustSaveLR();
+  const bool HasFP = hasFP(MF);
+  const bool HasBP = RegInfo->hasBasePointer(MF);
+  const Register BPReg = RegInfo->getBaseRegister(MF);
+  const Align MaxAlign = MFI.getMaxAlign();
+  const bool Realign = HasBP && MaxAlign > 1;
+
+  assert((FrameSize ||
+          (!MustSaveLR && !HasFP && MFI.getCalleeSavedInfo().empty())) &&
+         "PPC32 must claim a frame to save registers");
+  if (!FrameSize) {
+    EmitPrologEnd();
+    return;
+  }
+
+  NTSavedRegs Saved = getNTSavedRegs(MF);
+  auto FixedOffset = [&](int Index) {
+    assert(Index && "Missing save slot");
+    int64_t Offset = MFI.getObjectOffset(Index);
+    Saved.MinOffset = std::min(Saved.MinOffset, Offset);
+    return Offset;
+  };
+  int64_t FPOffset = HasFP ? FixedOffset(FI->getFramePointerSaveIndex()) : 0;
+  int64_t BPOffset = HasBP ? FixedOffset(FI->getBasePointerSaveIndex()) : 0;
+  int64_t PBPOffset =
+      FI->usesPICBase() ? FixedOffset(FI->getPICBasePointerSaveIndex()) : 0;
+  // NT keeps 232 (0xe8) bytes below r1 intact across exception and APC
+  // dispatch, so the registers may be saved there before allocating.
+  assert(Saved.MinOffset >= -232 && "NT register save area exceeds slack");
+
+  auto Setup = [&](unsigned Opc, Register Def = Register()) {
+    return (Def ? BuildMI(MBB, MBBI, DL, TII.get(Opc), Def)
+                : BuildMI(MBB, MBBI, DL, TII.get(Opc)))
+        .setMIFlag(MachineInstr::FrameSetup);
+  };
+  auto Store = [&](unsigned Opc, Register Reg, int64_t Offset, bool Kill) {
+    Setup(Opc)
+        .addReg(Reg, getKillRegState(Kill))
+        .addImm(Offset)
+        .addReg(PPC::R1);
+  };
+
+  // mflr r0; stw r0,8(r1)
+  if (MustSaveLR) {
+    Setup(PPC::MFLR, PPC::R0);
+    Store(PPC::STW, PPC::R0, getReturnSaveOffset(), true);
+  }
+  // mfcr r12; stw r12,cr(r1)
+  if (!Saved.CRs.empty()) {
+    MachineInstrBuilder MIB = Setup(PPC::MFCR, PPC::R12);
+    for (MCRegister CR : Saved.CRs)
+      MIB.addReg(CR, RegState::Implicit);
+    Store(PPC::STW, PPC::R12, Saved.CROffset, true);
+  }
+  if (HasFP)
+    Store(PPC::STW, PPC::R31, FPOffset, false);
+  if (FI->usesPICBase())
+    Store(PPC::STW, PPC::R30, PBPOffset, false);
+  if (HasBP)
+    Store(PPC::STW, BPReg, BPOffset, false);
+  for (auto [Reg, Offset] : Saved.GPRs)
+    Store(PPC::STW, Reg, Offset, !MRInfo.isLiveIn(Reg));
+  for (auto [Reg, Offset] : Saved.FPRs)
+    Store(PPC::STFD, Reg, Offset, !MRInfo.isLiveIn(Reg));
+
+  // The base pointer addresses fixed objects relative to the CFA. In a
+  // funclet those are the parent's (e.g. catch objects), so it is the parent's
+  // incoming SP passed in r2; "addi" keeps it invisible to the NT unwinder.
+  if (HasBP && IsFunclet)
+    Setup(PPC::ADDI, BPReg).addReg(PPC::R2).addImm(0);
+  else if (HasBP)
+    Setup(PPC::OR, BPReg).addReg(PPC::R1).addReg(PPC::R1);
+
+  // Touch every page the allocation will cover, from the top down, without
+  // moving r1. The final stwu/stwux touches the lowest one.
+  uint64_t ProbeExtent = FrameSize + (Realign ? MaxAlign.value() - 1 : 0);
+  if (TLI.hasInlineStackProbe(MF) && ProbeExtent > TLI.getStackProbeSize(MF))
+    Setup(PPC::PROBED_STACKALLOC_32)
+        .addDef(PPC::R12)
+        .addDef(PPC::R0)
+        .addImm(-(int64_t)ProbeExtent);
+
+  // Allocate the frame with a single store-with-update of r1.
+  if (Realign) {
+    // r12 = -(CFA % MaxAlign) - FrameSize
+    Setup(PPC::RLWINM, PPC::R12)
+        .addReg(PPC::R1)
+        .addImm(0)
+        .addImm(32 - Log2(MaxAlign))
+        .addImm(31);
+    if (isInt<16>(NegFrameSize)) {
+      Setup(PPC::SUBFIC, PPC::R12)
+          .addReg(PPC::R12, RegState::Kill)
+          .addImm(NegFrameSize);
+    } else {
+      TII.materializeImmPostRA(MBB, MBBI, DL, PPC::R0, NegFrameSize);
+      Setup(PPC::SUBFC, PPC::R12)
+          .addReg(PPC::R12, RegState::Kill)
+          .addReg(PPC::R0, RegState::Kill);
+    }
+    Setup(PPC::STWUX, PPC::R1)
+        .addReg(PPC::R1)
+        .addReg(PPC::R1)
+        .addReg(PPC::R12, RegState::Kill);
+  } else if (isInt<16>(NegFrameSize)) {
+    Setup(PPC::STWU, PPC::R1)
+        .addReg(PPC::R1)
+        .addImm(NegFrameSize)
+        .addReg(PPC::R1);
+  } else {
+    TII.materializeImmPostRA(MBB, MBBI, DL, PPC::R12, NegFrameSize);
+    Setup(PPC::STWUX, PPC::R1)
+        .addReg(PPC::R1)
+        .addReg(PPC::R1)
+        .addReg(PPC::R12, RegState::Kill);
+  }
+  // materializeImmPostRA does not flag its instructions.
+  for (MachineInstr &MI : make_range(MBB.begin(), MBBI))
+    MI.setFlag(MachineInstr::FrameSetup);
+
+  // mr r31,r1 is ignored by the NT unwinder (it does not reverse "mr rX,r1"),
+  // and so are addi/addis/rlwinm into r31 or r2 in a funclet.
+  if (IsFunclet) {
+    // r31 = the parent's frame pointer, derived from the parent's incoming SP
+    // that the runtime passes in r2. A realigned parent aligned that SP
+    // before allocating.
+    assert(HasFP && "NT funclets address the parent frame through r31");
+    MBB.addLiveIn(PPC::R2);
+    Register ParentSP = PPC::R2;
+    if (Realign) {
+      Setup(PPC::RLWINM, PPC::R31)
+          .addReg(ParentSP)
+          .addImm(0)
+          .addImm(0)
+          .addImm(31 - Log2(MaxAlign));
+      ParentSP = PPC::R31;
+    }
+    if (isInt<16>(NegFrameSize)) {
+      Setup(PPC::ADDI, PPC::R31).addReg(ParentSP).addImm(NegFrameSize);
+    } else {
+      MachineBasicBlock::iterator Before = std::prev(MBBI);
+      TII.materializeImmPostRA(MBB, MBBI, DL, PPC::R12, NegFrameSize);
+      for (MachineInstr &MI : make_range(std::next(Before), MBBI))
+        MI.setFlag(MachineInstr::FrameSetup);
+      Setup(PPC::ADD4, PPC::R31).addReg(ParentSP).addReg(PPC::R12);
+    }
+    // The incoming r2 is the parent frame pointer, not a TOC. Materialize
+    // this image's TOC directly.
+    Setup(PPC::LIS, PPC::R2).addExternalSymbol(".toc", PPCII::MO_HA);
+    Setup(PPC::ADDI, PPC::R2)
+        .addReg(PPC::R2)
+        .addExternalSymbol(".toc", PPCII::MO_LO);
+  } else if (HasFP) {
+    Setup(PPC::OR, PPC::R31).addReg(PPC::R1).addReg(PPC::R1);
+  }
+
+  if (NeedsCFI) {
+    auto CFI = [&](const MCCFIInstruction &Inst) {
+      Setup(TargetOpcode::CFI_INSTRUCTION).addCFIIndex(MF.addFrameInst(Inst));
+    };
+    auto Dwarf = [&](MCRegister Reg) { return MRI->getDwarfRegNum(Reg, true); };
+    if (HasBP)
+      CFI(MCCFIInstruction::createDefCfaRegister(nullptr, Dwarf(BPReg)));
+    else if (HasFP)
+      CFI(MCCFIInstruction::cfiDefCfa(nullptr, Dwarf(PPC::R31), FrameSize));
+    else
+      CFI(MCCFIInstruction::cfiDefCfaOffset(nullptr, FrameSize));
+    if (MustSaveLR)
+      CFI(MCCFIInstruction::createOffset(nullptr, Dwarf(PPC::LR),
+                                         getReturnSaveOffset()));
+    if (!Saved.CRs.empty())
+      CFI(MCCFIInstruction::createOffset(nullptr, Dwarf(PPC::CR2),
+                                         Saved.CROffset));
+    if (HasFP)
+      CFI(MCCFIInstruction::createOffset(nullptr, Dwarf(PPC::R31), FPOffset));
+    if (FI->usesPICBase())
+      CFI(MCCFIInstruction::createOffset(nullptr, Dwarf(PPC::R30), PBPOffset));
+    if (HasBP)
+      CFI(MCCFIInstruction::createOffset(nullptr, Dwarf(BPReg), BPOffset));
+    for (auto [Reg, Offset] : Saved.GPRs)
+      CFI(MCCFIInstruction::createOffset(nullptr, Dwarf(Reg), Offset));
+    for (auto [Reg, Offset] : Saved.FPRs)
+      CFI(MCCFIInstruction::createOffset(nullptr, Dwarf(Reg), Offset));
+  }
+  EmitPrologEnd();
+}
+
+void PPCFrameLowering::emitNTEpilogue(MachineFunction &MF,
+                                      MachineBasicBlock &MBB) const {
+  MachineBasicBlock::iterator MBBI = MBB.getFirstTerminator();
+  DebugLoc DL = MBBI->getDebugLoc();
+  const MachineFrameInfo &MFI = MF.getFrameInfo();
+  const PPCInstrInfo &TII = *Subtarget.getInstrInfo();
+  const PPCRegisterInfo *RegInfo = Subtarget.getRegisterInfo();
+  PPCFunctionInfo *FI = MF.getInfo<PPCFunctionInfo>();
+
+  int64_t FrameSize = MFI.getStackSize();
+  if (!FrameSize)
+    return;
+
+  const bool MustSaveLR = FI->mustSaveLR();
+  const bool HasFP = hasFP(MF);
+  const bool HasBP = RegInfo->hasBasePointer(MF);
+  NTSavedRegs Saved = getNTSavedRegs(MF);
+
+  auto Build = [&](unsigned Opc, Register Def = Register()) {
+    return (Def ? BuildMI(MBB, MBBI, DL, TII.get(Opc), Def)
+                : BuildMI(MBB, MBBI, DL, TII.get(Opc)))
+        .setMIFlag(MachineInstr::FrameDestroy);
+  };
+
+  // Restore relative to the CFA. Where r1 never moves after the prologue,
+  // address it as r1 + FrameSize; otherwise take the CFA from the back chain,
+  // which the prologue and every dynamic allocation maintain.
+  Register Base = PPC::R1;
+  int64_t Adjust = FrameSize;
+  if (MFI.hasVarSizedObjects() || HasBP || MF.exposesReturnsTwice() ||
+      !isInt<16>(FrameSize + getReturnSaveOffset())) {
+    Base = PPC::R12;
+    Adjust = 0;
+    Build(PPC::LWZ, PPC::R12).addImm(0).addReg(PPC::R1);
+  }
+  auto Load = [&](unsigned Opc, Register Reg, int64_t Offset) {
+    Build(Opc, Reg).addImm(Offset + Adjust).addReg(Base);
+  };
+
+  if (MustSaveLR) {
+    Load(PPC::LWZ, PPC::R0, getReturnSaveOffset());
+    Build(PPC::MTLR).addReg(PPC::R0, RegState::Kill);
+  }
+  if (!Saved.CRs.empty()) {
+    // NT restores the whole saved CR word (mtcrf 255), as its restore
+    // millicode does; the volatile fields are dead at the return.
+    Load(PPC::LWZ, PPC::R0, Saved.CROffset);
+    MachineInstrBuilder MIB =
+        Build(PPC::MTCRF).addImm(0xFF).addReg(PPC::R0, RegState::Kill);
+    for (MCRegister CR : {PPC::CR0, PPC::CR1, PPC::CR2, PPC::CR3, PPC::CR4,
+                          PPC::CR5, PPC::CR6, PPC::CR7})
+      MIB.addReg(CR, RegState::ImplicitDefine);
+  }
+  for (auto [Reg, Offset] : Saved.GPRs)
+    Load(PPC::LWZ, Reg, Offset);
+  for (auto [Reg, Offset] : Saved.FPRs)
+    Load(PPC::LFD, Reg, Offset);
+  if (HasBP)
+    Load(PPC::LWZ, RegInfo->getBaseRegister(MF),
+         MFI.getObjectOffset(FI->getBasePointerSaveIndex()));
+  if (FI->usesPICBase())
+    Load(PPC::LWZ, PPC::R30,
+         MFI.getObjectOffset(FI->getPICBasePointerSaveIndex()));
+  if (HasFP)
+    Load(PPC::LWZ, PPC::R31,
+         MFI.getObjectOffset(FI->getFramePointerSaveIndex()));
+
+  // Release the frame with the instruction directly before the blr. For a
+  // funclet return, CATCHRET first loads the continuation address into r3,
+  // so its expansion (PPCAsmPrinter) releases the frame instead.
+  if (MBBI->getOpcode() == PPC::CATCHRET ||
+      MBBI->getOpcode() == PPC::CLEANUPRET) {
+    FI->setNTFuncletRelease(Base == PPC::R1 ? FrameSize : 0);
+    if (Base == PPC::R12)
+      MBBI->addOperand(MF, MachineOperand::CreateReg(PPC::R12, /*isDef=*/false,
+                                                     /*isImp=*/true));
+    return;
+  }
+  if (Base == PPC::R1)
+    Build(PPC::ADDI, PPC::R1).addReg(PPC::R1).addImm(FrameSize);
+  else
+    Build(PPC::OR, PPC::R1)
+        .addReg(PPC::R12, RegState::Kill)
+        .addReg(PPC::R12, RegState::Kill);
+}
+
+void PPCFrameLowering::inlineNTStackProbe(MachineFunction &MF,
+                                          MachineBasicBlock &MBB,
+                                          MachineInstr &MI) const {
+  const PPCInstrInfo &TII = *Subtarget.getInstrInfo();
+  const PPCTargetLowering &TLI = *Subtarget.getTargetLowering();
+  DebugLoc DL = MI.getDebugLoc();
+  MachineBasicBlock::iterator MBBI = MI;
+  int64_t Extent = -MI.getOperand(2).getImm();
+  int64_t ProbeSize = TLI.getStackProbeSize(MF);
+  assert(isInt<16>(-ProbeSize) && "Unhandled probe size");
+  // Probes at CFA - k * ProbeSize for k = 1..NumProbes leave less than one
+  // page above the lowest address the allocation can reach.
+  int64_t NumProbes = (Extent - 1) / ProbeSize;
+  auto Flag = [](MachineInstrBuilder MIB) {
+    return MIB.setMIFlag(MachineInstr::FrameSetup);
+  };
+  // r12 walks down from r1; the NT unwinder ignores r12-based stores and
+  // "mr r12,r1" while reverse-executing a prologue.
+  auto Probe = [&](MachineBasicBlock &B, MachineBasicBlock::iterator I,
+                   bool R0Defined) {
+    Flag(BuildMI(B, I, DL, TII.get(PPC::STWU), PPC::R12)
+             .addReg(PPC::R0, getUndefRegState(!R0Defined))
+             .addImm(-ProbeSize)
+             .addReg(PPC::R12));
+  };
+  if (NumProbes > 0)
+    Flag(BuildMI(MBB, MBBI, DL, TII.get(PPC::OR), PPC::R12)
+             .addReg(PPC::R1)
+             .addReg(PPC::R1));
+  if (NumProbes <= 4) {
+    for (int64_t I = 0; I < NumProbes; ++I)
+      Probe(MBB, MBBI, false);
+    ++NumPrologProbed;
+    MI.eraseFromParent();
+    return;
+  }
+
+  // mtctr NumProbes; loop: stwu r0,-ProbeSize(r12); bdnz loop
+  TII.materializeImmPostRA(MBB, MBBI, DL, PPC::R0, NumProbes);
+  for (MachineInstr &I : make_range(std::prev(MBBI), MBBI))
+    I.setFlag(MachineInstr::FrameSetup);
+  Flag(BuildMI(MBB, MBBI, DL, TII.get(PPC::MTCTR))
+           .addReg(PPC::R0, RegState::Kill));
+  const BasicBlock *BB = MBB.getBasicBlock();
+  MachineFunction::iterator InsertPt = std::next(MBB.getIterator());
+  MachineBasicBlock *LoopMBB = MF.CreateMachineBasicBlock(BB);
+  MF.insert(InsertPt, LoopMBB);
+  MachineBasicBlock *ExitMBB = MF.CreateMachineBasicBlock(BB);
+  MF.insert(InsertPt, ExitMBB);
+  Probe(*LoopMBB, LoopMBB->end(), false);
+  Flag(BuildMI(LoopMBB, DL, TII.get(PPC::BDNZ)).addMBB(LoopMBB));
+  LoopMBB->addSuccessor(LoopMBB);
+  LoopMBB->addSuccessor(ExitMBB);
+  ExitMBB->splice(ExitMBB->end(), &MBB, std::next(MBBI), MBB.end());
+  ExitMBB->transferSuccessorsAndUpdatePHIs(&MBB);
+  MBB.addSuccessor(LoopMBB);
+  ++NumPrologProbed;
+  MI.eraseFromParent();
+  fullyRecomputeLiveIns({ExitMBB, LoopMBB});
+}
+
 void PPCFrameLowering::emitPrologue(MachineFunction &MF,
                                     MachineBasicBlock &MBB) const {
+  if (usesNTFrame(MF))
+    return emitNTPrologue(MF, MBB);
+
   MachineBasicBlock::iterator MBBI = MBB.begin();
   MachineFrameInfo &MFI = MF.getFrameInfo();
   const PPCInstrInfo &TII = *Subtarget.getInstrInfo();
@@ -1329,6 +1791,8 @@ void PPCFrameLowering::inlineStackProbe(MachineFunction &MF,
   });
   if (StackAllocMIPos == PrologMBB.end())
     return;
+  if (usesNTFrame(MF))
+    return inlineNTStackProbe(MF, PrologMBB, *StackAllocMIPos);
   const BasicBlock *ProbedBB = PrologMBB.getBasicBlock();
   MachineBasicBlock *CurrentMBB = &PrologMBB;
   DebugLoc DL = PrologMBB.findDebugLoc(StackAllocMIPos);
@@ -1621,6 +2085,9 @@ void PPCFrameLowering::inlineStackProbe(MachineFunction &MF,
 
 void PPCFrameLowering::emitEpilogue(MachineFunction &MF,
                                     MachineBasicBlock &MBB) const {
+  if (isNTEpilogueBlock(MBB))
+    return emitNTEpilogue(MF, MBB);
+
   MachineBasicBlock::iterator MBBI = MBB.getFirstTerminator();
   DebugLoc dl;
 
@@ -2214,21 +2681,6 @@ void PPCFrameLowering::processFunctionBeforeFrameFinalized(MachineFunction &MF,
     if (MF.hasEHFunclets()) {
       WinEHFuncInfo &EHInfo = *MF.getWinEHFuncInfo();
       EHInfo.EHScopeMembership = getEHScopeMembership(MF);
-
-      // Catch objects are addressed from the incoming SP (the establisher
-      // frame), so assign them fixed negative offsets in the parent's frame.
-      int64_t CurrentOffset = 0;
-      for (WinEHTryBlockMapEntry &TBME : EHInfo.TryBlockMap) {
-        for (WinEHHandlerType &Handler : TBME.HandlerArray) {
-          int FrameIndex = Handler.CatchObj.FrameIndex;
-          if (FrameIndex == INT_MAX || MFI.getObjectOffset(FrameIndex) != 0)
-            continue;
-          CurrentOffset -= MFI.getObjectSize(FrameIndex);
-          CurrentOffset =
-              alignDown(CurrentOffset, MFI.getObjectAlign(FrameIndex).value());
-          MFI.setObjectOffset(FrameIndex, CurrentOffset);
-        }
-      }
     }
   }
 
@@ -2249,6 +2701,7 @@ void PPCFrameLowering::processFunctionBeforeFrameFinalized(MachineFunction &MF,
 
   // Early exit if no callee saved registers are modified!
   if (CSI.empty() && !needsFP(MF)) {
+    assignWinEHCatchObjectOffsets(MF);
     addScavengingSpillSlot(MF, RS);
     return;
   }
@@ -2412,7 +2865,12 @@ void PPCFrameLowering::processFunctionBeforeFrameFinalized(MachineFunction &MF,
   if (spillsCR(MF) && Subtarget.usesPPC32SVR4RegisterConvention()) {
     // Adjust the frame index of the CR spill slot.
     for (const auto &CSInfo : CSI) {
-      if (CSInfo.getReg() == PPC::CR2) {
+      // CR2-CR4 share one slot. On Windows, move it even if CR2 itself is not
+      // saved, so that it cannot overlap the GPR save area that the NT
+      // prologue stores before allocating the frame.
+      MCRegister CSReg = CSInfo.getReg();
+      if (CSReg == PPC::CR2 ||
+          (Subtarget.isWin32ABI() && PPC::CR2 <= CSReg && CSReg <= PPC::CR4)) {
         int FI = CSInfo.getFrameIdx();
         MFI.setObjectOffset(FI, LowerBound + MFI.getObjectOffset(FI));
         break;
@@ -2440,7 +2898,34 @@ void PPCFrameLowering::processFunctionBeforeFrameFinalized(MachineFunction &MF,
     }
   }
 
+  assignWinEHCatchObjectOffsets(MF);
   addScavengingSpillSlot(MF, RS);
+}
+
+void PPCFrameLowering::assignWinEHCatchObjectOffsets(
+    MachineFunction &MF) const {
+  if (!Subtarget.isWin32ABI() || !MF.hasEHFunclets())
+    return;
+  // Catch objects are addressed from the incoming SP (the establisher frame),
+  // so assign them fixed negative offsets in the parent's frame, below the
+  // register save area (whose offsets are final by now). The runtime writes
+  // the caught object there, so it must not overlap a saved register.
+  MachineFrameInfo &MFI = MF.getFrameInfo();
+  WinEHFuncInfo &EHInfo = *MF.getWinEHFuncInfo();
+  int64_t CurrentOffset = 0;
+  for (int I = MFI.getObjectIndexBegin(); I < 0; ++I)
+    CurrentOffset = std::min(CurrentOffset, MFI.getObjectOffset(I));
+  for (WinEHTryBlockMapEntry &TBME : EHInfo.TryBlockMap) {
+    for (WinEHHandlerType &Handler : TBME.HandlerArray) {
+      int FrameIndex = Handler.CatchObj.FrameIndex;
+      if (FrameIndex == INT_MAX || MFI.getObjectOffset(FrameIndex) != 0)
+        continue;
+      CurrentOffset -= MFI.getObjectSize(FrameIndex);
+      CurrentOffset =
+          alignDown(CurrentOffset, MFI.getObjectAlign(FrameIndex).value());
+      MFI.setObjectOffset(FrameIndex, CurrentOffset);
+    }
+  }
 }
 
 void
@@ -2583,6 +3068,19 @@ bool PPCFrameLowering::spillCalleeSavedRegisters(
   auto BeforeSpills = MI == MBB.begin() ? MBB.end() : std::prev(MI);
 
   VSRContainingGPRs.clear();
+
+  // The NT prologue stores the callee saves itself, before allocating.
+  if (usesNTFrame(*MF)) {
+    const MachineRegisterInfo &MRI = MF->getRegInfo();
+    for (const CalleeSavedInfo &I : CSI) {
+      MCRegister Reg = I.getReg();
+      if (!MRI.isLiveIn(Reg) && !MBB.isLiveIn(Reg))
+        MBB.addLiveIn(Reg);
+      if (PPC::CR2 <= Reg && Reg <= PPC::CR4)
+        FI->setSpillsCR();
+    }
+    return true;
+  }
 
   // Map each VSR to GPRs to be spilled with into it. Single VSR can contain one
   // or two GPRs, so we need table to record information for later save/restore.
@@ -2794,6 +3292,10 @@ bool PPCFrameLowering::restoreCalleeSavedRegisters(
   bool CR4Spilled = false;
   unsigned CSIIndex = 0;
   BitVector Restored(TRI->getNumRegs());
+
+  // The NT epilogue restores the callee saves itself, relative to the CFA.
+  if (isNTEpilogueBlock(MBB))
+    return true;
 
   // Initialize insertion-point logic; we will be restoring in reverse
   // order of spill.

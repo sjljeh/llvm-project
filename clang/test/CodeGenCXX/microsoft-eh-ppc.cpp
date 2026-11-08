@@ -36,28 +36,39 @@ void g() {
 // returns the continuation address in r3.
 // ASM: .seh_handler __CxxFrameHandler, @unwind, @except
 // ASM-NOT: stw 2,
-// ASM: stwu 1, -64(1)
-// ASM: stw 0, 72(1)
-// ASM: .seh_endprologue
+// ASM: mflr 0
+// ASM-NEXT: stw 0, 8(1)
+// ASM-NEXT: stw 31, -4(1)
+// ASM-NEXT: stwu 1, -64(1)
+// ASM-NEXT: mr 31, 1
+// ASM-NEXT: .seh_endprologue
 // ASM: "$cppxdata$?g@@YAXXZ":
 // ASM-NEXT: .long 429065504{{.*}}# MagicNumber
 // ASM: "$handlerMap$0$?g@@YAXXZ":
 // ASM-NEXT: .long 0{{.*}}# Adjectives
 // ASM-NEXT: .long "??_R0H@8"{{.*}}# Type
-// ASM-NEXT: .long -4{{.*}}# CatchObjOffset
+// The runtime stores the caught object at this establisher-relative offset;
+// it must lie below the parent's saved r31 at -4.
+// ASM-NEXT: .long -8{{.*}}# CatchObjOffset
 // ASM-NEXT: .long "?catch$4@?0??g@@YAXXZ@4HA"{{.*}}# Handler
 // ASM-NEXT: "$ip2state$?g@@YAXXZ":
 // ASM: "?catch$4@?0??g@@YAXXZ@4HA":
 // ASM-NEXT: .seh_proc "?catch$4@?0??g@@YAXXZ@4HA"
 // ASM-NOT: .seh_handler
-// ASM: stwu 1, -64(1)
-// ASM: addi 31, 2, -64
+// ASM: mflr 0
+// ASM-NEXT: stw 0, 8(1)
+// ASM-NEXT: stw 31, -4(1)
+// ASM-NEXT: stwu 1, -64(1)
+// ASM-NEXT: addi 31, 2, -64
 // ASM-NEXT: lis 2, .toc@ha
 // ASM-NEXT: addi 2, 2, .toc@l
 // ASM-NEXT: .seh_endprologue
-// ASM: lwz 3, 60(31)
+// ASM: lwz 3, 56(31)
+// The continuation address is loaded before the frame is released, which NT
+// requires to be the instruction directly before the blr.
 // ASM: lis 3, .LBB0_1@ha
 // ASM-NEXT: addi 3, 3, .LBB0_1@l
+// ASM-NEXT: addi 1, 1, 64
 // ASM-NEXT: blr
 
 // The object contains one five-word parent RUNTIME_FUNCTION and one five-word
@@ -86,7 +97,7 @@ void g() {
 // OBJ-NEXT: 0x24 IMAGE_REL_PPC_ADDR32 .text
 // OBJ: Hex dump of section '.xdata':
 // OBJ-NEXT: 0x00000000 20059319 02000000 00000000 01000000
-// OBJ: 0x00000040 00000000 00000000 fcffffff 00000000
+// OBJ: 0x00000040 00000000 00000000 f8ffffff 00000000
 // OBJ: Hex dump of section '.pdata':
 // OBJ-NEXT: 0x00000000 00000000 3c000000 00000000 00000000
 // OBJ-NEXT: 0x00000010 14000000 3c000000 80000000 00000000

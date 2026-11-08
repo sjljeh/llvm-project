@@ -82,6 +82,18 @@ class PPCFrameLowering: public TargetFrameLowering {
     */
   bool stackUpdateCanBeMoved(MachineFunction &MF) const;
 
+  /// Windows NT PowerPC frames. The NT unwinder has no unwind codes: it
+  /// reverse-executes the prologue and recognizes only plain stores of saved
+  /// registers relative to r1 and a single stwu/stwux allocation. These
+  /// helpers emit prologues and epilogues in that shape.
+  bool usesNTFrame(const MachineFunction &MF) const;
+  bool isNTEpilogueBlock(const MachineBasicBlock &MBB) const;
+  void emitNTPrologue(MachineFunction &MF, MachineBasicBlock &MBB) const;
+  void emitNTEpilogue(MachineFunction &MF, MachineBasicBlock &MBB) const;
+  void inlineNTStackProbe(MachineFunction &MF, MachineBasicBlock &MBB,
+                          MachineInstr &MI) const;
+  void assignWinEHCatchObjectOffsets(MachineFunction &MF) const;
+
 public:
   PPCFrameLowering(const PPCSubtarget &STI);
 

@@ -1516,9 +1516,11 @@ def SEH_RecoverFrameOffset : PPCEmitTimePseudo<
 let isTerminator = 1, hasSideEffects = 1, isBarrier = 1, hasCtrlDep = 1,
     isCodeGenOnly = 1, isReturn = 1, isEHScopeReturn = 1,
     hasNoSchedulingInfo = 1, Uses = [LR, RM] in {
+  // On Windows NT the expansion also releases the funclet frame.
+  let Size = 8 in
   def CLEANUPRET : PPCEmitTimePseudo<(outs), (ins), "#CLEANUPRET",
                                      [(cleanupret bb)]>;
-  let Defs = [R3], Size = 12 in
+  let Defs = [R3], Size = 16 in
   def CATCHRET : PPCEmitTimePseudo<
       (outs), (ins directbrtarget:$dst, directbrtarget:$from), "#CATCHRET $dst",
       [(catchret bb:$dst, bb:$from)]>;

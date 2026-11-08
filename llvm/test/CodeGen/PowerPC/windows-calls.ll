@@ -14,8 +14,8 @@
 
 ; CHECK-LABEL: ..calls:
 ; CHECK:       mflr 0
+; CHECK-NEXT:  stw 0, 8(1)
 ; CHECK-NEXT:  stwu 1, -64(1)
-; CHECK-NEXT:  stw 0, 72(1)
 ; A call to a function defined in this module shares its TOC.
 ; CHECK:       bl ..local
 ; CHECK-NEXT:  bl ..external

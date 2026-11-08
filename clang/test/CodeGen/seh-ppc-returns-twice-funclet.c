@@ -22,12 +22,14 @@ int seh_with_setjmp(void *buffer) {
 // generated cleanup funclet must still restore its own stack frame from r1;
 // r31 addresses escaped parent locals and cannot be used as its stack base.
 // ASM-LABEL: "?dtor$
-// ASM: stwu 1, -[[SIZE:[0-9]+]](1)
+// ASM: stw 31, -4(1)
+// ASM-NEXT: stwu 1, -[[SIZE:[0-9]+]](1)
 // ASM: addi 31, 2, -[[SIZE]]
 // ASM: bl "..?fin$
 // ASM-NOT: mr 1, 31
-// NT recognizes the epilogue only at the blr, so the frame is released last.
-// ASM: lwz 31, {{[0-9]+}}(1)
-// ASM-NEXT: mtlr 0
-// ASM-NEXT: addi 1, 1, [[SIZE]]
+// NT recognizes the epilogue only at the blr, so the frame is released last,
+// from the CFA in the funclet's own back chain.
+// ASM: lwz 12, 0(1)
+// ASM: lwz 31, -4(12)
+// ASM-NEXT: mr 1, 12
 // ASM-NEXT: blr
