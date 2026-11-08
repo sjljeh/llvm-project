@@ -176,6 +176,24 @@ def ADJUSTSTACKDOWN : PseudoInstAlpha<(outs), (ins s64imm:$amt1, s64imm:$amt2),
 let isCodeGenOnly = 1, hasSideEffects = 1, hasNoSchedulingInfo = 1 in
 def SEH_PrologEnd : PseudoInstAlpha<(outs), (ins), "", [], s_pseudo>;
 
+// Windows stack probes. PROBED_ALLOCA_NT touches each page between $30 and
+// the new $30, then sets $30 (AlphaTargetLowering::emitProbedAlloca).
+// NT_PROBE_STACK marks where the prologue probes the fixed frame; its operands
+// are the current and the lowest $30 of the allocation that follows, as
+// offsets below the incoming $30 (AlphaFrameLowering::inlineStackProbe).
+def Alpha_probed_alloca : SDNode<"AlphaISD::PROBED_ALLOCA",
+                                 SDTypeProfile<0, 1, [SDTCisVT<0, i64>]>,
+                                 [SDNPHasChain, SDNPMayStore]>;
+let isCodeGenOnly = 1, hasSideEffects = 1, hasNoSchedulingInfo = 1,
+    usesCustomInserter = 1, Defs = [R30], Uses = [R30] in
+def PROBED_ALLOCA_NT : PseudoInstAlpha<(outs), (ins GPRC:$newsp), "",
+                                       [(Alpha_probed_alloca GPRC:$newsp)],
+                                       s_pseudo>;
+let isCodeGenOnly = 1, hasSideEffects = 1, hasNoSchedulingInfo = 1,
+    Uses = [R30] in
+def NT_PROBE_STACK : PseudoInstAlpha<(outs), (ins s64imm:$cur, s64imm:$final),
+                                     "", [], s_pseudo>;
+
 // An assembler-time constant from llvm.localescape: the frame offset that
 // llvm.localrecover adds to a parent frame in outlined SEH code.
 def AlphaLocalRecover : SDNode<"ISD::LOCAL_RECOVER",

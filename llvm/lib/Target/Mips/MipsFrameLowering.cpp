@@ -12,10 +12,13 @@
 
 #include "MipsFrameLowering.h"
 #include "MipsInstrInfo.h"
+#include "MipsMachineFunction.h"
 #include "MipsTargetMachine.h"
+#include "llvm/CodeGen/Analysis.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
+#include "llvm/CodeGen/WinEHFuncInfo.h"
 
 using namespace llvm;
 
@@ -126,13 +129,36 @@ uint64_t MipsFrameLowering::estimateStackSize(const MachineFunction &MF) const {
   return Size + MFI.estimateStackSize(MF);
 }
 
+unsigned
+MipsFrameLowering::getWinEHParentFrameOffset(const MachineFunction &MF) const {
+  return MF.getInfo<MipsFunctionInfo>()->getWinPrologueSaveAreaSize();
+}
+
+/// Whether \p MBB belongs to a Windows EH funclet rather than to the parent.
+static bool isInWinEHFunclet(MachineFunction &MF,
+                             const MachineBasicBlock &MBB) {
+  if (!MF.hasEHFunclets() || !MF.getWinEHFuncInfo())
+    return false;
+  // PEI may eliminate call frame pseudos before
+  // processFunctionBeforeFrameFinalized computes the membership.
+  auto &Scopes = MF.getWinEHFuncInfo()->EHScopeMembership;
+  if (Scopes.empty())
+    Scopes = getEHScopeMembership(MF);
+  auto It = Scopes.find(&MBB);
+  return It != Scopes.end() && It->second != MF.front().getNumber();
+}
+
 // Eliminate ADJCALLSTACKDOWN, ADJCALLSTACKUP pseudo instructions
 MachineBasicBlock::iterator MipsFrameLowering::
 eliminateCallFramePseudoInstr(MachineFunction &MF, MachineBasicBlock &MBB,
                               MachineBasicBlock::iterator I) const {
   unsigned SP = STI.getABI().IsN64() ? Mips::SP_64 : Mips::SP;
 
-  if (!hasReservedCallFrame(MF)) {
+  // A Windows funclet's $fp addresses its parent's frame, so the NT unwinder
+  // can recover the funclet's own $sp only if its body never moves $sp. Its
+  // copy of the frame holds the outgoing argument area instead (see
+  // MipsSEFrameLowering::processFunctionBeforeFrameFinalized).
+  if (!hasReservedCallFrame(MF) && !isInWinEHFunclet(MF, MBB)) {
     int64_t Amount = I->getOperand(0).getImm();
     if (I->getOpcode() == Mips::ADJCALLSTACKDOWN)
       Amount = -Amount;

@@ -34,15 +34,20 @@ void g() {
 
 // ASM: .seh_handler __CxxFrameHandler, @unwind, @except
 // ASM: .seh_endprologue
+// ASM-NEXT: sw $zero, 20($fp)
+// ASM: $ehgcr_0_2:
+// ASM-NEXT: sb $zero, 20($fp)
+// ASM-NEXT: sb $zero, 21($fp)
 // ASM: "$cppxdata$?g@@YAXXZ":
 // ASM-NEXT: .long 429065504
-// ASM: .long -1{{.*}}# TryBlockIndex
+// ASM: .long -20{{.*}}# UnwindHelp
+// ASM-NEXT: .long -1{{.*}}# TryBlockIndex
 // ASM-NEXT: .long 1{{.*}}# FrameNestLevel
 // ASM: "$handlerMap$0$?g@@YAXXZ":
 // ASM: .long -8{{.*}}# CatchObjOffset
 // ASM-NEXT: .long 1{{.*}}# FrameNestLevel
 // ASM: "?catch$1@?0??g@@YAXXZ@4HA":
-// ASM: sw $2, 28($sp)
+// ASM: sw $2, 36($sp)
 // ASM-NEXT: move $fp, $2
 // ASM-NEXT: .seh_endprologue
 // ASM: lw $4, -8($fp)
@@ -50,12 +55,14 @@ void g() {
 // ASM-NEXT: addiu $2, $2, %lo(.LBB0_2)
 // ASM-NEXT: jr $ra
 // ASM: "$cppxdata$?catch$1@?0??g@@YAXXZ@4HA":
-// ASM: .long 0{{.*}}# TryBlockIndex
+// ASM: .long "$stateUnwindMap$?catch$1@?0??g@@YAXXZ@4HA"
+// ASM: .long -20{{.*}}# UnwindHelp
+// ASM-NEXT: .long 0{{.*}}# TryBlockIndex
 // ASM-NEXT: .long 2{{.*}}# FrameNestLevel
 
 // OBJ: Format: COFF-MIPS
 // OBJ: Name: .xdata
-// OBJ: RawDataSize: 0xB0
+// OBJ: RawDataSize: 0xC0
 // OBJ: Name: .pdata
 // OBJ: RawDataSize: 0x28
 // OBJ: Section {{.*}} .xdata {
@@ -77,4 +84,4 @@ void g() {
 // ROUNDTRIP: IMAGE_REL_MIPS_REFWORD __CxxFrameHandler
 // ROUNDTRIP-NEXT: IMAGE_REL_MIPS_REFWORD .xdata
 // ROUNDTRIP: Hex dump of section '.pdata':
-// ROUNDTRIP: 0x00000020 80000000 58000000
+// ROUNDTRIP: 0x00000020 80000000 64000000

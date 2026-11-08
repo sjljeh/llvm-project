@@ -2396,6 +2396,22 @@ def PseudoReturn : PseudoReturnBase<GPR32Opnd>;
 let isCodeGenOnly = 1, hasSideEffects = 1, hasNoSchedulingInfo = 1 in
 def SEH_PrologEnd : MipsPseudo<(outs), (ins), []>;
 
+// Windows stack probes. PROBED_ALLOCA_NT touches each page between $sp and
+// the new $sp, then sets $sp (MipsTargetLowering::emitProbedAlloca).
+// NT_PROBE_STACK marks where the prologue probes the fixed frame; its
+// operands are the current and final $sp, as offsets below the incoming $sp
+// (MipsSEFrameLowering::inlineStackProbe).
+def MipsProbedAlloca : SDNode<"MipsISD::PROBED_ALLOCA",
+                              SDTypeProfile<0, 1, [SDTCisVT<0, i32>]>,
+                              [SDNPHasChain, SDNPMayStore]>;
+let isCodeGenOnly = 1, hasSideEffects = 1, hasNoSchedulingInfo = 1,
+    usesCustomInserter = 1, Defs = [R29], Uses = [R29] in
+def PROBED_ALLOCA_NT : MipsPseudo<(outs), (ins GPR32Opnd:$newsp),
+                                  [(MipsProbedAlloca GPR32Opnd:$newsp)]>;
+let isCodeGenOnly = 1, hasSideEffects = 1, hasNoSchedulingInfo = 1,
+    Uses = [R29] in
+def NT_PROBE_STACK : MipsPseudo<(outs), (ins i32imm:$cur, i32imm:$final), []>;
+
 // The assembler-time offset from a parent function's NT establisher frame to
 // its llvm.localaddress, used by llvm.eh.recoverfp in SEH filters.
 def MipsLocalRecover : SDNode<"ISD::LOCAL_RECOVER",

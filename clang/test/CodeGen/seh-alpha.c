@@ -57,16 +57,22 @@ int seh_filter(volatile int *p, int selector) {
 // ASM-NEXT: ldq $15,0($30)
 // ASM-NEXT: lda $30,48($30)
 // ASM-NEXT: ret
+// ASM: .Lseh_filter$parent_frame_mask = -1
 // ASM: .Lseh_filter$parent_frame_offset = 0
 // ASM: .long {{.*}} # LabelEnd
 // ASM-NEXT: .long "?filt$0@0@seh_filter@@" # FilterFunction
 // ASM-NEXT: .long .LBB0_4 # ExceptionHandler
 
-// The filter's establisher frame is llvm.localaddress itself.
+// The filter's establisher frame, rounded down to the parent's frame alignment
+// ($parent_frame_mask, -1 for a frame that is not realigned), is
+// llvm.localaddress.
 // ASM-LABEL: "?filt$0@0@seh_filter@@":
-// ASM: ldah $0,.Lseh_filter$frame_escape_0($31)
-// ASM-NEXT: lda $0,.Lseh_filter$frame_escape_0($0)
-// ASM-NEXT: addq $18,$0,$0
+// ASM: ldah $0,.Lseh_filter$parent_frame_mask($31)
+// ASM-NEXT: lda $0,.Lseh_filter$parent_frame_mask($0)
+// ASM-NEXT: and $18,$0,$0
+// ASM-NEXT: ldah $1,.Lseh_filter$frame_escape_0($31)
+// ASM-NEXT: lda $1,.Lseh_filter$frame_escape_0($1)
+// ASM-NEXT: addq $0,$1,$0
 // ASM-NEXT: ldl $17,0($0)
 // ASM: bsr $26,$inspect_exception..ng
 
@@ -82,16 +88,16 @@ void seh_finally(int n) {
 // The termination funclet runs on its own frame and points $15 at its
 // parent's frame body, from the establisher frame in t0.
 // ASM-LABEL: "?dtor$4@?0?seh_finally@4HA":
-// ASM: lda $30,-48($30)
+// ASM: lda $30,-32($30)
 // ASM-NEXT: stq $15,0($30)
-// ASM-NEXT: stq $26,40($30)
-// ASM-NEXT: lda $15,-48($1)
+// ASM-NEXT: stq $26,24($30)
+// ASM-NEXT: lda $15,-32($1)
 // ASM-NEXT: .seh_endprologue
-// ASM: lda $1,48($15)
+// ASM: lda $1,32($15)
 // ASM-NOT: bis $15,$15,$30
-// ASM: ldq $26,40($30)
+// ASM: ldq $26,24($30)
 // ASM-NEXT: ldq $15,0($30)
-// ASM-NEXT: lda $30,48($30)
+// ASM-NEXT: lda $30,32($30)
 // ASM-NEXT: ret
 
 int seh_code(void) {

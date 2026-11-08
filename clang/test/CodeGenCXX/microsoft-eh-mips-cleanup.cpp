@@ -20,11 +20,14 @@ void cleanup() {
 }
 
 // ASM: .seh_handler __CxxFrameHandler, @unwind, @except
+// ASM: .seh_endprologue
+// ASM-NEXT: sw $zero, 20($fp)
 // ASM: "$cppxdata$?cleanup@@YAXXZ":
+// ASM: .long -20{{.*}}# UnwindHelp
 // ASM: "?dtor$2@?0??cleanup@@YAXXZ@4HA":
 // ASM-NEXT: .seh_proc "?dtor$2@?0??cleanup@@YAXXZ@4HA"
 // ASM-NOT: .seh_handler
-// ASM: sw $2, 28($sp)
+// ASM: sw $2, 36($sp)
 // ASM-NEXT: move $fp, $2
 // ASM-NEXT: .seh_endprologue
 // ASM: addiu $4, $fp, -13
@@ -43,4 +46,4 @@ void cleanup() {
 // OBJ-NEXT: 0x18 IMAGE_REL_MIPS_REFWORD .text
 // OBJ-NEXT: 0x24 IMAGE_REL_MIPS_REFWORD .text
 // OBJ: Hex dump of section '.pdata':
-// OBJ: 0x00000020 00000000 54000000
+// OBJ: 0x00000020 00000000 58000000

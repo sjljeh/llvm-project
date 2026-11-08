@@ -133,6 +133,15 @@ using TargetRegisterClass = MCRegisterClass;
     EmitInstrWithCustomInserter(MachineInstr &MI,
                                 MachineBasicBlock *MBB) const override;
 
+    /// Windows MIPS (o32) touches every page of a large frame or alloca
+    /// before moving $sp past it, for functions with
+    /// "probe-stack"="inline-asm" (clang's default on Windows).
+    bool hasInlineStackProbe(const MachineFunction &MF) const override;
+    /// The probe interval: "stack-probe-size" (default 4096), at least the
+    /// stack alignment and at most 16384, so that every probe offset fits
+    /// an addiu or sw immediate.
+    unsigned getStackProbeSize(const MachineFunction &MF) const;
+
     void AdjustInstrPostInstrSelection(MachineInstr &MI,
                                        SDNode *Node) const override;
 
@@ -385,6 +394,7 @@ using TargetRegisterClass = MCRegisterClass;
     SDValue lowerShiftRightParts(SDValue Op, SelectionDAG& DAG,
                                  bool IsSRA) const;
     SDValue lowerEH_DWARF_CFA(SDValue Op, SelectionDAG &DAG) const;
+    SDValue lowerDYNAMIC_STACKALLOC(SDValue Op, SelectionDAG &DAG) const;
     SDValue lowerFP_TO_SINT(SDValue Op, SelectionDAG &DAG) const;
     SDValue lowerSTRICT_FP_TO_INT(SDValue Op, SelectionDAG &DAG) const;
     SDValue lowerREADCYCLECOUNTER(SDValue Op, SelectionDAG &DAG) const;
@@ -533,6 +543,8 @@ using TargetRegisterClass = MCRegisterClass;
                                                  unsigned Size) const;
     MachineBasicBlock *emitPseudoSELECT(MachineInstr &MI, MachineBasicBlock *BB,
                                         bool isFPCmp, unsigned Opc) const;
+    MachineBasicBlock *emitProbedAlloca(MachineInstr &MI,
+                                        MachineBasicBlock *BB) const;
     MachineBasicBlock *emitPseudoD_SELECT(MachineInstr &MI,
                                           MachineBasicBlock *BB) const;
     MachineBasicBlock *emitLDR_W(MachineInstr &MI, MachineBasicBlock *BB) const;

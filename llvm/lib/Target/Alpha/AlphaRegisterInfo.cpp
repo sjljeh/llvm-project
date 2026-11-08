@@ -79,7 +79,18 @@ BitVector AlphaRegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   Reserved.set(Alpha::R29);
   Reserved.set(Alpha::R30);
   Reserved.set(Alpha::R31);
+  if (AlphaFrameLowering::hasBP(MF))
+    Reserved.set(AlphaFrameLowering::BasePtrReg);
   return Reserved;
+}
+
+bool AlphaRegisterInfo::canRealignStack(const MachineFunction &MF) const {
+  if (!TargetRegisterInfo::canRealignStack(MF))
+    return false;
+  // $15 is always reserved. The base pointer must be reservable too, which it
+  // no longer is once the reserved registers are frozen without it.
+  return !AlphaFrameLowering::needsBasePointerIfRealigned(MF) ||
+         MF.getRegInfo().canReserveReg(AlphaFrameLowering::BasePtrReg);
 }
 
 //===----------------------------------------------------------------------===//
@@ -140,9 +151,8 @@ AlphaRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
   MachineInstr &MI = *II;
   MachineBasicBlock &MBB = *MI.getParent();
   MachineFunction &MF = *MBB.getParent();
-  const TargetFrameLowering *TFI = MF.getSubtarget().getFrameLowering();
-
-  bool FP = TFI->hasFP(MF);
+  const auto *TFI = static_cast<const AlphaFrameLowering *>(
+      MF.getSubtarget().getFrameLowering());
 
   while (i >= MI.getNumOperands() || !MI.getOperand(i).isFI()) {
     ++i;
@@ -152,19 +162,24 @@ AlphaRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
   int FrameIndex = MI.getOperand(i).getIndex();
 
   // LOCAL_ESCAPE names a constant that llvm.localrecover adds to
-  // llvm.localaddress, which Windows lowers to the incoming $30.
+  // llvm.localaddress, which Windows lowers to the incoming $30, or in a
+  // realigned frame to the incoming $30 rounded down to the frame alignment.
+  // Either way an escaped object is at its CFA offset from it.
   if (MI.getOpcode() == TargetOpcode::LOCAL_ESCAPE) {
+    if (MF.getFrameInfo().isFixedObjectIndex(FrameIndex) &&
+        hasStackRealignment(MF))
+      report_fatal_error("Cannot escape a fixed object of a realigned frame");
     MI.getOperand(i).ChangeToImmediate(
         MF.getFrameInfo().getObjectOffset(FrameIndex));
     return false;
   }
 
-  // Add the base register of R30 (SP) or R15 (FP). Windows addresses
-  // callee-saved slots from $30; see AlphaFrameLowering::isCalleeSaveSlot.
-  if (FP && MF.getSubtarget().getTargetTriple().isOSWindows() &&
-      AlphaFrameLowering::isCalleeSaveSlot(MF, FrameIndex))
-    FP = false;
-  MI.getOperand(i + 1).ChangeToRegister(FP ? Alpha::R15 : Alpha::R30, false);
+  // The base register is $30 (SP), $15 (FP, the unaligned frame base), or
+  // the aligned frame base ($30 or the base pointer) in a realigned frame.
+  // Windows addresses callee-saved slots from $30; see
+  // AlphaFrameLowering::isCalleeSaveSlot.
+  Register Base = TFI->getFrameBaseRegister(MF, FrameIndex);
+  MI.getOperand(i + 1).ChangeToRegister(Base, false);
 
   // Now add the frame object offset to the offset from the virtual frame index.
   int Offset = MF.getFrameInfo().getObjectOffset(FrameIndex);
@@ -192,9 +207,10 @@ AlphaRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
     MI.getOperand(i + 1).ChangeToRegister(Alpha::R28, false);
     MI.getOperand(i).ChangeToImmediate(getLower16(Offset));
     //insert the new
-    MachineInstr* nMI=BuildMI(MF, MI.getDebugLoc(),
-                              TII.get(Alpha::LDAH), Alpha::R28)
-      .addImm(getUpper16(Offset)).addReg(FP ? Alpha::R15 : Alpha::R30);
+    MachineInstr *nMI =
+        BuildMI(MF, MI.getDebugLoc(), TII.get(Alpha::LDAH), Alpha::R28)
+            .addImm(getUpper16(Offset))
+            .addReg(Base);
     MBB.insert(II, nMI);
   } else {
     MI.getOperand(i).ChangeToImmediate(Offset);

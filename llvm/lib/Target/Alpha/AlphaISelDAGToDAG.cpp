@@ -312,6 +312,23 @@ void AlphaDAGToDAGISel::Select(SDNode *N) {
         val32 <= IMM_HIGH + IMM_HIGH * IMM_MULT)
       // val32 >= IMM_LOW  + IMM_LOW  * IMM_MULT) //always true
       break; //(zext (LDAH (LDA)))
+    // A zero-extended 32-bit value with bit 31 set, such as a promoted i32
+    // -1: materialize it sign-extended and clear the upper half. The constant
+    // pool below is addressed from $gp, which Windows NT does not set up.
+    if ((uval >> 32) == 0) {
+      SDValue Reg = CurDAG->getRegister(Alpha::R31, MVT::i64);
+      int64_t Hi = get_ldah16(val32), Lo = get_lda16(val32);
+      if (Hi) {
+        SDNode *LDAH = CurDAG->getMachineNode(Alpha::LDAH, dl, MVT::i64,
+                                              getI64Imm(Hi), Reg);
+        Reg = SDValue(LDAH, 0);
+      }
+      SDNode *LDA =
+          CurDAG->getMachineNode(Alpha::LDA, dl, MVT::i64, getI64Imm(Lo), Reg);
+      CurDAG->SelectNodeTo(N, Alpha::ZAPNOTi, MVT::i64, SDValue(LDA, 0),
+                           getI64Imm(15));
+      return;
+    }
     //Else use the constant pool
     ConstantInt *C = ConstantInt::get(
                                 Type::getInt64Ty(*CurDAG->getContext()), uval);

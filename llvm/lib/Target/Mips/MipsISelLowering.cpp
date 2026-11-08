@@ -335,7 +335,13 @@ MipsTargetLowering::MipsTargetLowering(const MipsTargetMachine &TM,
   setOperationAction(ISD::CTTZ,              MVT::i64,   Expand);
   setOperationAction(ISD::ROTL,              MVT::i32,   Expand);
   setOperationAction(ISD::ROTL,              MVT::i64,   Expand);
-  setOperationAction(ISD::DYNAMIC_STACKALLOC, MVT::i32,  Expand);
+  // Windows o32 probes alloca'd stack when the function asks for inline
+  // probes; lowerDYNAMIC_STACKALLOC otherwise defers to the expansion.
+  setOperationAction(ISD::DYNAMIC_STACKALLOC, MVT::i32,
+                     Subtarget.getTargetTriple().isOSWindows() &&
+                             !Subtarget.getABI().IsN64()
+                         ? Custom
+                         : Expand);
   setOperationAction(ISD::DYNAMIC_STACKALLOC, MVT::i64,  Expand);
 
   if (!Subtarget.hasMips32r2())
@@ -1287,6 +1293,8 @@ LowerOperation(SDValue Op, SelectionDAG &DAG) const
   case ISD::LOAD:               return lowerLOAD(Op, DAG);
   case ISD::STORE:              return lowerSTORE(Op, DAG);
   case ISD::EH_DWARF_CFA:       return lowerEH_DWARF_CFA(Op, DAG);
+  case ISD::DYNAMIC_STACKALLOC:
+    return lowerDYNAMIC_STACKALLOC(Op, DAG);
   case ISD::STRICT_FP_TO_SINT:
   case ISD::STRICT_FP_TO_UINT:
     return lowerSTRICT_FP_TO_INT(Op, DAG);
@@ -1555,6 +1563,8 @@ MipsTargetLowering::EmitInstrWithCustomInserter(MachineInstr &MI,
   case Mips::PseudoD_SELECT_I:
   case Mips::PseudoD_SELECT_I64:
     return emitPseudoD_SELECT(MI, BB);
+  case Mips::PROBED_ALLOCA_NT:
+    return emitProbedAlloca(MI, BB);
   case Mips::LDR_W:
     return emitLDR_W(MI, BB);
   case Mips::LDR_D:
@@ -3059,6 +3069,151 @@ SDValue MipsTargetLowering::lowerEH_DWARF_CFA(SDValue Op,
   EVT ValTy = Op->getValueType(0);
   int FI = MFI.CreateFixedObject(Op.getValueSizeInBits() / 8, 0, false);
   return DAG.getFrameIndex(FI, ValTy);
+}
+
+bool MipsTargetLowering::hasInlineStackProbe(const MachineFunction &MF) const {
+  if (!Subtarget.getTargetTriple().isOSWindows() || Subtarget.getABI().IsN64())
+    return false;
+  const Function &F = MF.getFunction();
+  return F.hasFnAttribute("probe-stack") &&
+         F.getFnAttribute("probe-stack").getValueAsString() == "inline-asm";
+}
+
+unsigned
+MipsTargetLowering::getStackProbeSize(const MachineFunction &MF) const {
+  unsigned StackAlign = Subtarget.getFrameLowering()->getStackAlign().value();
+  unsigned Size =
+      MF.getFunction().getFnAttributeAsParsedInteger("stack-probe-size", 4096);
+  Size = std::min(Size, 16384u) & ~(StackAlign - 1);
+  return std::max(Size, StackAlign);
+}
+
+// NT grows a stack only through the guard page directly below its committed
+// part, so an alloca must touch each page it skips before $sp moves past
+// it, down to the new bottom.
+SDValue MipsTargetLowering::lowerDYNAMIC_STACKALLOC(SDValue Op,
+                                                    SelectionDAG &DAG) const {
+  MachineFunction &MF = DAG.getMachineFunction();
+  if (!hasInlineStackProbe(MF))
+    return SDValue();
+
+  SDLoc DL(Op);
+  EVT VT = Op.getValueType();
+  SDValue Chain = Op.getOperand(0);
+  SDValue Size = Op.getOperand(1);
+  MaybeAlign Alignment =
+      cast<ConstantSDNode>(Op.getOperand(2))->getMaybeAlignValue();
+
+  SDValue NewSP = DAG.getCopyFromReg(Chain, DL, ABI.GetStackPtr(), VT);
+  Chain = NewSP.getValue(1);
+  NewSP = DAG.getNode(ISD::SUB, DL, VT, NewSP, Size);
+  if (Alignment && *Alignment > Subtarget.getFrameLowering()->getStackAlign())
+    NewSP = DAG.getNode(ISD::AND, DL, VT, NewSP,
+                        DAG.getSignedConstant(-Alignment->value(), DL, VT));
+  Chain = DAG.getNode(MipsISD::PROBED_ALLOCA, DL, MVT::Other, Chain, NewSP);
+  return DAG.getMergeValues({NewSP, Chain}, DL);
+}
+
+// Probe the pages between $sp and NewSP, top to bottom, then set $sp:
+//
+//   [MBB]   old = $sp; lim = new + PS; cur = old - PS
+//           beq (lim <u old), $zero, Last
+//   [Loop]  sw $zero, 0(cur); c = lim <u cur; cur -= PS; bne c, $zero, Loop
+//   [Last]  beq (new <u old), $zero, Done
+//   [Touch] sw $zero, 0(new)
+//   [Done]  $sp = new
+//
+// Every probe lies less than one page below the previous one (or below the old
+// $sp), and the page holding the new $sp is touched. The decrement comes last
+// in the loop, so it is what the delay slot filler moves under the branch.
+MachineBasicBlock *
+MipsTargetLowering::emitProbedAlloca(MachineInstr &MI,
+                                     MachineBasicBlock *MBB) const {
+  MachineFunction &MF = *MBB->getParent();
+  const TargetInstrInfo &TII = *Subtarget.getInstrInfo();
+  MachineRegisterInfo &MRI = MF.getRegInfo();
+  const TargetRegisterClass *RC = &Mips::GPR32RegClass;
+  DebugLoc DL = MI.getDebugLoc();
+  Register NewSP = MI.getOperand(0).getReg();
+  int64_t ProbeSize = getStackProbeSize(MF);
+
+  const BasicBlock *LLVMBB = MBB->getBasicBlock();
+  MachineFunction::iterator InsertPt = std::next(MBB->getIterator());
+  MachineBasicBlock *LoopMBB = MF.CreateMachineBasicBlock(LLVMBB);
+  MachineBasicBlock *LastMBB = MF.CreateMachineBasicBlock(LLVMBB);
+  MachineBasicBlock *TouchMBB = MF.CreateMachineBasicBlock(LLVMBB);
+  MachineBasicBlock *DoneMBB = MF.CreateMachineBasicBlock(LLVMBB);
+  MF.insert(InsertPt, LoopMBB);
+  MF.insert(InsertPt, LastMBB);
+  MF.insert(InsertPt, TouchMBB);
+  MF.insert(InsertPt, DoneMBB);
+  DoneMBB->splice(DoneMBB->begin(), MBB,
+                  std::next(MachineBasicBlock::iterator(MI)), MBB->end());
+  DoneMBB->transferSuccessorsAndUpdatePHIs(MBB);
+
+  Register OldSP = MRI.createVirtualRegister(RC);
+  Register Lim = MRI.createVirtualRegister(RC);
+  Register Start = MRI.createVirtualRegister(RC);
+  Register C0 = MRI.createVirtualRegister(RC);
+  BuildMI(*MBB, MI, DL, TII.get(TargetOpcode::COPY), OldSP)
+      .addReg(ABI.GetStackPtr());
+  BuildMI(*MBB, MI, DL, TII.get(Mips::ADDiu), Lim)
+      .addReg(NewSP)
+      .addImm(ProbeSize);
+  BuildMI(*MBB, MI, DL, TII.get(Mips::ADDiu), Start)
+      .addReg(OldSP)
+      .addImm(-ProbeSize);
+  BuildMI(*MBB, MI, DL, TII.get(Mips::SLTu), C0).addReg(Lim).addReg(OldSP);
+  BuildMI(*MBB, MI, DL, TII.get(Mips::BEQ))
+      .addReg(C0)
+      .addReg(Mips::R0)
+      .addMBB(LastMBB);
+  MBB->addSuccessor(LoopMBB);
+  MBB->addSuccessor(LastMBB);
+
+  Register Cur = MRI.createVirtualRegister(RC);
+  Register Next = MRI.createVirtualRegister(RC);
+  Register C = MRI.createVirtualRegister(RC);
+  BuildMI(LoopMBB, DL, TII.get(TargetOpcode::PHI), Cur)
+      .addReg(Start)
+      .addMBB(MBB)
+      .addReg(Next)
+      .addMBB(LoopMBB);
+  BuildMI(LoopMBB, DL, TII.get(Mips::SW))
+      .addReg(Mips::R0)
+      .addReg(Cur)
+      .addImm(0);
+  BuildMI(LoopMBB, DL, TII.get(Mips::SLTu), C).addReg(Lim).addReg(Cur);
+  BuildMI(LoopMBB, DL, TII.get(Mips::ADDiu), Next)
+      .addReg(Cur)
+      .addImm(-ProbeSize);
+  BuildMI(LoopMBB, DL, TII.get(Mips::BNE))
+      .addReg(C)
+      .addReg(Mips::R0)
+      .addMBB(LoopMBB);
+  LoopMBB->addSuccessor(LoopMBB);
+  LoopMBB->addSuccessor(LastMBB);
+
+  Register C2 = MRI.createVirtualRegister(RC);
+  BuildMI(LastMBB, DL, TII.get(Mips::SLTu), C2).addReg(NewSP).addReg(OldSP);
+  BuildMI(LastMBB, DL, TII.get(Mips::BEQ))
+      .addReg(C2)
+      .addReg(Mips::R0)
+      .addMBB(DoneMBB);
+  LastMBB->addSuccessor(TouchMBB);
+  LastMBB->addSuccessor(DoneMBB);
+
+  BuildMI(TouchMBB, DL, TII.get(Mips::SW))
+      .addReg(Mips::R0)
+      .addReg(NewSP)
+      .addImm(0);
+  TouchMBB->addSuccessor(DoneMBB);
+
+  BuildMI(*DoneMBB, DoneMBB->begin(), DL, TII.get(TargetOpcode::COPY),
+          ABI.GetStackPtr())
+      .addReg(NewSP);
+  MI.eraseFromParent();
+  return DoneMBB;
 }
 
 SDValue MipsTargetLowering::lowerFP_TO_SINT(SDValue Op,

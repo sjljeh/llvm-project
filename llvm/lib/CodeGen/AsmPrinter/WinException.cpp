@@ -331,10 +331,13 @@ void WinException::beginFunclet(const MachineBasicBlock &MBB, MCSymbol *Sym) {
   }
 
   CurrentFuncletUsesPersonality = shouldEmitPersonality;
-  // The NT PowerPC C++ runtime invokes funclets through _CallSettingFrame.
-  // Exceptions leaving a funclet must unwind through that runtime wrapper,
-  // so only the parent function carries __CxxFrameHandler in .pdata.
-  if (usesPPCWindowsEH(*Asm) && MBB.isEHFuncletEntry())
+  // The NT PowerPC and Alpha C++ runtimes call funclets through a runtime
+  // wrapper. Exceptions leaving a funclet must unwind through that wrapper,
+  // so only the parent function carries __CxxFrameHandler in .pdata. (Alpha
+  // funclets share the parent's EH context record through $15.)
+  if ((usesPPCWindowsEH(*Asm) ||
+       (usesAlphaWindowsEH(*Asm) && isLegacyMSVCCXXPersonality(F))) &&
+      MBB.isEHFuncletEntry())
     CurrentFuncletUsesPersonality = false;
   bool IsExceptionHandler = true;
   if (CurrentFuncletUsesPersonality &&
@@ -496,10 +499,16 @@ int WinException::getFrameIndexOffset(int FrameIndex,
   const TargetFrameLowering &TFI = *Asm->MF->getSubtarget().getFrameLowering();
   const Function &F = Asm->MF->getFunction();
   if (isLegacyMSVCCXXPersonality(F) && usesMIPSWindowsEH(*Asm))
-    return TFI.getFrameIndexReferenceFromSP(*Asm->MF, FrameIndex).getFixed();
-  if (isLegacyMSVCCXXPersonality(F) && usesPPCWindowsEH(*Asm))
-    // NT PowerPC records catch-object displacements from the incoming SP,
-    // which is the establisher frame returned by RtlVirtualUnwind.
+    // NT MIPS records frame displacements from the outermost parent's
+    // establisher frame, which lies below the incoming SP by the first step
+    // of a two-step allocation.
+    return TFI.getFrameIndexReferenceFromSP(*Asm->MF, FrameIndex).getFixed() +
+           TFI.getWinEHParentFrameOffset(*Asm->MF);
+  if (isLegacyMSVCCXXPersonality(F) &&
+      (usesPPCWindowsEH(*Asm) || usesAlphaWindowsEH(*Asm)))
+    // NT PowerPC and Alpha record catch-object displacements from the
+    // incoming SP, which is the establisher frame returned by
+    // RtlVirtualUnwind (on Alpha, the virtual frame pointer).
     return Asm->MF->getFrameInfo().getObjectOffset(FrameIndex);
 
   Register UnusedReg;
@@ -1116,12 +1125,28 @@ void WinException::emitCXXFrameHandler3Table(
       isLegacyMSVCCXXPersonality(F) && usesAlphaWindowsEH(*Asm);
   const bool IsLegacyRISCEH = IsMIPSEH || IsPPCEH || IsAlphaEH;
 
+  // The NT4 MIPS runtime matches a try block only in the FuncInfo of the
+  // frame whose body contains it: the parent's, or a catch funclet's for a
+  // try inside that catch. Each FuncInfo therefore
+  // lists the try blocks owned by its own body, in the parent's order.
+  auto TriesOwnedBy = [&](const FuncletPadInst *Owner) {
+    SmallVector<unsigned, 4> Tries;
+    for (unsigned I = 0; I != FuncInfo.TryBlockMap.size(); ++I)
+      if (!IsMIPSEH || FuncInfo.TryBlockMap[I].Owner == Owner)
+        Tries.push_back(I);
+    return Tries;
+  };
+
   struct LegacyCatchFuncInfo {
     const MachineBasicBlock *Entry;
+    const FuncletPadInst *Pad;
     unsigned TryBlockIndex;
     unsigned FrameNestLevel;
     MCSymbol *FuncInfoXData;
     MCSymbol *IPToStateXData;
+    MCSymbol *UnwindMapXData;
+    MCSymbol *TryBlockMapXData;
+    int BaseState;
     SmallVector<std::pair<const MCExpr *, int>, 4> IPToStateTable;
   };
   SmallVector<LegacyCatchFuncInfo, 2> LegacyCatchInfos;
@@ -1129,6 +1154,11 @@ void WinException::emitCXXFrameHandler3Table(
   if (IsMIPSEH) {
     for (unsigned I = 0; I != FuncInfo.TryBlockMap.size(); ++I) {
       const WinEHTryBlockMapEntry &TryBlock = FuncInfo.TryBlockMap[I];
+      // A catch funclet's TryBlockIndex is its try block's index in the
+      // enclosing FuncInfo; the runtime skips that try and those before it
+      // when the funclet's exception reaches the enclosing frame.
+      const SmallVector<unsigned, 4> Siblings = TriesOwnedBy(TryBlock.Owner);
+      unsigned LocalIndex = llvm::find(Siblings, I) - Siblings.begin();
       for (const WinEHHandlerType &Handler : TryBlock.HandlerArray) {
         const auto *Entry =
             dyn_cast_if_present<MachineBasicBlock *>(Handler.Handler);
@@ -1138,12 +1168,20 @@ void WinException::emitCXXFrameHandler3Table(
           continue;
 
         MCSymbol *FuncletSym = getMCSymbolForMBB(Asm, Entry);
-        LegacyCatchInfos.push_back({
-            Entry, I, getMIPSFrameNestLevel(TryBlock.Owner) + 1,
-            getCXXFuncInfoSymbol(*Entry),
-            Asm->OutContext.getOrCreateSymbol(
-                Twine("$ip2state$", FuncletSym->getName())),
-            {}});
+        LegacyCatchInfos.push_back(
+            {Entry,
+             getFuncletPad(*Entry),
+             LocalIndex,
+             getMIPSFrameNestLevel(TryBlock.Owner) + 1,
+             getCXXFuncInfoSymbol(*Entry),
+             Asm->OutContext.getOrCreateSymbol(
+                 Twine("$ip2state$", FuncletSym->getName())),
+             Asm->OutContext.getOrCreateSymbol(
+                 Twine("$stateUnwindMap$", FuncletSym->getName())),
+             Asm->OutContext.getOrCreateSymbol(
+                 Twine("$tryMap$", FuncletSym->getName())),
+             -1,
+             {}});
       }
     }
 
@@ -1161,6 +1199,7 @@ void WinException::emitCXXFrameHandler3Table(
         auto BaseState = FuncInfo.FuncletBaseStateMap.find(Pad);
         assert(BaseState != FuncInfo.FuncletBaseStateMap.end() &&
                "missing MIPS catch funclet base state");
+        CatchInfo.BaseState = BaseState->second;
         CatchInfo.IPToStateTable.emplace_back(
             create32bitRef(getMCSymbolForMBB(Asm, &*FuncletStart)),
             BaseState->second);
@@ -1184,10 +1223,12 @@ void WinException::emitCXXFrameHandler3Table(
   MCSymbol *FuncInfoXData = nullptr;
   if (shouldEmitPersonality) {
     // If we're 64-bit, emit a pointer to the C++ EH data, and build a map from
-    // IPs to state numbers.
+    // IPs to state numbers. The Alpha runtime instead reads the state that
+    // the function stores in its EH context record.
     FuncInfoXData =
         Asm->OutContext.getOrCreateSymbol(Twine("$cppxdata$", FuncLinkageName));
-    computeIP2StateTable(MF, FuncInfo, IPToStateTable);
+    if (!IsAlphaEH)
+      computeIP2StateTable(MF, FuncInfo, IPToStateTable);
   } else {
     FuncInfoXData = Asm->OutContext.getOrCreateLSDASymbol(FuncLinkageName);
   }
@@ -1208,7 +1249,8 @@ void WinException::emitCXXFrameHandler3Table(
   if (!FuncInfo.CxxUnwindMap.empty())
     UnwindMapXData = Asm->OutContext.getOrCreateSymbol(
         Twine("$stateUnwindMap$", FuncLinkageName));
-  if (!FuncInfo.TryBlockMap.empty())
+  const SmallVector<unsigned, 4> ParentTries = TriesOwnedBy(nullptr);
+  if (!ParentTries.empty())
     TryBlockMapXData =
         Asm->OutContext.getOrCreateSymbol(Twine("$tryMap$", FuncLinkageName));
   if (!IPToStateTable.empty())
@@ -1221,152 +1263,24 @@ void WinException::emitCXXFrameHandler3Table(
       OS.AddComment(Comment);
   };
 
-  auto EmitLegacyCatchInfo = [&](const LegacyCatchFuncInfo &CatchInfo) {
-    OS.emitValueToAlignment(Align(4));
-    OS.emitLabel(CatchInfo.FuncInfoXData);
-    AddComment("MagicNumber");
-    OS.emitInt32(0x19930520);
-    AddComment("MaxState");
-    OS.emitInt32(FuncInfo.CxxUnwindMap.size());
-    AddComment("UnwindMap");
-    OS.emitValue(create32bitRef(UnwindMapXData), 4);
-    AddComment("NumTryBlocks");
-    OS.emitInt32(0);
-    AddComment("TryBlockMap");
-    OS.emitInt32(0);
-    AddComment("IPMapEntries");
-    OS.emitInt32(CatchInfo.IPToStateTable.size());
-    AddComment("IPToStateXData");
-    OS.emitValue(create32bitRef(CatchInfo.IPToStateXData), 4);
-    AddComment("UnwindHelp");
-    OS.emitInt32(0);
-    AddComment("TryBlockIndex");
-    OS.emitInt32(CatchInfo.TryBlockIndex);
-    AddComment("FrameNestLevel");
-    OS.emitInt32(CatchInfo.FrameNestLevel);
-
-    OS.emitLabel(CatchInfo.IPToStateXData);
-    for (const auto &IPStatePair : CatchInfo.IPToStateTable) {
-      AddComment("IP");
-      OS.emitValue(IPStatePair.first, 4);
-      AddComment("ToState");
-      OS.emitInt32(IPStatePair.second);
-    }
-  };
-
-  if (LegacyCatchEntry) {
-    assert(IsMIPSEH && "catch-specific FuncInfo requires MIPS Windows EH");
-    auto CatchInfo = llvm::find_if(LegacyCatchInfos, [&](const auto &Info) {
-      return Info.Entry == LegacyCatchEntry;
-    });
-    assert(CatchInfo != LegacyCatchInfos.end() &&
-           "missing legacy RISC catch FuncInfo");
-    EmitLegacyCatchInfo(*CatchInfo);
-    return;
-  }
-
-  // FuncInfo {
-  //   uint32_t           MagicNumber
-  //   int32_t            MaxState;
-  //   UnwindMapEntry    *UnwindMap;
-  //   uint32_t           NumTryBlocks;
-  //   TryBlockMapEntry  *TryBlockMap;
-  //   uint32_t           IPMapEntries; // always 0 for x86
-  //   IPToStateMapEntry *IPToStateMap; // always 0 for x86
-  //   uint32_t           UnwindHelp;   // non-x86 only
-  //   ESTypeList        *ESTypeList;
-  //   int32_t            EHFlags;
-  // }
-  // EHFlags & 1 -> Synchronous exceptions only, no async exceptions.
-  // EHFlags & 2 -> ???
-  // EHFlags & 4 -> The function is noexcept(true), unwinding can't continue.
-  OS.emitValueToAlignment(Align(4));
-  OS.emitLabel(FuncInfoXData);
-
-  AddComment("MagicNumber");
-  OS.emitInt32(IsLegacyRISCEH ? 0x19930520 : 0x19930522);
-
-  AddComment("MaxState");
-  OS.emitInt32(FuncInfo.CxxUnwindMap.size());
-
-  AddComment("UnwindMap");
-  OS.emitValue(create32bitRef(UnwindMapXData), 4);
-
-  AddComment("NumTryBlocks");
-  OS.emitInt32(FuncInfo.TryBlockMap.size());
-
-  AddComment("TryBlockMap");
-  OS.emitValue(create32bitRef(TryBlockMapXData), 4);
-
-  AddComment("IPMapEntries");
-  OS.emitInt32(IPToStateTable.size());
-
-  AddComment("IPToStateXData");
-  OS.emitValue(create32bitRef(IPToStateXData), 4);
-
-  if (!IsLegacyRISCEH &&
-      FuncInfo.UnwindHelpFrameIdx != std::numeric_limits<int>::max() &&
-      MF->usesWindowsUnwindInfo()) {
-    AddComment("UnwindHelp");
-    OS.emitInt32(UnwindHelpOffset);
-  }
-
-  if (IsMIPSEH) {
-    AddComment("UnwindHelp");
-    OS.emitInt32(UnwindHelpOffset);
-    AddComment("TryBlockIndex");
-    OS.emitInt32(-1);
-    AddComment("FrameNestLevel");
-    OS.emitInt32(1);
-  } else if (!IsPPCEH) {
-    AddComment("ESTypeList");
-    OS.emitInt32(0);
-
-    AddComment("EHFlags");
-    if (MMI->getModule()->getModuleFlag("eh-asynch")) {
-      OS.emitInt32(0);
-    } else {
-      OS.emitInt32(1);
-    }
-  }
-
-  // UnwindMapEntry {
-  //   int32_t ToState;
-  //   void  (*Action)();
-  // };
-  if (UnwindMapXData) {
-    OS.emitLabel(UnwindMapXData);
-    for (const CxxUnwindMapEntry &UME : FuncInfo.CxxUnwindMap) {
-      MCSymbol *CleanupSym = getMCSymbolForMBB(
-          Asm, dyn_cast_if_present<MachineBasicBlock *>(UME.Cleanup));
-      AddComment("ToState");
-      OS.emitInt32(UME.ToState);
-
-      AddComment("Action");
-      OS.emitValue(create32bitRef(CleanupSym), 4);
-    }
-  }
-
   // TryBlockMap {
   //   int32_t      TryLow;
   //   int32_t      TryHigh;
-  //   int32_t      CatchHigh;
+  //   int32_t      CatchHigh; // not on Alpha
   //   int32_t      NumCatches;
   //   HandlerType *HandlerArray;
   // };
-  if (TryBlockMapXData) {
-    OS.emitLabel(TryBlockMapXData);
+  auto EmitTryBlockMap = [&](ArrayRef<unsigned> Tries, MCSymbol *Label,
+                             StringRef Suffix) {
+    OS.emitLabel(Label);
     SmallVector<MCSymbol *, 1> HandlerMaps;
-    for (size_t I = 0, E = FuncInfo.TryBlockMap.size(); I != E; ++I) {
-      const WinEHTryBlockMapEntry &TBME = FuncInfo.TryBlockMap[I];
+    for (size_t I = 0, E = Tries.size(); I != E; ++I) {
+      const WinEHTryBlockMapEntry &TBME = FuncInfo.TryBlockMap[Tries[I]];
 
       MCSymbol *HandlerMapXData = nullptr;
       if (!TBME.HandlerArray.empty())
-        HandlerMapXData =
-            Asm->OutContext.getOrCreateSymbol(Twine("$handlerMap$")
-                                                  .concat(Twine(I))
-                                                  .concat("$")
-                                                  .concat(FuncLinkageName));
+        HandlerMapXData = Asm->OutContext.getOrCreateSymbol(
+            Twine("$handlerMap$").concat(Twine(I)).concat("$").concat(Suffix));
       HandlerMaps.push_back(HandlerMapXData);
 
       // TBMEs should form intervals.
@@ -1382,8 +1296,23 @@ void WinException::emitCXXFrameHandler3Table(
       AddComment("TryHigh");
       OS.emitInt32(TBME.TryHigh);
 
-      AddComment("CatchHigh");
-      OS.emitInt32(TBME.CatchHigh);
+      if (IsMIPSEH) {
+        // NT4 MIPS checks the try blocks from the first one whose states
+        // hold the current state through index CatchHigh, so CatchHigh is the
+        // index of the outermost try block of this FuncInfo that encloses
+        // this one.
+        size_t Outermost = I;
+        for (size_t J = I + 1; J != E; ++J) {
+          const WinEHTryBlockMapEntry &Outer = FuncInfo.TryBlockMap[Tries[J]];
+          if (Outer.TryLow <= TBME.TryLow && TBME.CatchHigh <= Outer.TryHigh)
+            Outermost = J;
+        }
+        AddComment("CatchHigh");
+        OS.emitInt32(Outermost);
+      } else if (!IsAlphaEH) {
+        AddComment("CatchHigh");
+        OS.emitInt32(TBME.CatchHigh);
+      }
 
       AddComment("NumCatches");
       OS.emitInt32(TBME.HandlerArray.size());
@@ -1399,8 +1328,8 @@ void WinException::emitCXXFrameHandler3Table(
       ParentFrameOffset = TFI->getWinEHParentFrameOffset(*MF);
     }
 
-    for (size_t I = 0, E = FuncInfo.TryBlockMap.size(); I != E; ++I) {
-      const WinEHTryBlockMapEntry &TBME = FuncInfo.TryBlockMap[I];
+    for (size_t I = 0, E = Tries.size(); I != E; ++I) {
+      const WinEHTryBlockMapEntry &TBME = FuncInfo.TryBlockMap[Tries[I]];
       MCSymbol *HandlerMapXData = HandlerMaps[I];
       if (!HandlerMapXData)
         continue;
@@ -1451,7 +1380,177 @@ void WinException::emitCXXFrameHandler3Table(
         }
       }
     }
+  };
+
+  auto EmitLegacyCatchInfo = [&](const LegacyCatchFuncInfo &CatchInfo) {
+    OS.emitValueToAlignment(Align(4));
+    OS.emitLabel(CatchInfo.FuncInfoXData);
+    AddComment("MagicNumber");
+    OS.emitInt32(0x19930520);
+    AddComment("MaxState");
+    OS.emitInt32(FuncInfo.CxxUnwindMap.size());
+    AddComment("UnwindMap");
+    OS.emitValue(
+        create32bitRef(UnwindMapXData ? CatchInfo.UnwindMapXData : nullptr), 4);
+    const SmallVector<unsigned, 4> Tries = TriesOwnedBy(CatchInfo.Pad);
+    AddComment("NumTryBlocks");
+    OS.emitInt32(Tries.size());
+    AddComment("TryBlockMap");
+    OS.emitValue(
+        create32bitRef(Tries.empty() ? nullptr : CatchInfo.TryBlockMapXData),
+        4);
+    AddComment("IPMapEntries");
+    OS.emitInt32(CatchInfo.IPToStateTable.size());
+    AddComment("IPToStateXData");
+    OS.emitValue(create32bitRef(CatchInfo.IPToStateXData), 4);
+    // The unwind-help bytes and the state numbers are the parent's; the
+    // runtime finds the parent's establisher frame through FrameNestLevel.
+    AddComment("UnwindHelp");
+    OS.emitInt32(UnwindHelpOffset);
+    AddComment("TryBlockIndex");
+    OS.emitInt32(CatchInfo.TryBlockIndex);
+    AddComment("FrameNestLevel");
+    OS.emitInt32(CatchInfo.FrameNestLevel);
+
+    OS.emitLabel(CatchInfo.IPToStateXData);
+    for (const auto &IPStatePair : CatchInfo.IPToStateTable) {
+      AddComment("IP");
+      OS.emitValue(IPStatePair.first, 4);
+      AddComment("ToState");
+      OS.emitInt32(IPStatePair.second);
+    }
+
+    // The runtime unwinds a catch funclet's frame along this map to
+    // EH_EMPTY_STATE, calling each action with the funclet's establisher
+    // frame. States outside the funclet belong to the parent's frame and are
+    // unwound with it, so the funclet's base state leads to EH_EMPTY_STATE.
+    if (UnwindMapXData) {
+      OS.emitLabel(CatchInfo.UnwindMapXData);
+      for (const auto &[State, UME] : enumerate(FuncInfo.CxxUnwindMap)) {
+        MCSymbol *CleanupSym = getMCSymbolForMBB(
+            Asm, dyn_cast_if_present<MachineBasicBlock *>(UME.Cleanup));
+        AddComment("ToState");
+        OS.emitInt32(int(State) == CatchInfo.BaseState ? -1 : UME.ToState);
+        AddComment("Action");
+        OS.emitValue(create32bitRef(CleanupSym), 4);
+      }
+    }
+
+    if (!Tries.empty())
+      EmitTryBlockMap(Tries, CatchInfo.TryBlockMapXData,
+                      CatchInfo.FuncInfoXData->getName().drop_front(
+                          StringRef("$cppxdata$").size()));
+  };
+
+  if (LegacyCatchEntry) {
+    assert(IsMIPSEH && "catch-specific FuncInfo requires MIPS Windows EH");
+    auto CatchInfo = llvm::find_if(LegacyCatchInfos, [&](const auto &Info) {
+      return Info.Entry == LegacyCatchEntry;
+    });
+    assert(CatchInfo != LegacyCatchInfos.end() &&
+           "missing legacy RISC catch FuncInfo");
+    EmitLegacyCatchInfo(*CatchInfo);
+    return;
   }
+
+  // FuncInfo {
+  //   uint32_t           MagicNumber
+  //   int32_t            MaxState;
+  //   UnwindMapEntry    *UnwindMap;
+  //   uint32_t           NumTryBlocks;
+  //   TryBlockMapEntry  *TryBlockMap;
+  //   int32_t            EHContextDelta; // Alpha only
+  //   uint32_t           IPMapEntries; // always 0 for x86 and Alpha
+  //   IPToStateMapEntry *IPToStateMap; // always 0 for x86
+  //   uint32_t           UnwindHelp;   // non-x86 only
+  //   ESTypeList        *ESTypeList;
+  //   int32_t            EHFlags;
+  // }
+  // EHFlags & 1 -> Synchronous exceptions only, no async exceptions.
+  // EHFlags & 2 -> ???
+  // EHFlags & 4 -> The function is noexcept(true), unwinding can't continue.
+  OS.emitValueToAlignment(Align(4));
+  OS.emitLabel(FuncInfoXData);
+
+  AddComment("MagicNumber");
+  OS.emitInt32(IsLegacyRISCEH ? 0x19930520 : 0x19930522);
+
+  AddComment("MaxState");
+  OS.emitInt32(FuncInfo.CxxUnwindMap.size());
+
+  AddComment("UnwindMap");
+  OS.emitValue(create32bitRef(UnwindMapXData), 4);
+
+  AddComment("NumTryBlocks");
+  OS.emitInt32(ParentTries.size());
+
+  AddComment("TryBlockMap");
+  OS.emitValue(create32bitRef(TryBlockMapXData), 4);
+
+  if (IsAlphaEH) {
+    // Offset of the { ULONG State; PVOID Rfp; } record from the establisher
+    // frame. See AlphaWinEHState.
+    int EHContextDelta = 0;
+    if (FuncInfo.EHRegNodeFrameIndex != std::numeric_limits<int>::max())
+      EHContextDelta =
+          MF->getFrameInfo().getObjectOffset(FuncInfo.EHRegNodeFrameIndex);
+    assert((EHContextDelta != 0 || FuncInfo.CxxUnwindMap.empty()) &&
+           "Alpha C++ EH states without an EH context record");
+    AddComment("EHContextDelta");
+    OS.emitInt32(EHContextDelta);
+  }
+
+  AddComment("IPMapEntries");
+  OS.emitInt32(IPToStateTable.size());
+
+  AddComment("IPToStateXData");
+  OS.emitValue(create32bitRef(IPToStateXData), 4);
+
+  if (!IsLegacyRISCEH &&
+      FuncInfo.UnwindHelpFrameIdx != std::numeric_limits<int>::max() &&
+      MF->usesWindowsUnwindInfo()) {
+    AddComment("UnwindHelp");
+    OS.emitInt32(UnwindHelpOffset);
+  }
+
+  if (IsMIPSEH) {
+    AddComment("UnwindHelp");
+    OS.emitInt32(UnwindHelpOffset);
+    AddComment("TryBlockIndex");
+    OS.emitInt32(-1);
+    AddComment("FrameNestLevel");
+    OS.emitInt32(1);
+  } else if (!IsPPCEH && !IsAlphaEH) {
+    AddComment("ESTypeList");
+    OS.emitInt32(0);
+
+    AddComment("EHFlags");
+    if (MMI->getModule()->getModuleFlag("eh-asynch")) {
+      OS.emitInt32(0);
+    } else {
+      OS.emitInt32(1);
+    }
+  }
+
+  // UnwindMapEntry {
+  //   int32_t ToState;
+  //   void  (*Action)();
+  // };
+  if (UnwindMapXData) {
+    OS.emitLabel(UnwindMapXData);
+    for (const CxxUnwindMapEntry &UME : FuncInfo.CxxUnwindMap) {
+      MCSymbol *CleanupSym = getMCSymbolForMBB(
+          Asm, dyn_cast_if_present<MachineBasicBlock *>(UME.Cleanup));
+      AddComment("ToState");
+      OS.emitInt32(UME.ToState);
+
+      AddComment("Action");
+      OS.emitValue(create32bitRef(CleanupSym), 4);
+    }
+  }
+
+  if (TryBlockMapXData)
+    EmitTryBlockMap(ParentTries, TryBlockMapXData, FuncLinkageName);
 
   // IPToStateMapEntry {
   //   void   *IP;

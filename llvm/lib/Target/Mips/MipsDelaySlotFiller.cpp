@@ -1169,9 +1169,12 @@ bool MipsDelaySlotFiller::delayHasHazard(const MipsSubtarget &STI,
 }
 
 bool MipsDelaySlotFiller::terminateSearch(const MachineInstr &Candidate) const {
+  // LOCAL_ESCAPE emits no instruction, only the frame-escape symbols, which
+  // a delay slot would not define.
   return (Candidate.isTerminator() || Candidate.isCall() ||
           Candidate.isPosition() || Candidate.isInlineAsm() ||
-          Candidate.hasUnmodeledSideEffects());
+          Candidate.hasUnmodeledSideEffects() ||
+          Candidate.getOpcode() == TargetOpcode::LOCAL_ESCAPE);
 }
 
 /// createMipsDelaySlotFillerPass - Returns a pass that fills in delay
