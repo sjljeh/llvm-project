@@ -4,7 +4,7 @@
 # RUN: split-file %s %t
 # RUN: llvm-mc -triple=powerpcle-pc-windows -filetype=obj %t/local.s -o %t/local.obj
 # RUN: llvm-mc -triple=powerpcle-pc-windows -filetype=obj %t/main.s -o %t/main.obj
-# RUN: llvm-dlltool -m ppc -d %t/lib.def -l %t/lib.lib
+# RUN: llvm-lib /machine:ppc /def:%t/lib.def /out:%t/lib.lib
 # RUN: lld-link /nodefaultlib /entry:main /subsystem:console /out:%t/main.exe %t/main.obj %t/local.obj %t/lib.lib
 # RUN: llvm-objdump -d --no-show-raw-insn %t/main.exe | FileCheck %s
 

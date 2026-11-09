@@ -159,9 +159,6 @@ void tools::MinGW::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   case llvm::Triple::riscv64:
     CmdArgs.push_back("riscv64pe");
     break;
-  case llvm::Triple::ppcle:
-    CmdArgs.push_back("ppcpe");
-    break;
   default:
     D.Diag(diag::err_target_unknown_triple) << TC.getEffectiveTriple().str();
   }
@@ -636,7 +633,7 @@ toolchains::MinGW::getDefaultUnwindTableLevel(const ArgList &Args) const {
 
   if (getArch() == llvm::Triple::x86_64 || getArch() == llvm::Triple::arm ||
       getArch() == llvm::Triple::thumb || getArch() == llvm::Triple::aarch64 ||
-      getArch() == llvm::Triple::riscv64 || getArch() == llvm::Triple::ppcle)
+      getArch() == llvm::Triple::riscv64)
     return UnwindTableLevel::Asynchronous;
   return UnwindTableLevel::None;
 }
@@ -656,7 +653,7 @@ llvm::ExceptionHandling
 toolchains::MinGW::GetExceptionModel(const ArgList &Args) const {
   if (getArch() == llvm::Triple::x86_64 || getArch() == llvm::Triple::aarch64 ||
       getArch() == llvm::Triple::arm || getArch() == llvm::Triple::thumb ||
-      getArch() == llvm::Triple::riscv64 || getArch() == llvm::Triple::ppcle)
+      getArch() == llvm::Triple::riscv64)
     return llvm::ExceptionHandling::WinEH;
   return llvm::ExceptionHandling::DwarfCFI;
 }

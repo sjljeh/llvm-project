@@ -1,7 +1,6 @@
 // Copyright (c) 2026 Ahmed ARIF
 
 // RUN: %clang_cc1 -E -dM -ffreestanding -triple=powerpcle-pc-windows-msvc < /dev/null | FileCheck -match-full-lines %s --check-prefix=CHECK
-// RUN: %clang_cc1 -E -dM -ffreestanding -triple=powerpcle-w64-windows-gnu < /dev/null | FileCheck -match-full-lines %s --check-prefixes=CHECK,MINGW
 // RUN: %clang_cc1 -E -dM -ffreestanding -triple=powerpcle-pc-windows-msvc -target-cpu 604 < /dev/null | FileCheck -match-full-lines %s --check-prefix=CPU604
 
 // CHECK-NOT: #define _LP64 1
@@ -11,7 +10,6 @@
 // CHECK: #define __INTPTR_TYPE__ int
 // CHECK: #define __LITTLE_ENDIAN__ 1
 // CHECK: #define __LONG_MAX__ 2147483647L
-// MINGW: #define __MINGW32__ 1
 // CHECK: #define __POINTER_WIDTH__ 32
 // CHECK: #define __PTRDIFF_TYPE__ int
 // CHECK: #define __SIZEOF_LONG_DOUBLE__ 8

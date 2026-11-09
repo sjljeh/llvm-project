@@ -10,7 +10,6 @@
 // RUN: %clang_cc1 -fms-extensions -triple armv7-windows-msvc -Wno-implicit-function-declaration -emit-llvm %s -o - | FileCheck --check-prefix=ARM32 %s
 // RUN: %clang_cc1 -fms-extensions -DDECLARE_SETJMP -triple powerpcle-windows-msvc -emit-llvm %s -o - | FileCheck --check-prefix=PPC %s
 // RUN: %clang_cc1 -fms-extensions -triple powerpcle-windows-msvc -Wno-implicit-function-declaration -emit-llvm %s -o - | FileCheck --check-prefix=PPC %s
-// RUN: %clang_cc1 -fms-extensions -DDECLARE_SETJMP -triple powerpcle-windows-gnu -emit-llvm %s -o - | FileCheck --check-prefix=PPC %s
 typedef char jmp_buf[1];
 
 #ifdef DECLARE_SETJMP

@@ -520,13 +520,13 @@ public:
   }
 };
 
-// Windows NT PowerPC, shared by the MSVC and MinGW environments.
-class LLVM_LIBRARY_VISIBILITY WindowsPPC32TargetInfo
+class LLVM_LIBRARY_VISIBILITY MicrosoftPPC32TargetInfo
     : public WindowsTargetInfo<PPC32TargetInfo> {
 public:
-  WindowsPPC32TargetInfo(const llvm::Triple &Triple,
-                         const TargetOptions &Opts)
+  MicrosoftPPC32TargetInfo(const llvm::Triple &Triple,
+                           const TargetOptions &Opts)
       : WindowsTargetInfo<PPC32TargetInfo>(Triple, Opts) {
+    TheCXXABI.set(TargetCXXABI::Microsoft);
     SizeType = UnsignedInt;
     PtrDiffType = IntPtrType = SignedInt;
     LongDoubleWidth = LongDoubleAlign = 64;
@@ -558,26 +558,6 @@ public:
     default:
       return WindowsTargetInfo<PPC32TargetInfo>::checkCallingConvention(CC);
     }
-  }
-};
-
-class LLVM_LIBRARY_VISIBILITY MicrosoftPPC32TargetInfo
-    : public WindowsPPC32TargetInfo {
-public:
-  MicrosoftPPC32TargetInfo(const llvm::Triple &Triple,
-                           const TargetOptions &Opts)
-      : WindowsPPC32TargetInfo(Triple, Opts) {
-    TheCXXABI.set(TargetCXXABI::Microsoft);
-  }
-};
-
-// MinGW keeps the NT calling convention but uses the Itanium C++ ABI.
-class LLVM_LIBRARY_VISIBILITY MinGWPPC32TargetInfo
-    : public WindowsPPC32TargetInfo {
-public:
-  MinGWPPC32TargetInfo(const llvm::Triple &Triple, const TargetOptions &Opts)
-      : WindowsPPC32TargetInfo(Triple, Opts) {
-    TheCXXABI.set(TargetCXXABI::GenericItanium);
   }
 };
 

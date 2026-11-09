@@ -1,8 +1,5 @@
 // REQUIRES: powerpc-registered-target
 //
-// RUN: %clang_cc1 -triple powerpcle-pc-windows-gnu -fms-extensions \
-// RUN:   -fexceptions -exception-model=seh -emit-llvm -o - %s \
-// RUN:   | FileCheck %s --check-prefix=GNU
 // RUN: %clang -target powerpcle-pc-windows-msvc12.0 -fms-extensions -fexceptions \
 // RUN:   -O0 -S -emit-llvm -o - %s | FileCheck %s --check-prefix=IR
 // RUN: %clang -target powerpcle-pc-windows-msvc12.0 -fms-extensions -fexceptions \
@@ -19,10 +16,6 @@
 // RUN: %clang -target powerpcle-pc-windows-msvc12.0 -c -o %t.roundtrip.obj %t.s
 // RUN: llvm-readobj --relocations %t.roundtrip.obj \
 // RUN:   | FileCheck %s --check-prefix=ROUNDTRIP
-
-// MinGW uses the same native NT SEH tables as MSVC.
-// GNU-LABEL: define dso_local i32 @seh_filter(
-// GNU-SAME: personality ptr @__C_specific_handler
 
 extern void may_fault(void);
 extern int inspect_exception(unsigned code, int selector);
