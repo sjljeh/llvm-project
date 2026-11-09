@@ -1,6 +1,11 @@
 ## NTUW on Alpha: 64-bit register images and the object marker.
 # RUN: llvm-mc -triple alpha-pc-windows-msvc19.33 -mattr=+taso -filetype=obj %s -o %t.obj
 # RUN: llvm-readobj --unwind --symbols %t.obj | FileCheck %s
+## Software register names are accepted and printed as numbers.
+# RUN: llvm-mc -triple alpha-pc-windows-msvc19.33 -mattr=+taso %s \
+# RUN:   | FileCheck %s --check-prefix=ASM
+# ASM: .seh_save_gpr $26, -32
+# ASM: .seh_set_cfa $30, 0
 
 	.text
 f:
@@ -8,7 +13,7 @@ f:
 	lda $30,-32($30)
 	.seh_set_cfa $30, 32
 	stq $26,0($30)
-	.seh_save_gpr $26, -32
+	.seh_save_gpr $ra, -32
 	stt $f2,8($30)
 	.seh_save_fpr $f2, -24
 	.seh_endprologue
@@ -19,7 +24,7 @@ f:
 	ldq $26,0($30)
 	.seh_same_gpr $26
 	lda $30,32($30)
-	.seh_set_cfa $30, 0
+	.seh_set_cfa $sp, 0
 	ret $31,($26),1
 	.seh_endepilogue
 	.seh_endproc

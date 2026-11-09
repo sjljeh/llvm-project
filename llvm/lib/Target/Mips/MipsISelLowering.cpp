@@ -3656,8 +3656,15 @@ MipsTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
       CalleeIsLocal = GV->isDSOLocal();
   }
 
+  // NTUW describes an epilogue that ends in a jump to another function, and
+  // Windows code has no $gp to restore, so tail calls are on by default and
+  // need not stay within the module.
+  bool NTUWTailCalls =
+      Subtarget.getTargetTriple().usesNTRISCTableUnwind() && !IsPIC;
+  if (NTUWTailCalls)
+    CalleeIsLocal = true;
   if (IsTailCall) {
-    if (!Subtarget.getCLOpts().tail_calls) {
+    if (!Subtarget.getCLOpts().tail_calls && !NTUWTailCalls) {
       IsTailCall = false;
       if (IsMustTail)
         report_fatal_error("failed to perform tail call elimination on a call "

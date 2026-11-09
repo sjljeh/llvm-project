@@ -22,6 +22,7 @@
 #include "llvm/Object/COFFImportFile.h"
 #include "llvm/Object/ObjectFile.h"
 #include "llvm/Support/Format.h"
+#include "llvm/Support/NTRISCWinEH.h"
 #include "llvm/Support/RISCVWinEH.h"
 #include "llvm/Support/ScopedPrinter.h"
 #include "llvm/Support/Win64EH.h"
@@ -1321,11 +1322,203 @@ static void printRISCVUnwindInfo(const COFFObjectFile *Obj) {
   }
 }
 
+// Alpha, MIPS and PowerPC: NTUW records
+// or NT 4.0 function tables.
+
+static void printNTUWCode(NTRISCWinEH::Machine M,
+                          const NTRISCWinEH::DecodedCode &Code,
+                          StringRef Indent) {
+  using namespace NTRISCWinEH;
+  outs() << formatv("{0}+{1:X4}: {2}", Indent, Code.CodeOffset,
+                    getOpcodeName(Code.Opcode));
+  unsigned Opcode = getBaseOpcode(Code.Opcode);
+  ListSeparator LS(", ");
+  outs() << " ";
+  if (directiveHasRegister(Opcode))
+    outs() << LS << getRegisterName(M, getRegisterClass(Opcode), Code.Register);
+  RegisterClass OperandClass = getOperandRegisterClass(Opcode);
+  if (OperandClass != RegisterClass::None)
+    outs() << LS << getRegisterName(M, OperandClass, Code.Operand);
+  else if (directiveHasOperand(Opcode) &&
+           (Opcode != UOP_ReturnFromGPR || Code.Operand))
+    outs() << LS << Code.Operand;
+  outs() << "\n";
+}
+
+static void printNTUWUnwindInfo(const COFFObjectFile *Obj,
+                                NTRISCWinEH::Machine M,
+                                const RISCVLocatedData &Data,
+                                bool Relocatable) {
+  using namespace NTRISCWinEH;
+  outs() << "  NTUW Unwind Info:\n";
+  Expected<DecodedUnwindInfo> Decoded =
+      decodeUnwindInfo(M, Data.Contents, Relocatable);
+  if (!Decoded) {
+    outs() << "    Validation Error: " << toString(Decoded.takeError())
+           << "\n\n";
+    return;
+  }
+  outs() << format("    Record Size: %u\n", Decoded->RecordSize)
+         << format("    Flags: 0x%X\n", Decoded->Flags)
+         << format("    Function Length: 0x%X\n", Decoded->FunctionLength)
+         << format("    Prologue End: 0x%X\n", Decoded->PrologEndOffset)
+         << "    Establisher Frame: "
+         << (Decoded->EstablisherRegister
+                 ? getRegisterName(M, RegisterClass::GPR,
+                                   Decoded->EstablisherRegister)
+                 : std::string("CFA"))
+         << format("%+d\n", Decoded->EstablisherFrameOffset)
+         << format("    Required State: 0x%X\n", Decoded->RequiredState);
+  outs() << "    Prologue Codes:\n";
+  for (const DecodedCode &Code : Decoded->PrologCodes)
+    printNTUWCode(M, Code, "      ");
+  outs() << "    Epilogue Scopes:\n";
+  for (const DecodedEpilogScope &Scope : Decoded->EpilogScopes) {
+    outs() << format("      [0x%X, 0x%X):\n", Scope.StartOffset,
+                     Scope.EndOffset);
+    for (const DecodedCode &Code : Scope.Codes)
+      printNTUWCode(M, Code, "        ");
+  }
+  if (Decoded->HandlerInfo) {
+    uint64_t TailOffset = Decoded->RecordSize - HandlerSize;
+    printRISCVAddress(Data, "    Exception Handler", TailOffset,
+                      Decoded->HandlerInfo->first);
+    printRISCVAddress(Data, "    Handler Data", TailOffset + 4,
+                      Decoded->HandlerInfo->second);
+  } else if (Decoded->Chained) {
+    uint64_t TailOffset = Decoded->RecordSize - RuntimeFunctionSize;
+    outs() << "    Chained Runtime Function:\n";
+    printRISCVAddress(Data, "      Begin Address", TailOffset,
+                      Decoded->Chained->first);
+    printRISCVAddress(Data, "      Unwind Data", TailOffset + 4,
+                      Decoded->Chained->second);
+  } else if (Decoded->Legacy) {
+    const LegacyEntry &E = *Decoded->Legacy;
+    outs() << format("    Legacy Entry: Begin 0x%X, End 0x%X, Handler 0x%X, "
+                     "Handler Data 0x%X, Prolog End 0x%X\n",
+                     E.BeginAddress, E.EndAddress, E.ExceptionHandler,
+                     E.HandlerData, E.PrologEndAddress);
+  }
+  outs() << "\n";
+}
+
+static void printNTLegacyTable(ArrayRef<uint8_t> Contents,
+                               const RISCVLocatedData &PData) {
+  using namespace NTRISCWinEH;
+  for (uint64_t Offset = 0; Offset + LegacyEntrySize <= Contents.size();
+       Offset += LegacyEntrySize) {
+    static const char *const Labels[] = {
+        "  Begin Address", "  End Address", "  Exception Handler",
+        "  Handler Data", "  Prolog End Address"};
+    outs() << "NT 4.0 Function Table:\n";
+    for (unsigned I = 0; I != 5; ++I)
+      printRISCVAddress(
+          PData, Labels[I], Offset + I * 4,
+          support::endian::read32le(Contents.data() + Offset + I * 4));
+    outs() << "\n";
+  }
+}
+
+static void printNTRISCUnwindInfo(const COFFObjectFile *Obj,
+                                  NTRISCWinEH::Machine M) {
+  using namespace NTRISCWinEH;
+  bool Relocatable = !(Obj->getPE32Header() || Obj->getPE32PlusHeader());
+  // An object marks NTUW with an absolute symbol; an image is classified by
+  // its contents.
+  bool ObjectIsNTUW = false;
+  if (Relocatable)
+    for (const SymbolRef &Sym : Obj->symbols())
+      if (Expected<StringRef> Name = Sym.getName())
+        ObjectIsNTUW |= *Name == UnwindObjectMarker;
+      else
+        consumeError(Name.takeError());
+
+  for (const SectionRef &SectionRef : Obj->sections()) {
+    StringRef Name = unwrapOrError(SectionRef.getName(), Obj->getFileName());
+    if (Name != ".pdata" && !Name.starts_with(".pdata$"))
+      continue;
+    const coff_section *PData = Obj->getCOFFSection(SectionRef);
+    ArrayRef<uint8_t> Contents;
+    if (Error E = Obj->getSectionContents(PData, Contents))
+      reportError(std::move(E), Obj->getFileName());
+    std::vector<RelocationRef> PDataRelocations;
+    append_range(PDataRelocations, SectionRef.relocations());
+    llvm::sort(PDataRelocations, isRelocAddressLess);
+    RISCVLocatedData PDataLocation{Contents, Relocatable ? PData : nullptr,
+                                   PDataRelocations, 0};
+
+    bool IsNTUW = ObjectIsNTUW;
+    if (!Relocatable) {
+      TableFormat Format = classifyExceptionDirectory(
+          Contents, [&](uint32_t RVA, uint32_t Size) {
+            ArrayRef<uint8_t> Bytes;
+            if (Error E = Obj->getRvaAndSizeAsBytes(RVA, Size, Bytes)) {
+              consumeError(std::move(E));
+              return ArrayRef<uint8_t>();
+            }
+            return Bytes;
+          });
+      if (Format == TableFormat::Invalid) {
+        WithColor::warning(errs())
+            << "the exception directory is neither NTUW nor NT 4.0\n";
+        continue;
+      }
+      IsNTUW = Format == TableFormat::NTUW;
+    }
+    if (!IsNTUW) {
+      if (Contents.size() % LegacyEntrySize)
+        WithColor::warning(errs())
+            << "NT 4.0 .pdata size is not a multiple of 20\n";
+      printNTLegacyTable(Contents, PDataLocation);
+      continue;
+    }
+    if (Contents.size() % RuntimeFunctionSize) {
+      WithColor::warning(errs()) << "NTUW .pdata size is not a multiple of 8\n";
+      continue;
+    }
+    for (uint64_t Offset = 0; Offset != Contents.size();
+         Offset += RuntimeFunctionSize) {
+      uint32_t Begin = support::endian::read32le(Contents.data() + Offset);
+      uint32_t UnwindData =
+          support::endian::read32le(Contents.data() + Offset + 4);
+      outs() << "NTUW Function Table:\n";
+      printRISCVAddress(PDataLocation, "  Begin Address", Offset, Begin);
+      printRISCVAddress(PDataLocation, "  Unwind Data", Offset + 4, UnwindData);
+      if (UnwindData & PackedFlag) {
+        Expected<DecodedUnwindInfo> Packed =
+            decodePackedUnwindData(M, UnwindData);
+        if (Packed)
+          outs() << format("  Packed: Frameless, Function Length: 0x%X\n\n",
+                           Packed->FunctionLength);
+        else
+          outs() << "  Validation Error: " << toString(Packed.takeError())
+                 << "\n\n";
+        continue;
+      }
+      Expected<RISCVLocatedData> Data =
+          Relocatable ? locateRISCVObjectData(Obj, PDataRelocations, Offset + 4,
+                                              UnwindData)
+                      : locateRISCVImageData(Obj, UnwindData, UnwindHeaderSize,
+                                             "NTUW record");
+      if (!Data) {
+        WithColor::warning(errs()) << toString(Data.takeError()) << "\n";
+        continue;
+      }
+      printNTUWUnwindInfo(Obj, M, *Data, Relocatable);
+    }
+  }
+}
+
 } // namespace
 
 void objdump::printCOFFUnwindInfo(const COFFObjectFile *Obj) {
   if (Obj->getMachine() == COFF::IMAGE_FILE_MACHINE_RISCV64) {
     printRISCVUnwindInfo(Obj);
+    return;
+  }
+  if (std::optional<NTRISCWinEH::Machine> M =
+          NTRISCWinEH::getMachine(Obj->getMachine())) {
+    printNTRISCUnwindInfo(Obj, *M);
     return;
   }
   if (Obj->getMachine() != COFF::IMAGE_FILE_MACHINE_AMD64) {

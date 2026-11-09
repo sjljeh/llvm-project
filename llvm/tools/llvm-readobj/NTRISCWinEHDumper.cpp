@@ -397,9 +397,14 @@ void Dumper::printData(const Context &Ctx) {
       const coff_section *Relocated = isImage(Ctx.COFF) ? nullptr : PData;
       printAddress(SW, Ctx, "BeginAddress", Relocated, Offset, Begin);
       printAddress(SW, Ctx, "UnwindData", Relocated, Offset + 4, Unwind);
-      if (Unwind & 1) {
-        SW.printString("ValidationError",
-                       "packed NTUW entries are not defined");
+      if (Unwind & PackedFlag) {
+        Expected<DecodedUnwindInfo> Packed = decodePackedUnwindData(*M, Unwind);
+        if (!Packed) {
+          SW.printString("ValidationError", toString(Packed.takeError()));
+          continue;
+        }
+        SW.printString("Packed", "Frameless");
+        SW.printHex("FunctionLength", Packed->FunctionLength);
         continue;
       }
       Expected<LocatedData> Data =

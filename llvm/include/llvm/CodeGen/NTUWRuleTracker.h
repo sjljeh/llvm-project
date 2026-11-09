@@ -18,6 +18,19 @@
 // next return. An instruction whose effect cannot be described is an error,
 // never silently ignored.
 //
+// A record holds at most 65535 epilogue scopes and 65535 epilogue code
+// slots. A function that would need more is split, at a block boundary in
+// the body, into chained records (UNW_ChainInfo), which continue the
+// parent's body state.
+//
+// Blocks are emitted in layout order, not control-flow order. The state at
+// the end of each block is passed to its successors, and a block starts in
+// the state its emitted predecessors agree on (the body's state if none has
+// been emitted). After the prologue, a block whose rules differ from the
+// body's, such as code outside a shrink-wrapped frame, is described by a
+// scope that lasts while the rules differ. A branch that reaches a block
+// already emitted with other rules is an error.
+//
 // Labels are placed after the whole machine instruction (a branch and its
 // delay slot, or a pseudo expansion) or before the next instruction,
 // whichever comes first, so a rule for an instruction in a delay slot takes
@@ -28,6 +41,8 @@
 #ifndef LLVM_CODEGEN_NTUWRULETRACKER_H
 #define LLVM_CODEGEN_NTUWRULETRACKER_H
 
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/CodeGen/AsmPrinterHandler.h"
 #include "llvm/MC/MCStreamer.h"
@@ -39,6 +54,7 @@
 namespace llvm {
 
 class AsmPrinter;
+class MachineBasicBlock;
 class MCInst;
 class MCRegisterInfo;
 class MCInstrInfo;
@@ -122,6 +138,7 @@ public:
   void beginFunction(const MachineFunction *MF) override;
   void endFunction(const MachineFunction *MF) override;
   void endModule() override;
+  void beginInstruction(const MachineInstr *MI) override;
   void endInstruction() override;
   void endFunclet() override;
 
@@ -182,6 +199,16 @@ private:
   void emitRuleChanges(const Rules &From, const Rules &To);
   void resetFrame(const WinEH::FrameInfo *Frame);
   void emitPending();
+  void enterBodyIfPrologueEnded();
+  /// The first frame of a chain of records: frames in one chain share the
+  /// rules and block states.
+  static const WinEH::FrameInfo *getChainRoot(const WinEH::FrameInfo *F);
+  void splitIfRecordIsFull();
+  static void meetInto(State &Into, const State &Other);
+  void enterBlock(const MachineBasicBlock &MBB);
+  void leaveBlock(const MachineBasicBlock &MBB);
+  void passState(const MachineBasicBlock &Succ,
+                 SmallPtrSetImpl<const MachineBasicBlock *> &Visited);
   [[noreturn]] void fail(const Twine &Message) const;
 
   SmallVector<Reg, 48> Preserved;
@@ -198,6 +225,23 @@ private:
   SmallVector<PendingRule, 8> Pending;
   bool EndEpilogueAfterInstruction = false;
   const MachineFunction *MF = nullptr;
+  /// Epilogue scopes and code slots in the current record.
+  unsigned RecordScopes = 0;
+  unsigned RecordSlots = 0;
+
+  /// The block being emitted, and the frame it belongs to.
+  const MachineBasicBlock *CurBlock = nullptr;
+  const WinEH::FrameInfo *BlockFrame = nullptr;
+  /// The state emitted predecessors pass to a block not yet emitted.
+  struct Incoming {
+    const WinEH::FrameInfo *Frame;
+    State S;
+  };
+  DenseMap<const MachineBasicBlock *, Incoming> IncomingStates;
+  /// The rules each emitted block starts with.
+  DenseMap<const MachineBasicBlock *,
+           std::pair<const WinEH::FrameInfo *, Rules>>
+      EntryRules;
 };
 
 } // namespace llvm

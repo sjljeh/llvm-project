@@ -18,6 +18,7 @@
 #include "PPCSubtarget.h"
 #include "PPCTargetMachine.h"
 #include "PPCWin32ABIInfo.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/CodeGen/Analysis.h"
 #include "llvm/CodeGen/LivePhysRegs.h"
@@ -658,19 +659,11 @@ bool PPCFrameLowering::usesNTFrame(const MachineFunction &MF) const {
   return true;
 }
 
+/// Every epilogue of an NT frame is an NT epilogue: a return, a funclet
+/// return, a tail call (NTUW only), or a shrink-wrapped restore block that
+/// branches or falls through to code outside the frame.
 bool PPCFrameLowering::isNTEpilogueBlock(const MachineBasicBlock &MBB) const {
-  MachineBasicBlock::const_iterator MBBI = MBB.getFirstTerminator();
-  if (MBBI == MBB.end())
-    return false;
-  // Tail calls are not NT returns.
-  switch (MBBI->getOpcode()) {
-  case PPC::BLR:
-  case PPC::CATCHRET:
-  case PPC::CLEANUPRET:
-    return usesNTFrame(*MBB.getParent());
-  default:
-    return false;
-  }
+  return usesNTFrame(*MBB.getParent());
 }
 
 namespace {
@@ -952,11 +945,21 @@ void PPCFrameLowering::emitNTPrologue(MachineFunction &MF,
 void PPCFrameLowering::emitNTEpilogue(MachineFunction &MF,
                                       MachineBasicBlock &MBB) const {
   MachineBasicBlock::iterator MBBI = MBB.getFirstTerminator();
-  DebugLoc DL = MBBI->getDebugLoc();
+  DebugLoc DL = MBBI != MBB.end() ? MBBI->getDebugLoc() : DebugLoc();
   const MachineFrameInfo &MFI = MF.getFrameInfo();
   const PPCInstrInfo &TII = *Subtarget.getInstrInfo();
   const PPCRegisterInfo *RegInfo = Subtarget.getRegisterInfo();
   PPCFunctionInfo *FI = MF.getInfo<PPCFunctionInfo>();
+
+  // A tail call branches once the frame is released.
+  const bool IsTailCall =
+      MBBI != MBB.end() && (MBBI->getOpcode() == PPC::TCRETURNdi ||
+                            MBBI->getOpcode() == PPC::TCRETURNri ||
+                            MBBI->getOpcode() == PPC::TCRETURNai);
+  scope_exit FinishTailCall([&] {
+    if (IsTailCall)
+      createTailCallBranchInstr(MBB);
+  });
 
   int64_t FrameSize = MFI.getStackSize();
   if (!FrameSize)
@@ -1019,8 +1022,8 @@ void PPCFrameLowering::emitNTEpilogue(MachineFunction &MF,
   // Release the frame with the instruction directly before the blr. For a
   // funclet return, CATCHRET first loads the continuation address into r3,
   // so its expansion (PPCAsmPrinter) releases the frame instead.
-  if (MBBI->getOpcode() == PPC::CATCHRET ||
-      MBBI->getOpcode() == PPC::CLEANUPRET) {
+  if (MBBI != MBB.end() && (MBBI->getOpcode() == PPC::CATCHRET ||
+                            MBBI->getOpcode() == PPC::CLEANUPRET)) {
     FI->setNTFuncletRelease(Base == PPC::R1 ? FrameSize : 0);
     if (Base == PPC::R12)
       MBBI->addOperand(MF, MachineOperand::CreateReg(PPC::R12, /*isDef=*/false,
@@ -3479,7 +3482,12 @@ uint64_t PPCFrameLowering::getBasePointerSaveOffset() const {
 bool PPCFrameLowering::enableShrinkWrapping(const MachineFunction &MF) const {
   if (MF.getInfo<PPCFunctionInfo>()->shrinkWrapDisabled())
     return false;
-  return !MF.getSubtarget<PPCSubtarget>().usesPPC32SVR4RegisterConvention();
+  const PPCSubtarget &Subtarget = MF.getSubtarget<PPCSubtarget>();
+  // NTUW rules describe a prologue anywhere in the function; NT 4.0 tables
+  // require it at the entry.
+  if (Subtarget.isWin32ABI())
+    return Subtarget.getTargetTriple().usesNTRISCTableUnwind();
+  return !Subtarget.usesPPC32SVR4RegisterConvention();
 }
 
 void PPCFrameLowering::updateCalleeSaves(const MachineFunction &MF,

@@ -1075,6 +1075,14 @@ void Writer::run() {
     ntuwImage = isNTRISCMachine() &&
                 llvm::any_of(ctx.objFileInstances,
                              [](ObjFile *f) { return f->usesNTUW; });
+    // An NT 4.0 loader reads the exception directory as 20-byte entries.
+    const Configuration &cfg = ctx.config;
+    if (ntuwImage && (cfg.majorSubsystemVersion < 5 || cfg.majorOSVersion < 5))
+      Warn(ctx) << "the image targets Windows NT "
+                << std::min(cfg.majorSubsystemVersion, cfg.majorOSVersion)
+                << ".x but holds NTUW unwind tables, which that system "
+                   "cannot read; build its objects for MSVC 12.0 or earlier "
+                   "(for example -target mipsel-pc-windows-msvc12.0)";
     createSections();
     if (ntuwImage)
       embedLegacyPdata();

@@ -42,4 +42,16 @@ void AlphaSubtarget::initLibcallLoweringInfo(
   Info.setLibcallImpl(RTLIB::MEMCPY, RTLIB::impl_memcpy);
   Info.setLibcallImpl(RTLIB::MEMMOVE, RTLIB::impl_memmove);
   Info.setLibcallImpl(RTLIB::MEMSET, RTLIB::impl_memset);
+  // The stack protector: the MSVC CRT's /GS cookie, or the glibc guard.
+  if (getTargetTriple().isWindowsMSVCEnvironment()) {
+    Info.setLibcallImpl(RTLIB::STACK_CHECK_GUARD,
+                        RTLIB::impl___security_cookie);
+    Info.setLibcallImpl(RTLIB::SECURITY_CHECK_COOKIE,
+                        RTLIB::impl___security_check_cookie);
+  } else {
+    Info.setLibcallImpl(RTLIB::STACK_CHECK_GUARD,
+                        RTLIB::impl___stack_chk_guard);
+    Info.setLibcallImpl(RTLIB::STACKPROTECTOR_CHECK_FAIL,
+                        RTLIB::impl___stack_chk_fail);
+  }
 }

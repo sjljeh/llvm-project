@@ -103,9 +103,67 @@ void WinException::endModule() {
   }
 }
 
+/// The /GS cookie slot of an NTUW function, as an offset from its
+/// establisher frame, when its language handler can check the cookie: the
+/// slot must lie at a fixed offset from the establisher frame, so realigned
+/// frames keep only the epilogue check.
+std::optional<int>
+WinException::getNTUWGSCookieOffset(const MachineFunction &MF) {
+  const MachineFrameInfo &MFI = MF.getFrameInfo();
+  if (!usesNTUW(*Asm) || !MF.needsWinCFI() || !MFI.hasStackProtectorIndex())
+    return std::nullopt;
+  const Function &F = MF.getFunction();
+  if (F.hasPersonalityFn()) {
+    EHPersonality Per =
+        classifyEHPersonality(F.getPersonalityFn()->stripPointerCasts());
+    if (Per != EHPersonality::MSVC_TableSEH &&
+        !(Per == EHPersonality::MSVC_CXX &&
+          !isMSVCXXFrameHandler4(F.getPersonalityFn())))
+      return std::nullopt;
+  }
+  if (MF.getSubtarget().getRegisterInfo()->hasStackRealignment(MF))
+    return std::nullopt;
+  const TargetFrameLowering &TFI = *MF.getSubtarget().getFrameLowering();
+  int FI = MFI.getStackProtectorIndex();
+  // See getFrameIndexOffset: MIPS's establisher frame lies below the CFA by
+  // the first allocation step; Alpha's and PowerPC's is the CFA.
+  if (Asm->TM.getTargetTriple().isMIPS())
+    return TFI.getFrameIndexReferenceFromSP(MF, FI).getFixed() +
+           TFI.getWinEHParentFrameOffset(MF);
+  return MFI.getObjectOffset(FI);
+}
+
+/// The /GS-checking variant of the function's language handler:
+/// __GSHandlerCheck, __GSHandlerCheck_SEH (__C_specific_handler) or
+/// __GSHandlerCheck_EH (__CxxFrameHandler3).
+const MCSymbol *WinException::getNTUWGSHandler(const Function &F) {
+  StringRef Name = "__GSHandlerCheck";
+  if (F.hasPersonalityFn()) {
+    EHPersonality Per =
+        classifyEHPersonality(F.getPersonalityFn()->stripPointerCasts());
+    Name = Per == EHPersonality::MSVC_TableSEH ? "__GSHandlerCheck_SEH"
+                                               : "__GSHandlerCheck_EH";
+  }
+  return Asm->OutContext.getOrCreateSymbol(Name);
+}
+
+/// GS handler data, after the handler's own data: the cookie slot's offset
+/// from the establisher frame, and flags (zero: the slot holds the value of
+/// __security_cookie itself).
+void WinException::emitNTUWGSHandlerData() {
+  auto &OS = *Asm->OutStreamer;
+  if (OS.isVerboseAsm())
+    OS.AddComment("GS cookie offset");
+  OS.emitValue(MCConstantExpr::create(*GSCookieOffset, Asm->OutContext), 4);
+  if (OS.isVerboseAsm())
+    OS.AddComment("GS flags");
+  OS.emitInt32(0);
+}
+
 void WinException::beginFunction(const MachineFunction *MF) {
   shouldEmitMoves = shouldEmitPersonality = shouldEmitLSDA = false;
   CurrentFuncletUsesPersonality = false;
+  GSCookieOffset.reset();
 
   // If any landing pads survive, we need an EH table.
   bool hasLandingPads = !MF->getLandingPads().empty();
@@ -171,6 +229,7 @@ void WinException::beginFunction(const MachineFunction *MF) {
     return;
   }
 
+  GSCookieOffset = getNTUWGSCookieOffset(*MF);
   beginFunclet(MF->front(), Asm->CurrentFnSym);
 }
 
@@ -215,9 +274,11 @@ void WinException::endFunction(const MachineFunction *MF) {
 
     // Emit the tables appropriate to the personality function in use. If we
     // don't recognize the personality, assume it uses an Itanium-style LSDA.
-    if (Per == EHPersonality::MSVC_TableSEH)
+    if (Per == EHPersonality::MSVC_TableSEH) {
       emitCSpecificHandlerTable(MF);
-    else if (Per == EHPersonality::MSVC_X86SEH)
+      if (GSCookieOffset)
+        emitNTUWGSHandlerData();
+    } else if (Per == EHPersonality::MSVC_X86SEH)
       emitExceptHandlerTable(MF);
     else if (Per == EHPersonality::MSVC_CXX) {
       if (isMSVCXXFrameHandler4(F.getPersonalityFn()))
@@ -370,6 +431,8 @@ void WinException::beginFunclet(const MachineBasicBlock &MBB, MCSymbol *Sym) {
       PerFn = dyn_cast<Function>(F.getPersonalityFn()->stripPointerCasts());
     const MCSymbol *PersHandlerSym =
         TLOF.getCFIPersonalitySymbol(PerFn, Asm->TM, MMI);
+    if (GSCookieOffset && !MBB.isEHFuncletEntry())
+      PersHandlerSym = getNTUWGSHandler(F);
 
     // Do not emit a .seh_handler directives for cleanup funclets.
     // FIXME: This means cleanup funclets cannot handle exceptions. Given that
@@ -379,6 +442,11 @@ void WinException::beginFunclet(const MachineBasicBlock &MBB, MCSymbol *Sym) {
     if (!CurrentFuncletEntry->isCleanupFuncletEntry())
       Asm->OutStreamer->emitWinEHHandler(PersHandlerSym, true,
                                          IsExceptionHandler);
+  } else if (GSCookieOffset && !MBB.isEHFuncletEntry() &&
+             !F.hasPersonalityFn()) {
+    // A function with no other handler checks its cookie with
+    // __GSHandlerCheck while it is unwound.
+    Asm->OutStreamer->emitWinEHHandler(getNTUWGSHandler(F), true, true);
   }
 }
 
@@ -438,6 +506,8 @@ void WinException::endFuncletImpl() {
             Twine("$cppxdata$", FuncLinkageName));
       }
       Asm->OutStreamer->emitValue(create32bitRef(FuncInfoXData), 4);
+      if (GSCookieOffset && !CurrentFuncletEntry->isEHFuncletEntry())
+        emitNTUWGSHandlerData();
     } else if (Per == EHPersonality::MSVC_TableSEH && MF->hasEHFunclets() &&
                !CurrentFuncletEntry->isEHFuncletEntry()) {
       // Emit an UNWIND_INFO struct describing the prologue.
@@ -446,6 +516,12 @@ void WinException::endFuncletImpl() {
       // If this is the parent function in Win64 SEH, emit the LSDA immediately
       // following .seh_handlerdata.
       emitCSpecificHandlerTable(MF);
+      if (GSCookieOffset)
+        emitNTUWGSHandlerData();
+    } else if (GSCookieOffset && !F.hasPersonalityFn() &&
+               !CurrentFuncletEntry->isEHFuncletEntry()) {
+      Asm->OutStreamer->emitWinEHHandlerData();
+      emitNTUWGSHandlerData();
     } else if (shouldEmitPersonality || shouldEmitLSDA) {
       // Emit an UNWIND_INFO struct describing the prologue.
       Asm->OutStreamer->emitWinEHHandlerData();

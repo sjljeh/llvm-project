@@ -256,6 +256,7 @@ const char *AlphaTargetLowering::getTargetNodeName(unsigned Opcode) const {
     return "Alpha::RDUNIQUE";
   case AlphaISD::GlobalRetAddr: return "Alpha::GlobalRetAddr";
   case AlphaISD::CALL:   return "Alpha::CALL";
+  case AlphaISD::TC_RETURN: return "Alpha::TC_RETURN";
   case AlphaISD::DivCall: return "Alpha::DivCall";
   case AlphaISD::RET_FLAG: return "Alpha::RET_FLAG";
   case AlphaISD::COND_BRANCH_I: return "Alpha::COND_BRANCH_I";
@@ -300,6 +301,59 @@ static SDValue LowerJumpTable(SDValue Op, SelectionDAG &DAG) {
 #define GET_CALLING_CONV_IMPL
 #include "AlphaGenCallingConv.inc"
 
+/// Under Windows, $26 is saved like a callee-saved register, so the epilogue
+/// restores it before every return. With NTUW, the return's implicit use of
+/// $26 is dropped until frame lowering (see
+/// AlphaFrameLowering::processFunctionBeforeFrameFinalized): it would
+/// otherwise pin the restore point to the return block and prevent
+/// shrink-wrapping.
+void AlphaTargetLowering::finalizeLowering(MachineFunction &MF) const {
+  TargetLoweringBase::finalizeLowering(MF);
+  if (!MF.getSubtarget().getTargetTriple().usesNTRISCTableUnwind())
+    return;
+  for (MachineBasicBlock &MBB : MF)
+    for (MachineInstr &MI : MBB.terminators())
+      if (MI.getOpcode() == Alpha::RETDAGp || MI.getOpcode() == Alpha::RETDAG)
+        for (unsigned I = MI.getNumOperands(); I-- != 0;) {
+          const MachineOperand &MO = MI.getOperand(I);
+          if (MO.isReg() && MO.isImplicit() && MO.isUse() &&
+              MO.getReg() == Alpha::R26)
+            MI.removeOperand(I);
+        }
+}
+
+/// Tail calls are made only where NTUW describes them: the epilogue releases
+/// the frame and branches to a callee in the same image (a direct br), with
+/// every argument in a register.
+bool AlphaTargetLowering::isEligibleForTailCall(
+    const TargetLowering::CallLoweringInfo &CLI, unsigned NumBytes) const {
+  MachineFunction &MF = CLI.DAG.getMachineFunction();
+  const Function &Caller = MF.getFunction();
+  if (!MF.getSubtarget().getTargetTriple().usesNTRISCTableUnwind())
+    return false;
+  if (NumBytes != 0 || CLI.IsVarArg || Caller.isVarArg())
+    return false;
+  if (CLI.CallConv != Caller.getCallingConv())
+    return false;
+  // Funclets address the parent frame; keep calls in EH functions ordinary.
+  if (Caller.hasPersonalityFn())
+    return false;
+  // The callee must be reachable with a direct branch.
+  if (!isa<GlobalAddressSDNode>(CLI.Callee) &&
+      !isa<ExternalSymbolSDNode>(CLI.Callee))
+    return false;
+  if (const auto *G = dyn_cast<GlobalAddressSDNode>(CLI.Callee))
+    if (G->getGlobal()->hasDLLImportStorageClass())
+      return false;
+  for (const ISD::OutputArg &Out : CLI.Outs)
+    if (Out.Flags.isByVal() || Out.Flags.isSRet() || Out.Flags.isInAlloca())
+      return false;
+  for (const Argument &Arg : Caller.args())
+    if (Arg.hasByValAttr() || Arg.hasStructRetAttr() || Arg.hasInAllocaAttr())
+      return false;
+  return true;
+}
+
 SDValue AlphaTargetLowering::LowerCall(
     TargetLowering::CallLoweringInfo &CLI,
     SmallVectorImpl<SDValue> &InVals) const {
@@ -313,9 +367,6 @@ SDValue AlphaTargetLowering::LowerCall(
   const SDLoc &dl = CLI.DL;
   SelectionDAG &DAG = CLI.DAG;
 
-  // Alpha target does not yet support tail call optimization.
-  CLI.IsTailCall = false;
-
   // Analyze operands of the call, assigning locations to each operand.
   SmallVector<CCValAssign, 16> ArgLocs;
   CCState CCInfo(CallConv, isVarArg, DAG.getMachineFunction(),
@@ -325,7 +376,17 @@ SDValue AlphaTargetLowering::LowerCall(
 
   unsigned NumBytes = CCInfo.getStackSize();
 
-  Chain = DAG.getCALLSEQ_START(Chain, NumBytes, 0, dl);
+  if (CLI.IsTailCall)
+    CLI.IsTailCall = isEligibleForTailCall(CLI, NumBytes);
+  if (!CLI.IsTailCall && CLI.CB && CLI.CB->isMustTailCall())
+    report_fatal_error("failed to perform tail call elimination on a call "
+                       "site marked musttail");
+  bool IsTailCall = CLI.IsTailCall;
+  if (IsTailCall)
+    DAG.getMachineFunction().getFrameInfo().setHasTailCall();
+
+  if (!IsTailCall)
+    Chain = DAG.getCALLSEQ_START(Chain, NumBytes, 0, dl);
 
   SmallVector<std::pair<unsigned, SDValue>, 4> RegsToPass;
   SmallVector<SDValue, 12> MemOpChains;
@@ -417,6 +478,9 @@ SDValue AlphaTargetLowering::LowerCall(
 
   if (InFlag.getNode())
     Ops.push_back(InFlag);
+
+  if (IsTailCall)
+    return DAG.getNode(AlphaISD::TC_RETURN, dl, MVT::Other, Ops);
 
   Chain = DAG.getNode(AlphaISD::CALL, dl, NodeTys, Ops);
   InFlag = Chain.getValue(1);

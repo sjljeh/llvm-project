@@ -77,6 +77,16 @@ namespace {
             MCInstBuilder(Alpha::LDAr).addReg(Dst).addExpr(Sym).addReg(Dst));
         return;
       }
+      if (MI->getOpcode() == Alpha::TCRETURNdi) {
+        const MachineOperand &MO = MI->getOperand(0);
+        const MCSymbol *Sym =
+            MO.isGlobal() ? getSymbol(MO.getGlobal())
+                          : OutContext.getOrCreateSymbol(MO.getSymbolName());
+        EmitToStreamer(*OutStreamer,
+                       MCInstBuilder(Alpha::BR).addExpr(
+                           MCSymbolRefExpr::create(Sym, OutContext)));
+        return;
+      }
       if (MI->getOpcode() == Alpha::CLEANUPRET) {
         EmitToStreamer(*OutStreamer, MCInstBuilder(Alpha::RETDAGp));
         return;

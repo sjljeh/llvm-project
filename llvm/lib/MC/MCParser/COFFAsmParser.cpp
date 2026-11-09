@@ -16,6 +16,7 @@
 #include "llvm/MC/MCParser/MCAsmParserExtension.h"
 #include "llvm/MC/MCSectionCOFF.h"
 #include "llvm/MC/MCStreamer.h"
+#include "llvm/MC/MCWin64EH.h"
 #include "llvm/Support/NTRISCWinEH.h"
 #include "llvm/Support/SMLoc.h"
 #include "llvm/TargetParser/Triple.h"
@@ -214,7 +215,8 @@ class COFFAsmParser : public MCAsmParserExtension {
   bool parseSEHDirectiveAllocStack(StringRef, SMLoc);
   bool parseSEHDirectiveStateRule(StringRef, SMLoc);
   bool parseSEHDirectiveEstablisher(StringRef, SMLoc);
-  bool parseNTUWRegister(unsigned &Register, bool AllowCFA = false);
+  bool parseNTUWRegister(unsigned &Register, NTRISCWinEH::RegisterClass C,
+                         bool AllowCFA = false);
   bool parseSEHDirectiveEndProlog(StringRef, SMLoc);
   bool ParseSEHDirectiveBeginEpilog(StringRef, SMLoc);
   bool ParseSEHDirectiveEndEpilog(StringRef, SMLoc);
@@ -867,43 +869,41 @@ bool COFFAsmParser::parseSEHDirectiveAllocStack(StringRef, SMLoc Loc) {
   return false;
 }
 
-/// Parses an NTUW register operand: a number, optionally written $N, rN, fN,
-/// $fN or $rN, or one of the PowerPC special registers lr, cr and ctr (their
-/// SPR index). With AllowCFA, "cfa" parses as register 0.
-bool COFFAsmParser::parseNTUWRegister(unsigned &Register, bool AllowCFA) {
+/// Parses an NTUW register operand of class C: see
+/// NTRISCWinEH::parseRegisterName. With AllowCFA, "cfa" parses as register 0.
+bool COFFAsmParser::parseNTUWRegister(unsigned &Register,
+                                      NTRISCWinEH::RegisterClass C,
+                                      bool AllowCFA) {
+  std::optional<NTRISCWinEH::Machine> M =
+      Win64EH::NTUWUnwindEmitter::getMachine(getContext().getTargetTriple());
+  if (!M)
+    return TokError("NTUW directives are not supported for this target");
   if (getLexer().is(AsmToken::Dollar))
     Lex();
+  std::string Text;
   if (getLexer().is(AsmToken::Integer)) {
     int64_t Value = getTok().getIntVal();
     if (Value < 0 || Value > 31)
       return TokError("register number out of range");
-    Register = Value;
-    Lex();
-    return false;
-  }
-  if (getLexer().isNot(AsmToken::Identifier))
+    Text = std::to_string(Value);
+  } else if (getLexer().is(AsmToken::Identifier)) {
+    Text = getTok().getIdentifier().str();
+  } else {
     return TokError("expected a register");
-  std::string Lower = getTok().getIdentifier().lower();
-  StringRef Name = Lower;
-  if (AllowCFA && Name == "cfa") {
+  }
+  if (AllowCFA && StringRef(Text).equals_insensitive("cfa")) {
     Register = 0;
     Lex();
     return false;
   }
-  if (Name == "lr" || Name == "cr" || Name == "ctr") {
-    Register = Name == "lr"   ? NTRISCWinEH::SPR_LR
-               : Name == "cr" ? NTRISCWinEH::SPR_CR
-                              : NTRISCWinEH::SPR_CTR;
-    Lex();
-    return false;
-  }
-  Name.consume_front("$");
-  if (!Name.consume_front("r"))
-    Name.consume_front("f");
-  unsigned Value;
-  if (Name.getAsInteger(10, Value) || Value > 31)
-    return TokError("expected a register");
-  Register = Value;
+  std::optional<unsigned> Value = NTRISCWinEH::parseRegisterName(*M, C, Text);
+  if (!Value)
+    return TokError(C == NTRISCWinEH::RegisterClass::FPR
+                        ? "expected a floating-point register"
+                    : C == NTRISCWinEH::RegisterClass::SPR
+                        ? "expected lr, cr or ctr"
+                        : "expected an integer register");
+  Register = *Value;
   Lex();
   return false;
 }
@@ -922,19 +922,18 @@ bool COFFAsmParser::parseSEHDirectiveStateRule(StringRef Directive, SMLoc Loc) {
   int64_t Operand = 0;
   bool NeedComma = false;
   if (NTRISCWinEH::directiveHasRegister(Opcode)) {
-    if (parseNTUWRegister(Register))
+    if (parseNTUWRegister(Register, NTRISCWinEH::getRegisterClass(Opcode)))
       return true;
     NeedComma = true;
   }
   if (NTRISCWinEH::directiveHasOperand(Opcode)) {
     if (NeedComma && getParser().parseComma())
       return true;
-    bool IsRegisterOperand = Opcode == NTRISCWinEH::UOP_GPRFromGPR ||
-                             Opcode == NTRISCWinEH::UOP_FPRFromFPR ||
-                             Opcode == NTRISCWinEH::UOP_SPRFromGPR;
-    if (IsRegisterOperand) {
+    NTRISCWinEH::RegisterClass OperandClass =
+        NTRISCWinEH::getOperandRegisterClass(Opcode);
+    if (OperandClass != NTRISCWinEH::RegisterClass::None) {
       unsigned Source;
-      if (parseNTUWRegister(Source))
+      if (parseNTUWRegister(Source, OperandClass))
         return true;
       Operand = Source;
     } else if (Opcode == NTRISCWinEH::UOP_ReturnFromGPR &&
@@ -954,7 +953,8 @@ bool COFFAsmParser::parseSEHDirectiveStateRule(StringRef Directive, SMLoc Loc) {
 bool COFFAsmParser::parseSEHDirectiveEstablisher(StringRef, SMLoc Loc) {
   unsigned Register;
   int64_t Offset;
-  if (parseNTUWRegister(Register, /*AllowCFA=*/true) ||
+  if (parseNTUWRegister(Register, NTRISCWinEH::RegisterClass::GPR,
+                        /*AllowCFA=*/true) ||
       getParser().parseComma() || getParser().parseAbsoluteExpression(Offset) ||
       parseEOL())
     return true;

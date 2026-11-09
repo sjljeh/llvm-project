@@ -237,6 +237,19 @@ void AlphaDAGToDAGISel::Select(SDNode *N) {
     SelectCALL(N);
     return;
 
+  case AlphaISD::TC_RETURN: {
+    // CHAIN = TC_RETURN CHAIN, CALLEE, REGS... [, INFLAG]
+    SmallVector<SDValue, 8> Ops;
+    for (unsigned I = 1, E = N->getNumOperands(); I != E; ++I)
+      if (N->getOperand(I).getValueType() != MVT::Glue)
+        Ops.push_back(N->getOperand(I));
+    Ops.push_back(N->getOperand(0));
+    if (N->getOperand(N->getNumOperands() - 1).getValueType() == MVT::Glue)
+      Ops.push_back(N->getOperand(N->getNumOperands() - 1));
+    CurDAG->SelectNodeTo(N, Alpha::TCRETURNdi, MVT::Other, Ops);
+    return;
+  }
+
   case ISD::FrameIndex: {
     int FI = cast<FrameIndexSDNode>(N)->getIndex();
     CurDAG->SelectNodeTo(N, Alpha::LDA, MVT::i64,

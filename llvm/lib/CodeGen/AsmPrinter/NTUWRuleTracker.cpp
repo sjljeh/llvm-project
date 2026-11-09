@@ -8,17 +8,24 @@
 
 #include "llvm/CodeGen/NTUWRuleTracker.h"
 #include "llvm/CodeGen/AsmPrinter.h"
+#include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/IR/Function.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCWinEH.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Target/TargetMachine.h"
 
 using namespace llvm;
 using namespace llvm::NTRISCWinEH;
+
+static cl::opt<unsigned> MaxScopesPerRecord(
+    "ntuw-max-epilogue-scopes", cl::Hidden, cl::init(UINT16_MAX),
+    cl::desc("Split an NTUW record into chained records once it holds this "
+             "many epilogue scopes"));
 
 NTUWRuleTracker::NTUWRuleTracker(AsmPrinter &AP, Machine M,
                                  uint8_t FramePointer)
@@ -334,7 +341,7 @@ bool NTUWRuleTracker::deriveRules(const State &S, Rules &Out,
     const char *ClassName = P.Class == RegClass::GPR   ? "GPR"
                             : P.Class == RegClass::FPR ? "FPR"
                                                        : "SPR";
-    Error = (Twine("the caller's ") + ClassName + " " + Twine(P.Num) +
+    Error = (Twine("the caller's ") + ClassName + " " + Twine(unsigned(P.Num)) +
              " is neither live nor saved")
                 .str();
     return false;
@@ -400,10 +407,39 @@ void NTUWRuleTracker::resetFrame(const WinEH::FrameInfo *NewFrame) {
   Body = Cur;
 }
 
+void NTUWRuleTracker::enterBodyIfPrologueEnded() {
+  if (CurMode == Mode::Prologue && Frame && Frame->PrologEnd) {
+    CurMode = Mode::Body;
+    Body = Cur;
+  }
+}
+
 void NTUWRuleTracker::emitPending() {
-  for (const PendingRule &P : Pending)
+  for (const PendingRule &P : Pending) {
     AP.OutStreamer->emitWinCFIStateRule(P.Opcode, P.Register, P.Operand);
+    if (CurMode == Mode::Epilogue)
+      RecordSlots += 2;
+  }
   Pending.clear();
+}
+
+const WinEH::FrameInfo *
+NTUWRuleTracker::getChainRoot(const WinEH::FrameInfo *F) {
+  return F && F->ChainedParent ? F->ChainedParent : F;
+}
+
+/// Starts a chained record at the current position (a block boundary in the
+/// body) when this one cannot take another epilogue.
+void NTUWRuleTracker::splitIfRecordIsFull() {
+  // Leave room for the largest epilogue a block is likely to need.
+  constexpr unsigned SlotMargin = 1024;
+  if (RecordScopes < MaxScopesPerRecord &&
+      RecordSlots + SlotMargin < UINT16_MAX)
+    return;
+  AP.OutStreamer->emitWinCFISplitChained();
+  Frame = AP.OutStreamer->getCurrentWinFrame();
+  BlockFrame = Frame;
+  RecordScopes = RecordSlots = 0;
 }
 
 void NTUWRuleTracker::observeInstruction(const MCInst &Inst,
@@ -414,14 +450,18 @@ void NTUWRuleTracker::observeInstruction(const MCInst &Inst,
     CurMode = Mode::Outside;
     return;
   }
-  if (F != Frame)
+  if (F != Frame && !(Frame && getChainRoot(F) == getChainRoot(Frame))) {
     resetFrame(F);
+    RecordScopes = RecordSlots = 0;
+    BlockFrame = F;
+    if (CurBlock)
+      EntryRules[CurBlock] = {getChainRoot(F), Cur.R};
+  }
+  // A chained record (.seh_splitchained) continues the same state.
+  Frame = F;
   // The previous instruction's rules hold from here on.
   emitPending();
-  if (CurMode == Mode::Prologue && F->PrologEnd) {
-    CurMode = Mode::Body;
-    Body = Cur;
-  }
+  enterBodyIfPrologueEnded();
 
   Decoded D;
   if (!decode(Inst, D)) {
@@ -443,7 +483,9 @@ void NTUWRuleTracker::observeInstruction(const MCInst &Inst,
   State Next = Cur;
   for (const Effect &E : D.Effects)
     apply(Next, E);
-  if (D.IsCall)
+  // A tail call leaves the function: what the callee clobbers is not this
+  // frame's concern.
+  if (D.IsCall && !D.LeavesFunction)
     clobberVolatiles(Next);
 
   Rules NewRules;
@@ -462,18 +504,150 @@ void NTUWRuleTracker::observeInstruction(const MCInst &Inst,
       break;
     // The first instruction that changes the rules starts an epilogue.
     AP.OutStreamer->emitWinCFIBeginEpilogue();
+    ++RecordScopes;
     CurMode = Mode::Epilogue;
     [[fallthrough]];
   case Mode::Epilogue:
     emitRuleChanges(Cur.R, NewRules);
+    // A branch keeps the scope open; the blocks it reaches start in the
+    // state it leaves (see enterBlock).
     if (D.LeavesFunction)
       EndEpilogueAfterInstruction = true;
-    else if (D.IsBranch && !D.IsCall)
-      fail("an epilogue branches before it returns");
     break;
   }
   Next.R = NewRules;
   Cur = std::move(Next);
+}
+
+void NTUWRuleTracker::beginInstruction(const MachineInstr *MI) {
+  const MachineBasicBlock *MBB = MI->getParent();
+  if (MBB == CurBlock)
+    return;
+  if (CurBlock)
+    leaveBlock(*CurBlock);
+  CurBlock = MBB;
+  enterBlock(*MBB);
+}
+
+void NTUWRuleTracker::passState(
+    const MachineBasicBlock &Succ,
+    SmallPtrSetImpl<const MachineBasicBlock *> &Visited) {
+  if (Succ.isEHPad() || !Visited.insert(&Succ).second)
+    return;
+  // An empty block falls through to its successors.
+  if (Succ.empty()) {
+    for (const MachineBasicBlock *Next : Succ.successors())
+      passState(*Next, Visited);
+    return;
+  }
+  auto Emitted = EntryRules.find(&Succ);
+  if (Emitted != EntryRules.end()) {
+    if (Emitted->second.first == getChainRoot(Frame) &&
+        !(Emitted->second.second == Cur.R))
+      fail("a branch reaches " + Succ.getFullName() +
+           ", which was emitted with other unwind rules");
+    return;
+  }
+  auto [It, Inserted] =
+      IncomingStates.try_emplace(&Succ, Incoming{getChainRoot(Frame), Cur});
+  if (Inserted || It->second.Frame != getChainRoot(Frame))
+    return;
+  if (!(It->second.S.R == Cur.R))
+    fail("the predecessors of " + Succ.getFullName() +
+         " leave different unwind rules");
+  meetInto(It->second.S, Cur);
+}
+
+/// Keeps in Into only what both states know: a register or stack slot that
+/// differs between them becomes unknown. The rules must already agree.
+void NTUWRuleTracker::meetInto(State &Into, const State &Other) {
+  auto Meet = [](Value &A, const Value &B) {
+    if (!(A == B))
+      A = Value();
+  };
+  for (unsigned R = 0; R != 32; ++R) {
+    Meet(Into.GPR[R], Other.GPR[R]);
+    Meet(Into.FPR[R], Other.FPR[R]);
+  }
+  for (unsigned R = 0; R != NumSPRs; ++R)
+    Meet(Into.SPR[R], Other.SPR[R]);
+  for (auto It = Into.Memory.begin(); It != Into.Memory.end();) {
+    auto O = Other.Memory.find(It->first);
+    if (O == Other.Memory.end() || O->second.Size != It->second.Size ||
+        !(O->second.V == It->second.V))
+      It = Into.Memory.erase(It);
+    else
+      ++It;
+  }
+  for (unsigned C = 0; C != 3; ++C)
+    for (unsigned R = 0; R != 32; ++R)
+      Into.Restored[C][R] |= Other.Restored[C][R];
+}
+
+void NTUWRuleTracker::leaveBlock(const MachineBasicBlock &MBB) {
+  if (!Frame || CurMode == Mode::Outside ||
+      getChainRoot(BlockFrame) != getChainRoot(Frame))
+    return;
+  SmallPtrSet<const MachineBasicBlock *, 8> Visited;
+  for (const MachineBasicBlock *Succ : MBB.successors())
+    passState(*Succ, Visited);
+}
+
+void NTUWRuleTracker::enterBlock(const MachineBasicBlock &MBB) {
+  BlockFrame = nullptr;
+  if (!Frame || CurMode == Mode::Outside ||
+      AP.OutStreamer->getCurrentWinFrame() != Frame)
+    return;
+  BlockFrame = Frame;
+  enterBodyIfPrologueEnded();
+  const WinEH::FrameInfo *Root = getChainRoot(Frame);
+  std::optional<State> Want;
+  auto It = IncomingStates.find(&MBB);
+  if (It != IncomingStates.end() && It->second.Frame == Root)
+    Want = It->second.S;
+  // A block that no emitted predecessor reaches (one entered only from code
+  // emitted later, or a landing pad) is assumed to be inside the frame
+  // after the prologue, and to continue the layout predecessor before it;
+  // passState checks the rules when its predecessors are emitted.
+  if (!Want && CurMode != Mode::Prologue)
+    Want = Body;
+  // Values are known only where every way in agrees. The layout predecessor
+  // stands in for the ways in not yet emitted when the rules match.
+  if (Want && Want->R == Cur.R)
+    meetInto(*Want, Cur);
+  // A landing pad is entered with the stack pointer of whatever body
+  // instruction raised the exception.
+  if (Want && MBB.isEHPad() && MF && MF->getFrameInfo().hasVarSizedObjects())
+    Want->GPR[Info.StackPointer] = Value();
+
+  if (CurMode == Mode::Prologue) {
+    // Before the end of the prologue, the prologue program describes every
+    // offset.
+    if (Want) {
+      emitRuleChanges(Cur.R, Want->R);
+      Cur = std::move(*Want);
+    }
+    EntryRules[&MBB] = {Root, Cur.R};
+    return;
+  }
+
+  if (Want->R == Body.R) {
+    if (CurMode == Mode::Epilogue) {
+      AP.OutStreamer->emitWinCFIEndEpilogue();
+      CurMode = Mode::Body;
+    }
+    splitIfRecordIsFull();
+  } else if (CurMode == Mode::Body) {
+    splitIfRecordIsFull();
+    AP.OutStreamer->emitWinCFIBeginEpilogue();
+    ++RecordScopes;
+    CurMode = Mode::Epilogue;
+    emitRuleChanges(Body.R, Want->R);
+  } else {
+    emitRuleChanges(Cur.R, Want->R);
+  }
+  Cur = std::move(*Want);
+  EntryRules[&MBB] = {getChainRoot(Frame), Cur.R};
 }
 
 void NTUWRuleTracker::endInstruction() {
@@ -494,11 +668,22 @@ void NTUWRuleTracker::beginFunction(const MachineFunction *NewMF) {
   CurMode = Mode::Outside;
   Pending.clear();
   EndEpilogueAfterInstruction = false;
+  CurBlock = nullptr;
+  BlockFrame = nullptr;
+  IncomingStates.clear();
+  EntryRules.clear();
 }
 
 void NTUWRuleTracker::endFunclet() {
-  if (CurMode == Mode::Epilogue)
-    fail("an epilogue does not end in a return");
+  if (CurBlock)
+    leaveBlock(*CurBlock);
+  CurBlock = nullptr;
+  BlockFrame = nullptr;
+  // A scope may run to the end of the function, for code outside the frame
+  // that ends in a branch back into it.
+  if (CurMode == Mode::Epilogue && Frame &&
+      AP.OutStreamer->getCurrentWinFrame() == Frame && !Frame->End)
+    AP.OutStreamer->emitWinCFIEndEpilogue();
   Frame = nullptr;
   CurMode = Mode::Outside;
 }

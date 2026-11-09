@@ -2215,6 +2215,19 @@ void TargetLoweringBase::insertSSPDeclarations(
   if (StackGuardImpl == RTLIB::Unsupported)
     return;
 
+  // The MSVC CRT holds the cookie in __security_cookie and validates it with
+  // __security_check_cookie(cookie), which reports the failure itself.
+  RTLIB::LibcallImpl SecurityCheckCookieImpl =
+      Libcalls.getLibcallImpl(RTLIB::SECURITY_CHECK_COOKIE);
+  if (SecurityCheckCookieImpl != RTLIB::Unsupported) {
+    M.getOrInsertGlobal(getLibcallImplName(StackGuardImpl),
+                        PointerType::getUnqual(M.getContext()));
+    M.getOrInsertFunction(getLibcallImplName(SecurityCheckCookieImpl),
+                          Type::getVoidTy(M.getContext()),
+                          PointerType::getUnqual(M.getContext()));
+    return;
+  }
+
   StringRef StackGuardVarName = getLibcallImplName(StackGuardImpl);
   M.getOrInsertGlobal(
       StackGuardVarName, PointerType::getUnqual(M.getContext()), [=, &M]() {

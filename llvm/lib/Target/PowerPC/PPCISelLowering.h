@@ -675,6 +675,12 @@ namespace llvm {
     SDValue getFramePointerFrameIndex(SelectionDAG & DAG) const;
     SDValue getReturnAddrFrameIndex(SelectionDAG & DAG) const;
 
+    bool IsEligibleForSibCall_Win32(const GlobalValue *CalleeGV,
+                                    CallingConv::ID CalleeCC,
+                                    CallingConv::ID CallerCC, bool isVarArg,
+                                    const SmallVectorImpl<ISD::OutputArg> &Outs,
+                                    const Function *CallerFunc) const;
+
     bool IsEligibleForTailCallOptimization(
         const GlobalValue *CalleeGV, CallingConv::ID CalleeCC,
         CallingConv::ID CallerCC, bool isVarArg,

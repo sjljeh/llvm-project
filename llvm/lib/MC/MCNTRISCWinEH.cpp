@@ -49,8 +49,9 @@ struct EncodedEpilog {
 
 } // namespace
 
-static std::optional<Machine> getStreamerMachine(MCStreamer &Streamer) {
-  switch (Streamer.getContext().getTargetTriple().getArch()) {
+std::optional<Machine>
+Win64EH::NTUWUnwindEmitter::getMachine(const Triple &TT) {
+  switch (TT.getArch()) {
   case Triple::alpha:
     return Machine::Alpha;
   case Triple::mipsel:
@@ -60,6 +61,11 @@ static std::optional<Machine> getStreamerMachine(MCStreamer &Streamer) {
   default:
     return std::nullopt;
   }
+}
+
+static std::optional<Machine> getStreamerMachine(MCStreamer &Streamer) {
+  return Win64EH::NTUWUnwindEmitter::getMachine(
+      Streamer.getContext().getTargetTriple());
 }
 
 static std::optional<int64_t> getAbsDifference(MCStreamer &Streamer,
@@ -235,8 +241,9 @@ void Win64EH::NTUWUnwindEmitter::emitRecord(MCStreamer &Streamer,
     reportFrameError(Streamer, *Info, "handler flags have no handler symbol");
     return;
   }
-  const MCSymbol *FunctionEnd =
-      Info->FuncletOrFuncEnd ? Info->FuncletOrFuncEnd : Info->End;
+  // Each record covers its own fragment: a parent split by
+  // .seh_splitchained ends where its first chained record begins.
+  const MCSymbol *FunctionEnd = Info->End ? Info->End : Info->FuncletOrFuncEnd;
   if (!FunctionEnd) {
     reportFrameError(Streamer, *Info, "function has no end");
     return;
@@ -329,6 +336,15 @@ void Win64EH::NTUWUnwindEmitter::emitRecord(MCStreamer &Streamer,
   if (Info->ChainedParent)
     Flags |= UNW_ChainInfo;
 
+  // A function whose rules are the entry state everywhere needs no record:
+  // its .pdata entry carries the packed frameless form.
+  if (PrologCodes.empty() && Epilogs.empty() && Flags == 0 &&
+      !Info->ExceptionHandler && !EstablisherRegister &&
+      !EstablisherFrameOffset && !ChainParents.count(Info)) {
+    PackedFrames.insert(Info);
+    return;
+  }
+
   uint64_t RecordSize = UnwindHeaderSize;
   RecordSize += uint64_t(PrologCodeSlots) * UnwindCodeSize;
   RecordSize += uint64_t(Epilogs.size()) * EpilogScopeSize;
@@ -390,16 +406,42 @@ void Win64EH::NTUWUnwindEmitter::emitRecord(MCStreamer &Streamer,
 
 void Win64EH::NTUWUnwindEmitter::Emit(MCStreamer &Streamer) const {
   for (const auto &Frame : Streamer.getWinFrameInfos())
+    if (Frame->ChainedParent)
+      ChainParents.insert(Frame->ChainedParent);
+  for (const auto &Frame : Streamer.getWinFrameInfos())
     emitRecord(Streamer, Frame.get());
 
+  MCContext &Context = Streamer.getContext();
   for (const auto &Frame : Streamer.getWinFrameInfos()) {
-    if (!Frame->Symbol)
+    bool Packed = PackedFrames.count(Frame.get());
+    if (!Frame->Symbol && !Packed)
       continue;
     MCSection *PData = Streamer.getAssociatedPDataSection(Frame->TextSection);
     Streamer.switchSection(PData);
     Streamer.emitValueToAlignment(Align(4));
     emitImageRelative32(Streamer, Frame->Begin);
-    emitImageRelative32(Streamer, Frame->Symbol);
+    if (!Packed) {
+      emitImageRelative32(Streamer, Frame->Symbol);
+      continue;
+    }
+    // (FunctionLength / 4) << 3 | PACKED_Frameless << 1 | 1, with the length
+    // a multiple of 4.
+    const MCSymbol *End = Frame->End ? Frame->End : Frame->FuncletOrFuncEnd;
+    std::optional<int64_t> Length =
+        getAbsDifference(Streamer, End, Frame->Begin);
+    if (Length && !encodePackedFrameless(*Length)) {
+      reportFrameError(Streamer, *Frame,
+                       "the function is too long for a packed entry");
+      continue;
+    }
+    const MCExpr *Diff = MCBinaryExpr::createSub(
+        MCSymbolRefExpr::create(End, Context),
+        MCSymbolRefExpr::create(Frame->Begin, Context), Context);
+    const MCExpr *Word = MCBinaryExpr::createOr(
+        MCBinaryExpr::createShl(Diff, MCConstantExpr::create(1, Context),
+                                Context),
+        MCConstantExpr::create(PackedFlag, Context), Context);
+    Streamer.emitValue(Word, 4);
   }
 }
 

@@ -446,6 +446,13 @@ let isReturn = 1, isTerminator = 1, isBarrier = 1, Ra = 31, Rb = 26, disp = 1,
   def RETDAGp : MbrpForm< 0x1A, 0x02, (ins), "ret $$31,($$26),1", [(retflag)], s_jsr>; //Return from subroutine
 }
 
+// A tail call: br $31,callee after the epilogue (NTUW only). The argument
+// registers follow the callee as implicit uses.
+let isCall = 1, isTerminator = 1, isReturn = 1, isBarrier = 1,
+    isCodeGenOnly = 1, hasNoSchedulingInfo = 1, Uses = [R30] in
+  def TCRETURNdi : PseudoInstAlpha<(outs), (ins i64imm:$dst, variable_ops),
+                                   "# TCRETURNdi $dst", [], s_jsr>;
+
 // Returns from Windows exception-handling funclets.  A catch funclet returns
 // its continuation address in v0 (R0); both forms return through ra (R26).
 let isTerminator = 1, hasSideEffects = 1, isBarrier = 1, hasCtrlDep = 1,
@@ -929,11 +936,13 @@ def :  Pat<(select GPRC:$RC, F4RC:$st, F4RC:$sf),
 /////////////////////////////////////////////////////////
 //Branching
 /////////////////////////////////////////////////////////
+// AlphaBranchSelector turns COND_BRANCH_* into these by dropping the
+// pseudo's opcode operand, so they take only the register and the target.
 class br_icc<bits<6> opc, string asmstr>
-  : BFormN<opc, (ins u64imm:$opc, GPRC:$R, target:$dst), 
+  : BFormN<opc, (ins GPRC:$R, target:$dst),
     !strconcat(asmstr, " $R,$dst"),  s_icbr>;
 class br_fcc<bits<6> opc, string asmstr>
-  : BFormN<opc, (ins u64imm:$opc, F8RC:$R, target:$dst), 
+  : BFormN<opc, (ins F8RC:$R, target:$dst),
     !strconcat(asmstr, " $R,$dst"),  s_fbr>;
 
 let isBranch = 1, isTerminator = 1, hasCtrlDep = 1 in {

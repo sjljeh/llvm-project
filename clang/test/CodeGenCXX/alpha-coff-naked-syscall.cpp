@@ -11,12 +11,12 @@ extern "C" uint64_t start() {
   return syscall<42, uint64_t, uint64_t, uint64_t>(1, 2, 3);
 }
 
+// The call is in tail position: the caller branches to the naked function.
 // CHECK-LABEL: start:
 // CHECK: lda $16,1($31)
 // CHECK: lda $17,2($31)
 // CHECK: lda $18,3($31)
-// CHECK: bsr $26,
-// CHECK: ret
+// CHECK: br $31,"??$syscall@$0CK@_K_K_K@@YA_K_K00@Z"
 // CHECK: lda $0,42($31)
 // CHECK-NEXT: call_pal 131
 // CHECK-NEXT: ret

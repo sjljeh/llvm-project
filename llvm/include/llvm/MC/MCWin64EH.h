@@ -15,12 +15,15 @@
 #define LLVM_MC_MCWIN64EH_H
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/MC/MCWinEH.h"
+#include "llvm/Support/NTRISCWinEH.h"
 #include "llvm/Support/Win64EH.h"
 
 namespace llvm {
 class MCStreamer;
 class MCSymbol;
+class Triple;
 
 namespace Win64EH {
 struct Instruction {
@@ -75,6 +78,10 @@ public:
 /// written when the streamer finishes, after any language-specific data.
 class LLVM_ABI NTUWUnwindEmitter : public WinEH::UnwindEmitter {
   mutable DenseMap<const WinEH::FrameInfo *, MCSymbol *> HandlerDataSymbols;
+  /// Frames described by a packed .pdata word instead of a record, and
+  /// frames that chained records name as their parent (never packed).
+  mutable SmallPtrSet<const WinEH::FrameInfo *, 16> PackedFrames;
+  mutable SmallPtrSet<const WinEH::FrameInfo *, 4> ChainParents;
 
   void emitRecord(MCStreamer &Streamer, WinEH::FrameInfo *Info) const;
 
@@ -84,6 +91,8 @@ public:
                       bool HandlerData) const override;
   /// Defines the @unwind.00 symbol that marks an NTUW object.
   static void emitObjectMarker(MCStreamer &Streamer);
+  /// The NTUW machine of a target, if NTUW defines one for its architecture.
+  static std::optional<NTRISCWinEH::Machine> getMachine(const Triple &TT);
 };
 
 class LLVM_ABI ARMUnwindEmitter : public WinEH::UnwindEmitter {

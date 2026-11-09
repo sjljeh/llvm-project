@@ -14,6 +14,7 @@
 #define LLVM_LIB_CODEGEN_ASMPRINTER_WIN64EXCEPTION_H
 
 #include "EHStreamer.h"
+#include <optional>
 #include <vector>
 
 namespace llvm {
@@ -36,6 +37,10 @@ class LLVM_LIBRARY_VISIBILITY WinException : public EHStreamer {
   /// Whether the current function or funclet has its own personality data.
   bool CurrentFuncletUsesPersonality = false;
 
+  /// For NTUW, the establisher-relative offset of the /GS cookie slot when
+  /// the function's language handler checks the cookie (__GSHandlerCheck*).
+  std::optional<int> GSCookieOffset;
+
   /// True if this is a 64-bit target and we should use image relative offsets.
   bool useImageRel32 = false;
 
@@ -55,6 +60,11 @@ class LLVM_LIBRARY_VISIBILITY WinException : public EHStreamer {
   std::vector<const MCSymbol *> EHContTargets;
 
   void emitCSpecificHandlerTable(const MachineFunction *MF);
+
+  /// NTUW /GS handler support.
+  std::optional<int> getNTUWGSCookieOffset(const MachineFunction &MF);
+  const MCSymbol *getNTUWGSHandler(const Function &F);
+  void emitNTUWGSHandlerData();
 
   void emitSEHActionsForRange(const WinEHFuncInfo &FuncInfo,
                               const MCSymbol *BeginLabel,

@@ -332,6 +332,44 @@ TEST(NTRISCWinEHTest, ClassifiesExceptionDirectories) {
   // Neither size.
   EXPECT_EQ(classifyExceptionDirectory(Words({0x10, 0x40, 0}), Read),
             TableFormat::Invalid);
+  // A packed first entry: an NT 4.0 EndAddress is never odd. Five packed
+  // entries (40 bytes) are also two NT 4.0 entries in size.
+  EXPECT_EQ(classifyExceptionDirectory(Words({0x10, 0x11}), Read),
+            TableFormat::NTUW);
+  std::vector<uint8_t> Packed;
+  for (int I = 0; I != 5; ++I) {
+    std::vector<uint8_t> Entry = Words({0x10 + 8u * I, 0x11});
+    Packed.insert(Packed.end(), Entry.begin(), Entry.end());
+  }
+  EXPECT_EQ(classifyExceptionDirectory(Packed, Read), TableFormat::NTUW);
+}
+
+TEST(NTRISCWinEHTest, PackedFrameless) {
+  EXPECT_EQ(encodePackedFrameless(8), 0x11u);
+  EXPECT_EQ(encodePackedFrameless(4), 0x09u);
+  EXPECT_EQ(encodePackedFrameless(0), std::nullopt);
+  EXPECT_EQ(encodePackedFrameless(6), std::nullopt);
+  EXPECT_EQ(encodePackedFrameless(MaxPackedFunctionLength),
+            uint32_t(MaxPackedFunctionLength / 4) << 3 | 1);
+  EXPECT_EQ(encodePackedFrameless(MaxPackedFunctionLength + 4), std::nullopt);
+
+  for (Machine M : {Machine::Alpha, Machine::MIPS, Machine::PPC}) {
+    auto Info = decodePackedUnwindData(M, 0x11);
+    ASSERT_THAT_EXPECTED(Info, Succeeded());
+    EXPECT_EQ(Info->FunctionLength, 8u);
+    EXPECT_TRUE(Info->PrologCodes.empty());
+    EXPECT_TRUE(Info->EpilogScopes.empty());
+    EXPECT_FALSE(Info->HandlerInfo);
+    // Every offset evaluates to the entry state.
+    UnwindState Entry = getEntryState(M);
+    for (uint32_t Offset : {0u, 4u})
+      EXPECT_EQ(evaluateState(*Info, Offset, Entry).CFARegister,
+                Entry.CFARegister);
+  }
+  // Kinds 1-3 are reserved; an unpacked word is not packed data.
+  EXPECT_THAT_EXPECTED(decodePackedUnwindData(Machine::MIPS, 0x13), Failed());
+  EXPECT_THAT_EXPECTED(decodePackedUnwindData(Machine::MIPS, 0x10), Failed());
+  EXPECT_THAT_EXPECTED(decodePackedUnwindData(Machine::MIPS, 0x01), Failed());
 }
 
 } // namespace

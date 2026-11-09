@@ -106,6 +106,12 @@ bool AlphaFrameLowering::hasBP(const MachineFunction &MF) {
 
 // A realigned frame without a base pointer addresses its objects from the
 // aligned $30, so $30 must not move around calls.
+// NTUW rules describe a prologue anywhere in the function; NT 4.0 tables
+// require it at the entry.
+bool AlphaFrameLowering::enableShrinkWrapping(const MachineFunction &MF) const {
+  return MF.getSubtarget().getTargetTriple().usesNTRISCTableUnwind();
+}
+
 bool AlphaFrameLowering::hasReservedCallFrame(const MachineFunction &MF) const {
   return !hasFP(MF) || (isRealigned(MF) && !hasBP(MF));
 }
@@ -689,6 +695,18 @@ void AlphaFrameLowering::processFunctionBeforeFrameFinalized(
       (MF.getFunction().needsUnwindTableEntry() || MF.hasEHFunclets()))
     MF.setHasWinCFI(true);
 
+  // Every return reads $26 again, now that the callee-saved restores are in
+  // place (see AlphaTargetLowering::finalizeLowering).
+  if (STI.getTargetTriple().usesNTRISCTableUnwind())
+    for (MachineBasicBlock &MBB : MF)
+      for (MachineInstr &MI : MBB.terminators())
+        if ((MI.getOpcode() == Alpha::RETDAGp ||
+             MI.getOpcode() == Alpha::RETDAG) &&
+            !MI.readsRegister(Alpha::R26, /*TRI=*/nullptr))
+          MI.addOperand(MF, MachineOperand::CreateReg(Alpha::R26,
+                                                      /*isDef=*/false,
+                                                      /*isImp=*/true));
+
   // Find the EH context record (AlphaWinEHState). PEI places it first, at the
   // top of the frame, and WinException emits its offset as EHContextDelta.
   WinEHFuncInfo *EHInfo = MF.getWinEHFuncInfo();
@@ -822,24 +840,22 @@ void AlphaFrameLowering::pinRuntimeFrameObjects(MachineFunction &MF,
 void AlphaFrameLowering::emitEpilogue(MachineFunction &MF,
                                   MachineBasicBlock &MBB) const {
   const MachineFrameInfo &MFI = MF.getFrameInfo();
-  MachineBasicBlock::iterator MBBI = MBB.getLastNonDebugInstr();
+  // A shrink-wrapped restore block may end in branches rather than a return:
+  // the epilogue goes before the first terminator.
+  MachineBasicBlock::iterator MBBI = MBB.getFirstTerminator();
   const TargetInstrInfo &TII = *MF.getSubtarget().getInstrInfo();
 
-  assert((MBBI->getOpcode() == Alpha::RETDAG ||
-          MBBI->getOpcode() == Alpha::RETDAGp ||
-          MBBI->getOpcode() == Alpha::CATCHRET ||
-          MBBI->getOpcode() == Alpha::CLEANUPRET) &&
-         "Can only insert epilog into returning blocks");
-  DebugLoc dl = MBBI->getDebugLoc();
+  DebugLoc dl = MBBI != MBB.end() ? MBBI->getDebugLoc() : DebugLoc();
 
   bool FP = hasFP(MF);
-  const bool IsFuncletReturn = MBBI->getOpcode() == Alpha::CATCHRET ||
-                               MBBI->getOpcode() == Alpha::CLEANUPRET;
+  const bool IsFuncletReturn =
+      MBBI != MBB.end() && (MBBI->getOpcode() == Alpha::CATCHRET ||
+                            MBBI->getOpcode() == Alpha::CLEANUPRET);
 
   // A catch funclet returns its continuation address in $0. Load it before
   // the frame is released: NT recognizes an epilogue only at the ret or at a
   // single frame release directly before it.
-  if (MBBI->getOpcode() == Alpha::CATCHRET) {
+  if (MBBI != MBB.end() && MBBI->getOpcode() == Alpha::CATCHRET) {
     MachineBasicBlock *Target = MBBI->getOperand(0).getMBB();
     BuildMI(MBB, MBBI, dl, TII.get(Alpha::LDAHr), Alpha::R0)
         .addMBB(Target)

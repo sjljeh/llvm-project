@@ -5167,6 +5167,51 @@ bool PPCTargetLowering::IsEligibleForTailCallOptimization_64SVR4(
   return true;
 }
 
+/// Sibling calls on Windows are made only where NTUW describes them: the
+/// epilogue releases the frame and branches to a callee in this module,
+/// which shares the caller's TOC, with every argument in a register. A callee
+/// outside the module may be import glue, which needs the caller's TOC
+/// restore after the call.
+bool PPCTargetLowering::IsEligibleForSibCall_Win32(
+    const GlobalValue *CalleeGV, CallingConv::ID CalleeCC,
+    CallingConv::ID CallerCC, bool isVarArg,
+    const SmallVectorImpl<ISD::OutputArg> &Outs,
+    const Function *CallerFunc) const {
+  if (!Subtarget.getTargetTriple().usesNTRISCTableUnwind())
+    return false;
+  if (!CalleeGV || CalleeGV->isDeclarationForLinker() ||
+      CalleeGV->hasDLLImportStorageClass())
+    return false;
+  // Without guaranteed tail calls, fastcc passes arguments as C does.
+  auto IsCOrFast = [](CallingConv::ID CC) {
+    return CC == CallingConv::C || CC == CallingConv::Fast;
+  };
+  if (isVarArg || CallerFunc->isVarArg() || !IsCOrFast(CalleeCC) ||
+      !IsCOrFast(CallerCC))
+    return false;
+  // Funclets address the parent frame; keep calls in EH functions ordinary.
+  if (CallerFunc->hasPersonalityFn())
+    return false;
+  for (const Argument &Arg : CallerFunc->args())
+    if (Arg.hasByValAttr() || Arg.hasStructRetAttr() || Arg.hasInAllocaAttr())
+      return false;
+  // Every argument must fit the eight argument words, which are passed in
+  // r3-r10 (floating-point arguments also in f1-f13); the callee may store
+  // them to the argument area the caller's caller provides.
+  unsigned Words = 0;
+  for (const ISD::OutputArg &Out : Outs) {
+    if (Out.Flags.isByVal() || Out.Flags.isSRet() || Out.Flags.isInAlloca() ||
+        Out.Flags.isNest())
+      return false;
+    if (!Out.VT.isScalarInteger() && !Out.VT.isFloatingPoint())
+      return false;
+    Words += divideCeil(Out.VT.getStoreSize().getFixedValue(), 4);
+    if (Out.VT == MVT::f64 || Out.VT == MVT::i64)
+      Words = alignTo(Words, 2);
+  }
+  return Words <= 8;
+}
+
 /// IsEligibleForTailCallOptimization - Check whether the call is eligible
 /// for tail call optimization. Targets which want to do tail call
 /// optimization should implement this function.
@@ -5973,6 +6018,11 @@ bool PPCTargetLowering::isEligibleForTCO(
   if (Subtarget.useLongCalls() && !(CB && CB->isMustTailCall()))
     return false;
 
+  if (Subtarget.isWin32ABI() &&
+      !getTargetMachine().Options.GuaranteedTailCallOpt)
+    return IsEligibleForSibCall_Win32(CalleeGV, CalleeCC, CallerCC, isVarArg,
+                                      Outs, CallerFunc);
+
   if (Subtarget.usesSVR4RegisterConvention() && Subtarget.isPPC64())
     return IsEligibleForTailCallOptimization_64SVR4(
         CalleeGV, CalleeCC, CallerCC, CB, isVarArg, Outs, Ins, CallerFunc,
@@ -6164,8 +6214,11 @@ SDValue PPCTargetLowering::LowerCall_32SVR4(
     NumBytes = PPCWin32ABIInfo::ensureMinimumFrameSize(NumBytes);
 
   // Calculate by how many bytes the stack has to be adjusted in case of tail
-  // call optimization.
-  int SPDiff = CalculateTailCallSPDiff(DAG, IsTailCall, NumBytes);
+  // call optimization. A sibling call (Windows) reuses the caller's argument
+  // area and never moves the stack.
+  int SPDiff = getTargetMachine().Options.GuaranteedTailCallOpt
+                   ? CalculateTailCallSPDiff(DAG, IsTailCall, NumBytes)
+                   : 0;
 
   // Adjust the stack pointer for the new arguments...
   // These operations are automatically eliminated by the prolog/epilog pass

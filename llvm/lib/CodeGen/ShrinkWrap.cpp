@@ -1044,8 +1044,10 @@ bool ShrinkWrapImpl::isShrinkWrapEnabled(const MachineFunction &MF) {
   case cl::boolOrDefault::BOU_UNSET:
     return TFI->enableShrinkWrapping(MF) &&
            // Windows with CFI has some limitations that make it impossible
-           // to use shrink-wrapping.
-           !MF.usesWindowsUnwindInfo() &&
+           // to use shrink-wrapping. NTUW describes the state at every
+           // instruction, so code outside the frame needs no prologue.
+           (!MF.usesWindowsUnwindInfo() ||
+            MF.getTarget().getTargetTriple().usesNTRISCTableUnwind()) &&
            // Sanitizers look at the value of the stack at the location
            // of the crash. Since a crash can happen anywhere, the
            // frame must be lowered before anything else happen for the

@@ -7933,9 +7933,17 @@ void SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I,
       }
 
       Align Align = DAG.getDataLayout().getPrefTypeAlign(Global->getType());
-      Res = DAG.getLoad(PtrTy, sdl, Chain, getValue(Global),
-                        MachinePointerInfo(Global, 0), Align,
-                        MachineMemOperand::MOVolatile);
+      // A pointer may be narrower in memory than in a register (Alpha with
+      // 32-bit pointers).
+      EVT MemTy = TLI.getMemValueType(DAG.getDataLayout(), I.getType());
+      if (MemTy != PtrTy)
+        Res = DAG.getExtLoad(ISD::ZEXTLOAD, sdl, PtrTy, Chain, getValue(Global),
+                             MachinePointerInfo(Global, 0), MemTy, Align,
+                             MachineMemOperand::MOVolatile);
+      else
+        Res = DAG.getLoad(PtrTy, sdl, Chain, getValue(Global),
+                          MachinePointerInfo(Global, 0), Align,
+                          MachineMemOperand::MOVolatile);
     }
     // Mix the cookie with FP if enabled. Skip if using LOAD_STACK_GUARD
     // with post-RA mixing (AArch64 MSVCRT), as the mixing will be done during
@@ -7966,11 +7974,19 @@ void SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I,
 
     SDValue FIN = DAG.getFrameIndex(FI, PtrTy);
 
-    // Store the stack protector onto the stack.
-    Res = DAG.getStore(
-        Chain, sdl, Src, FIN,
-        MachinePointerInfo::getFixedStack(DAG.getMachineFunction(), FI),
-        MaybeAlign(), MachineMemOperand::MOVolatile);
+    // Store the stack protector onto the stack, in the slot's pointer width.
+    EVT MemTy =
+        TLI.getMemValueType(DAG.getDataLayout(), I.getArgOperand(0)->getType());
+    if (MemTy != Src.getValueType())
+      Res = DAG.getTruncStore(
+          Chain, sdl, Src, FIN,
+          MachinePointerInfo::getFixedStack(DAG.getMachineFunction(), FI),
+          MemTy, MaybeAlign(), MachineMemOperand::MOVolatile);
+    else
+      Res = DAG.getStore(
+          Chain, sdl, Src, FIN,
+          MachinePointerInfo::getFixedStack(DAG.getMachineFunction(), FI),
+          MaybeAlign(), MachineMemOperand::MOVolatile);
     setValue(&I, Res);
     DAG.setRoot(Res);
     return;
