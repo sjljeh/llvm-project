@@ -5,10 +5,16 @@
 // RUN: llvm-readobj --file-headers %t.exe | FileCheck %s --check-prefix=EXE
 
 __attribute__((noinline)) int add(int a, int b) { return a + b; }
-int start(void) { return add(1, 2); }
+int add_tail(void) { return add(3, 4); }
+int start(void) { return add(1, 2) + add_tail(); }
 
 // ASM-LABEL: add:
 // ASM: addq $17,$16,$0
+// A call in tail position releases the frame and branches (NTUW).
+// ASM-LABEL: add_tail:
+// ASM: lda $16,3($31)
+// ASM: lda $17,4($31)
+// ASM: br $31,add
 // ASM-LABEL: start:
 // ASM: lda $16,1($31)
 // ASM: lda $17,2($31)

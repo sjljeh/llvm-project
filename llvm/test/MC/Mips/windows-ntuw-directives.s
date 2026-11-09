@@ -3,6 +3,7 @@
 # RUN: llvm-mc -triple mipsel-pc-windows-msvc19.33 %s | FileCheck %s --check-prefix=ASM
 # RUN: llvm-mc -triple mipsel-pc-windows-msvc19.33 -filetype=obj %s -o %t.obj
 # RUN: llvm-readobj --unwind %t.obj | FileCheck %s --check-prefix=UNWIND
+# RUN: llvm-objdump --unwind-info %t.obj | FileCheck %s --check-prefix=OBJDUMP
 # RUN: llvm-readobj --symbols %t.obj | FileCheck %s --check-prefix=SYM
 # RUN: llvm-mc -triple mipsel-pc-windows-msvc19.33 -filetype=obj %s -o - \
 # RUN:   | llvm-readobj --relocations - | FileCheck %s --check-prefix=RELOC
@@ -33,13 +34,13 @@ f:
 	.seh_endepilogue
 	.seh_endproc
 
-# ASM:      .seh_set_cfa 29, 32
-# ASM:      .seh_save_gpr 31, -4
-# ASM:      .seh_save_fpr 20, -16
+# ASM:      .seh_set_cfa $sp, 32
+# ASM:      .seh_save_gpr $ra, -4
+# ASM:      .seh_save_fpr $f20, -16
 # ASM:      .seh_establisher cfa, -8
-# ASM:      .seh_same_fpr 20
-# ASM:      .seh_same_gpr 31
-# ASM:      .seh_set_cfa 29, 0
+# ASM:      .seh_same_fpr $f20
+# ASM:      .seh_same_gpr $ra
+# ASM:      .seh_set_cfa $sp, 0
 
 # UNWIND:      UnwindFormat: NTUW
 # UNWIND:      RuntimeFunction {
@@ -111,3 +112,23 @@ f:
 # RELOC-NEXT:   0x0 IMAGE_REL_MIPS_REFWORDNB .text ({{[0-9]+}})
 # RELOC-NEXT:   0x4 IMAGE_REL_MIPS_REFWORDNB .xdata ({{[0-9]+}})
 # RELOC-NEXT: }
+
+# OBJDUMP:      NTUW Function Table:
+# OBJDUMP-NEXT:   Begin Address: .text
+# OBJDUMP-NEXT:   Unwind Data: .xdata
+# OBJDUMP-NEXT:   NTUW Unwind Info:
+# OBJDUMP-NEXT:     Record Size: 100
+# OBJDUMP-NEXT:     Flags: 0x0
+# OBJDUMP-NEXT:     Function Length: 0x24
+# OBJDUMP-NEXT:     Prologue End: 0xC
+# OBJDUMP-NEXT:     Establisher Frame: CFA-8
+# OBJDUMP-NEXT:     Required State: 0x3
+# OBJDUMP-NEXT:     Prologue Codes:
+# OBJDUMP-NEXT:       +0x0004: SET_CFA $sp, 32
+# OBJDUMP-NEXT:       +0x0008: SAVE_GPR $ra, -4
+# OBJDUMP-NEXT:       +0x000C: SAVE_FPR $f20, -16
+# OBJDUMP-NEXT:     Epilogue Scopes:
+# OBJDUMP-NEXT:       [0x14, 0x24):
+# OBJDUMP-NEXT:         +0x0004: SAME_FPR $f20
+# OBJDUMP-NEXT:         +0x0008: SAME_GPR $ra
+# OBJDUMP-NEXT:         +0x0010: SET_CFA $sp, 0

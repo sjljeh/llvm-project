@@ -43,6 +43,12 @@ public:
     return true;
   }
 
+  /// NTUW describes the state at every instruction, so code outside the frame
+  /// needs no prologue.
+  bool enableWindowsCFIShrinkWrapping(const MachineFunction &MF) const override {
+    return MF.getTarget().getTargetTriple().usesNTRISCTableUnwind();
+  }
+
   /// The NT EstablisherFrame of a Windows MIPS function lies this many bytes
   /// below its incoming $sp (the first step of a two-step allocation, see
   /// MipsFunctionInfo::getWinPrologueSaveAreaSize).

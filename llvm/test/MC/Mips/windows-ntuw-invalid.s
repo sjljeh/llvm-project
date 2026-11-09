@@ -15,6 +15,12 @@ f:
 	.seh_save_spr lr, 8
 # CHECK: [[@LINE+1]]:2: error: invalid NTUW rule: SET_CFA offset is not four-byte aligned
 	.seh_set_cfa $29, 6
+# CHECK: [[@LINE+1]]:17: error: expected a floating-point register
+	.seh_save_fpr $ra, -8
+# CHECK: [[@LINE+1]]:17: error: expected an integer register
+	.seh_save_gpr $f20, -8
+# CHECK: [[@LINE+1]]:17: error: expected an integer register
+	.seh_save_gpr $s9, -8
 # CHECK: [[@LINE+1]]:2: error: the NTUW establisher must be sp or a nonvolatile register, or the CFA, with a 32-bit offset
 	.seh_establisher $8, 0
 	.seh_endprologue

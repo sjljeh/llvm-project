@@ -51,6 +51,10 @@ namespace llvm {
     /// CALL - Normal call.
     CALL,
 
+    /// TC_RETURN - A tail call: CHAIN = TC_RETURN CHAIN, CALLEE, REGS...
+    /// [, INFLAG]. The epilogue releases the frame before the jump.
+    TC_RETURN,
+
     /// DIVCALL - used for special library calls for div and rem
     DivCall,
 
@@ -167,6 +171,11 @@ namespace llvm {
                            const SmallVectorImpl<ISD::InputArg> &Ins,
                            const SDLoc &dl, SelectionDAG &DAG,
                            SmallVectorImpl<SDValue> &InVals) const override;
+
+    bool isEligibleForTailCall(const TargetLowering::CallLoweringInfo &CLI,
+                               unsigned NumBytes) const;
+
+    void finalizeLowering(MachineFunction &MF) const override;
 
     SDValue LowerCall(TargetLowering::CallLoweringInfo &CLI,
                       SmallVectorImpl<SDValue> &InVals) const override;

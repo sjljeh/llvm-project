@@ -29,11 +29,11 @@
 	.seh_endepilogue
 	.seh_endproc
 
-# ASM:      .seh_save_spr 0, 8
-# ASM:      .seh_save_spr 1, -8
-# ASM:      .seh_set_cfa 1, 64
-# ASM:      .seh_same_spr 1
-# ASM:      .seh_same_spr 0
+# ASM:      .seh_save_spr lr, 8
+# ASM:      .seh_save_spr cr, -8
+# ASM:      .seh_set_cfa r1, 64
+# ASM:      .seh_same_spr cr
+# ASM:      .seh_same_spr lr
 
 # UNWIND:      UnwindFormat: NTUW
 # UNWIND:      FunctionLength: 0x30

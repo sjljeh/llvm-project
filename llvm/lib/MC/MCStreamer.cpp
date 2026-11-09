@@ -911,6 +911,8 @@ void MCStreamer::emitWinCFIFuncletOrFuncEnd(SMLoc Loc) {
   *FuncletOrFuncEndPtr = Label;
 }
 
+static std::optional<NTRISCWinEH::Machine> getNTUWMachine(MCContext &Context);
+
 void MCStreamer::emitWinCFISplitChained(SMLoc Loc) {
   WinEH::FrameInfo *CurFrame = EnsureValidWinFrameInfo(Loc);
   if (!CurFrame)
@@ -935,6 +937,10 @@ void MCStreamer::emitWinCFISplitChained(SMLoc Loc) {
       CurFrame->Function, Label, ChainedParent));
   CurrentWinFrameInfo = WinFrameInfos.back().get();
   CurrentWinFrameInfo->TextSection = getCurrentSectionOnly();
+  // An NTUW chained fragment continues the parent's body state: it has no
+  // prologue, and its epilogue scopes start from that state.
+  if (getNTUWMachine(getContext()))
+    CurrentWinFrameInfo->PrologEnd = Label;
 }
 
 void MCStreamer::emitWinEHHandler(const MCSymbol *Sym, bool Unwind, bool Except,

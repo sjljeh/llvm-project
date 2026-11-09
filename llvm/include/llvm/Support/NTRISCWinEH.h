@@ -33,6 +33,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <string>
 
 namespace llvm::NTRISCWinEH {
 
@@ -295,6 +296,137 @@ inline bool directiveHasOperand(unsigned Opcode) {
   }
 }
 
+/// The register file a directive's register or register operand names.
+enum class RegisterClass : uint8_t { None, GPR, FPR, SPR };
+
+/// The class of the Register field of a directive.
+inline RegisterClass getRegisterClass(unsigned Opcode) {
+  switch (getBaseOpcode(Opcode)) {
+  case UOP_SetCFA:
+  case UOP_SaveGPR:
+  case UOP_SameGPR:
+  case UOP_GPRFromGPR:
+  case UOP_ReturnFromGPR:
+    return RegisterClass::GPR;
+  case UOP_SaveFPR:
+  case UOP_SameFPR:
+  case UOP_FPRFromFPR:
+    return RegisterClass::FPR;
+  case UOP_SaveSPR:
+  case UOP_SPRFromGPR:
+  case UOP_SameSPR:
+    return RegisterClass::SPR;
+  default:
+    return RegisterClass::None;
+  }
+}
+
+/// The class of a directive's operand when the operand is a register.
+inline RegisterClass getOperandRegisterClass(unsigned Opcode) {
+  switch (Opcode) {
+  case UOP_GPRFromGPR:
+  case UOP_SPRFromGPR:
+    return RegisterClass::GPR;
+  case UOP_FPRFromFPR:
+    return RegisterClass::FPR;
+  default:
+    return RegisterClass::None;
+  }
+}
+
+namespace detail {
+// Software names of the integer registers, by number.
+constexpr const char *AlphaGPRNames[32] = {
+    "v0", "t0", "t1",  "t2",  "t3", "t4", "t5", "t6", "t7", "s0",  "s1",
+    "s2", "s3", "s4",  "s5",  "fp", "a0", "a1", "a2", "a3", "a4",  "a5",
+    "t8", "t9", "t10", "t11", "ra", "pv", "at", "gp", "sp", "zero"};
+constexpr const char *MIPSGPRNames[32] = {
+    "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3", "t0", "t1", "t2",
+    "t3",   "t4", "t5", "t6", "t7", "s0", "s1", "s2", "s3", "s4", "s5",
+    "s6",   "s7", "t8", "t9", "k0", "k1", "gp", "sp", "fp", "ra"};
+} // namespace detail
+
+/// The assembler spelling of a register of machine M, as the machine's own
+/// assembler prints it: $N and $fN on Alpha, $N (with $gp, $sp, $fp and $ra
+/// by name) and $fN on MIPS, rN, fN, lr, cr and ctr on PowerPC.
+inline std::string getRegisterName(Machine M, RegisterClass C, unsigned Reg) {
+  if (C == RegisterClass::SPR) {
+    if (Reg < NumSPRs)
+      return Reg == SPR_LR ? "lr" : Reg == SPR_CR ? "cr" : "ctr";
+    return std::to_string(Reg);
+  }
+  std::string Number = std::to_string(Reg);
+  bool FPR = C == RegisterClass::FPR;
+  switch (M) {
+  case Machine::Alpha:
+    return (FPR ? "$f" : "$") + Number;
+  case Machine::MIPS:
+    if (FPR)
+      return "$f" + Number;
+    if (Reg >= 28 && Reg < 32)
+      return std::string("$") + detail::MIPSGPRNames[Reg];
+    return "$" + Number;
+  case Machine::PPC:
+    return (FPR ? "f" : "r") + Number;
+  }
+  return Number;
+}
+
+/// Parses a register of class C for machine M. Name has any leading '$'
+/// removed and is compared case-insensitively. Accepted: a bare number; rN
+/// for an integer register and fN for a floating-point one; the software
+/// names (sp, ra, s0, a1, ...) of Alpha and MIPS integer registers and s8 for
+/// MIPS $30; sp for PowerPC r1; and lr, cr and ctr for PowerPC special
+/// registers.
+inline std::optional<unsigned> parseRegisterName(Machine M, RegisterClass C,
+                                                 StringRef Name) {
+  std::string Lower = Name.lower();
+  StringRef N = Lower;
+  unsigned Value;
+  if (C == RegisterClass::SPR) {
+    if (N == "lr")
+      return SPR_LR;
+    if (N == "cr")
+      return SPR_CR;
+    if (N == "ctr")
+      return SPR_CTR;
+    if (!N.getAsInteger(10, Value) && Value < NumSPRs)
+      return Value;
+    return std::nullopt;
+  }
+  if (!N.getAsInteger(10, Value))
+    return Value < 32 ? std::optional<unsigned>(Value) : std::nullopt;
+  if (C == RegisterClass::FPR) {
+    if (N.consume_front("f") && !N.getAsInteger(10, Value) && Value < 32)
+      return Value;
+    return std::nullopt;
+  }
+  if (C != RegisterClass::GPR)
+    return std::nullopt;
+  if (StringRef Rest = N;
+      Rest.consume_front("r") && !Rest.getAsInteger(10, Value) && Value < 32)
+    return Value;
+  switch (M) {
+  case Machine::Alpha:
+    for (unsigned I = 0; I < 32; ++I)
+      if (N == detail::AlphaGPRNames[I])
+        return I;
+    break;
+  case Machine::MIPS:
+    if (N == "s8")
+      return 30;
+    for (unsigned I = 0; I < 32; ++I)
+      if (N == detail::MIPSGPRNames[I])
+        return I;
+    break;
+  case Machine::PPC:
+    if (N == "sp")
+      return 1;
+    break;
+  }
+  return std::nullopt;
+}
+
 /// Machine register conventions.
 struct MachineInfo {
   /// Width in bytes of a saved general-purpose register image.
@@ -500,11 +632,13 @@ enum class TableFormat { Empty, NTUW, Legacy, Invalid };
 
 /// Determines an image's exception directory format from its contents. An
 /// image carries no other marker: the directory is NTUW when its size is a
-/// multiple of 8 and its first entry's UnwindData is a 4-byte aligned RVA of a
-/// record that begins with the NTUW magic and header size; otherwise it is
-/// NT 4.0 when its size is a multiple of 20. ReadImage returns the Size bytes
-/// at an RVA, or fewer when they lie outside the image. Relocating the image
-/// does not change the answer, because only RVAs are followed.
+/// multiple of 8 and its first entry's UnwindData is packed (bit 0 set, which
+/// an NT 4.0 entry's 4-byte aligned EndAddress never has) or is a 4-byte
+/// aligned RVA of a record that begins with the NTUW magic and header size;
+/// otherwise it is NT 4.0 when its size is a multiple of 20. ReadImage returns
+/// the Size bytes at an RVA, or fewer when they lie outside the image.
+/// Relocating the image does not change the answer, because only RVAs are
+/// followed.
 inline TableFormat classifyExceptionDirectory(
     ArrayRef<uint8_t> Directory,
     function_ref<ArrayRef<uint8_t>(uint32_t RVA, uint32_t Size)> ReadImage) {
@@ -512,6 +646,8 @@ inline TableFormat classifyExceptionDirectory(
     return TableFormat::Empty;
   if (Directory.size() % RuntimeFunctionSize == 0) {
     uint32_t UnwindData = support::endian::read32le(Directory.data() + 4);
+    if (UnwindData & 1)
+      return TableFormat::NTUW;
     if ((UnwindData & 3) == 0) {
       ArrayRef<uint8_t> Header = ReadImage(UnwindData, 6);
       if (Header.size() == 6 &&
@@ -534,6 +670,32 @@ struct RuntimeFunction {
 };
 
 static_assert(sizeof(RuntimeFunction) == RuntimeFunctionSize);
+
+/// The packed form of UnwindData (bit 0 set) describes a function without an
+/// .xdata record. Bits 1-2 are the kind:
+///  - PACKED_Frameless (0): the rules are the entry state at every PC, and
+///    the function has no handler. Bits 3-31 hold FunctionLength / 4.
+/// Kinds 1-3 are reserved.
+enum PackedKind : uint8_t { PACKED_Frameless = 0 };
+constexpr uint32_t PackedFlag = 1;
+constexpr unsigned PackedKindShift = 1;
+constexpr uint32_t PackedKindMask = 3;
+constexpr unsigned PackedLengthShift = 3;
+/// The longest function a packed entry describes.
+constexpr uint64_t MaxPackedFunctionLength = uint64_t(UINT32_MAX >> 3) * 4;
+
+inline unsigned getPackedKind(uint32_t UnwindData) {
+  return (UnwindData >> PackedKindShift) & PackedKindMask;
+}
+
+/// The packed UnwindData of a frameless function, if its length fits.
+inline std::optional<uint32_t> encodePackedFrameless(uint64_t FunctionLength) {
+  if (FunctionLength == 0 || (FunctionLength & 3) ||
+      FunctionLength > MaxPackedFunctionLength)
+    return std::nullopt;
+  return uint32_t(FunctionLength / 4) << PackedLengthShift |
+         uint32_t(PACKED_Frameless) << PackedKindShift | PackedFlag;
+}
 
 struct DecodedCode {
   uint32_t SlotIndex;
@@ -978,6 +1140,22 @@ inline UnwindState evaluateState(const DecodedUnwindInfo &Info, uint32_t Offset,
     break;
   }
   return State;
+}
+
+/// Expands a packed UnwindData word into the record it stands for: a
+/// frameless function has no codes and no scopes, so every PC evaluates to
+/// the entry state.
+inline Expected<DecodedUnwindInfo> decodePackedUnwindData(Machine M,
+                                                          uint32_t UnwindData) {
+  if (!(UnwindData & PackedFlag))
+    return detail::invalid(M, "unwind data is not packed");
+  if (getPackedKind(UnwindData) != PACKED_Frameless)
+    return detail::invalid(M, "reserved packed unwind kind");
+  DecodedUnwindInfo Result;
+  Result.FunctionLength = (UnwindData >> PackedLengthShift) * 4;
+  if (Result.FunctionLength == 0)
+    return detail::invalid(M, "packed function length is zero");
+  return Result;
 }
 
 /// The establisher frame of a function whose body state is BodyState,

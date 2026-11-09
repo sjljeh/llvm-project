@@ -179,6 +179,7 @@ public:
   getCalleeSavedSpillSlots(unsigned &NumEntries) const override;
 
   bool enableShrinkWrapping(const MachineFunction &MF) const override;
+  bool enableWindowsCFIShrinkWrapping(const MachineFunction &MF) const override;
 
   /// Methods used by shrink wrapping to determine if MBB can be used for the
   /// function prologue/epilogue.

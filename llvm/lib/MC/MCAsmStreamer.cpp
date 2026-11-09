@@ -30,6 +30,7 @@
 #include "llvm/MC/MCSectionMachO.h"
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSymbolXCOFF.h"
+#include "llvm/MC/MCWin64EH.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/Format.h"
@@ -2627,14 +2628,30 @@ void MCAsmStreamer::emitWinCFIStateRule(unsigned Opcode, unsigned Register,
   const char *Name = NTRISCWinEH::getDirectiveName(Opcode);
   if (!Name)
     return;
+  std::optional<NTRISCWinEH::Machine> M =
+      Win64EH::NTUWUnwindEmitter::getMachine(getContext().getTargetTriple());
+  auto PrintRegister = [&](NTRISCWinEH::RegisterClass C, unsigned Reg) {
+    if (M && Reg < 32)
+      OS << NTRISCWinEH::getRegisterName(*M, C, Reg);
+    else
+      OS << Reg;
+  };
   OS << "	.seh_" << Name;
   const char *Separator = " ";
   if (NTRISCWinEH::directiveHasRegister(Opcode)) {
-    OS << Separator << Register;
+    OS << Separator;
+    PrintRegister(NTRISCWinEH::getRegisterClass(Opcode), Register);
     Separator = ", ";
   }
-  if (NTRISCWinEH::directiveHasOperand(Opcode))
-    OS << Separator << Operand;
+  if (NTRISCWinEH::directiveHasOperand(Opcode)) {
+    OS << Separator;
+    NTRISCWinEH::RegisterClass OperandClass =
+        NTRISCWinEH::getOperandRegisterClass(Opcode);
+    if (OperandClass != NTRISCWinEH::RegisterClass::None)
+      PrintRegister(OperandClass, Operand);
+    else
+      OS << Operand;
+  }
   EmitEOL();
 }
 
@@ -2643,7 +2660,12 @@ void MCAsmStreamer::emitWinCFIEstablisher(unsigned Register, int64_t Offset,
   MCStreamer::emitWinCFIEstablisher(Register, Offset, Loc);
 
   OS << "	.seh_establisher ";
-  if (Register)
+  std::optional<NTRISCWinEH::Machine> M =
+      Win64EH::NTUWUnwindEmitter::getMachine(getContext().getTargetTriple());
+  if (Register && M)
+    OS << NTRISCWinEH::getRegisterName(*M, NTRISCWinEH::RegisterClass::GPR,
+                                       Register);
+  else if (Register)
     OS << Register;
   else
     OS << "cfa";
@@ -2681,8 +2703,15 @@ void MCAsmStreamer::emitInstruction(const MCInst &Inst,
   if (LFIRewriter && LFIRewriter->rewriteInst(Inst, *this, STI))
     return;
 
-  if (InstructionObserver *Observer = getInstructionObserver())
+  if (InstructionObserver *Observer = getInstructionObserver()) {
+    // The comments pending for this instruction stay with it, not with a
+    // directive the observer emits first.
+    SmallString<128> InstComments(CommentToEmit);
+    CommentToEmit.clear();
     Observer->observeInstruction(Inst, STI);
+    InstComments.append(CommentToEmit);
+    CommentToEmit = std::move(InstComments);
+  }
 
   if (CurFrag) {
     MCSection *Sec = getCurrentSectionOnly();
