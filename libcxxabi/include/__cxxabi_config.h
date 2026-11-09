@@ -75,7 +75,7 @@
 #  define _LIBCXXABI_NO_EXCEPTIONS
 #endif
 
-#if defined(_WIN32) && (defined(__i386__) || defined(_M_IX86))
+#if defined(_WIN32)
 #define _LIBCXXABI_DTOR_FUNC __thiscall
 #else
 #define _LIBCXXABI_DTOR_FUNC

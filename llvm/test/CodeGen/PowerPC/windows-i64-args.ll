@@ -1,6 +1,6 @@
 ; Copyright (c) 2026 Ahmed ARIF
 
-; RUN: llc -mtriple=powerpcle-pc-windows-gnu < %s | FileCheck %s
+; RUN: llc -mtriple=powerpcle-pc-windows-msvc < %s | FileCheck %s
 
 ; Windows NT PowerPC passes an __int64 in an eight-byte aligned parameter
 ; slot: the register pair starts at an odd register. Clang pads named

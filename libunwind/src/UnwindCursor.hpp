@@ -91,31 +91,6 @@ struct _DISPATCHER_CONTEXT {
 };
   #endif
 
-  #if defined(_WIN32) && defined(_LIBUNWIND_TARGET_PPC)
-// Windows NT PowerPC passes language handlers the four-field NT4
-// DISPATCHER_CONTEXT. libunwind keeps the fields that other targets read from
-// the system context after that prefix, in the order used by the dispatcher
-// of the NT PowerPC runtime. A handler that libunwind calls directly then
-// sees the same layout as when the system dispatcher calls it.
-struct LIBUNWIND_PPC_DISPATCHER_CONTEXT {
-  ULONG_PTR ControlPc;
-  PRUNTIME_FUNCTION FunctionEntry;
-  ULONG_PTR EstablisherFrame;
-  PCONTEXT ContextRecord;
-  ULONG_PTR TargetPc;
-  PEXCEPTION_ROUTINE LanguageHandler;
-  PVOID HandlerData;
-  PUNWIND_HISTORY_TABLE HistoryTable;
-  ULONG ScopeIndex;
-  // NT PowerPC function table entries hold virtual addresses; always zero.
-  ULONG_PTR ImageBase;
-};
-static_assert(sizeof(DISPATCHER_CONTEXT) == offsetof(LIBUNWIND_PPC_DISPATCHER_CONTEXT, TargetPc) && offsetof(DISPATCHER_CONTEXT, ContextRecord) == offsetof(LIBUNWIND_PPC_DISPATCHER_CONTEXT, ContextRecord), "the NT4 DISPATCHER_CONTEXT must be the prefix of libunwind's context");
-typedef LIBUNWIND_PPC_DISPATCHER_CONTEXT LIBUNWIND_DISPATCHER_CONTEXT;
-  #else
-typedef DISPATCHER_CONTEXT LIBUNWIND_DISPATCHER_CONTEXT;
-  #endif
-
 struct UNWIND_INFO {
   uint8_t Version : 3;
   uint8_t Flags : 5;
@@ -579,22 +554,9 @@ public:
   virtual void        saveVFPAsX();
 #endif
 
-  LIBUNWIND_DISPATCHER_CONTEXT *getDispatcherContext() { return &_dispContext; }
+  DISPATCHER_CONTEXT *getDispatcherContext() { return &_dispContext; }
   void setDispatcherContext(DISPATCHER_CONTEXT *disp) {
-#if defined(_LIBUNWIND_TARGET_PPC)
-    // The NT4 context has no handler fields. The function table entry names
-    // the language handler and its data.
-    _dispContext.ControlPc = disp->ControlPc;
-    _dispContext.FunctionEntry = disp->FunctionEntry;
-    _dispContext.EstablisherFrame = disp->EstablisherFrame;
-    _dispContext.ContextRecord = disp->ContextRecord;
-    _dispContext.TargetPc = 0;
-    _dispContext.LanguageHandler = disp->FunctionEntry ? disp->FunctionEntry->ExceptionHandler : nullptr;
-    _dispContext.HandlerData = disp->FunctionEntry ? disp->FunctionEntry->HandlerData : nullptr;
-    _dispContext.ScopeIndex = 0;
-#else
     _dispContext = *disp;
-#endif
     _info.lsda = reinterpret_cast<unw_word_t>(_dispContext.HandlerData);
     if (_dispContext.LanguageHandler) {
       _info.handler = reinterpret_cast<unw_word_t>(__libunwind_seh_personality);
@@ -608,58 +570,24 @@ public:
 
 private:
 
-#if defined(_LIBUNWIND_TARGET_PPC)
-  // libunwind's IP is the address after the instruction that left the frame,
-  // normally a return address. The NT PowerPC control PC is the address of
-  // that instruction, which the unwinder and scope tables expect.
-  pint_t getLastPC() const { return _dispContext.ControlPc + 4; }
-  void setLastPC(pint_t pc) { _dispContext.ControlPc = pc - 4; }
-#else
   pint_t getLastPC() const { return _dispContext.ControlPc; }
   void setLastPC(pint_t pc) { _dispContext.ControlPc = pc; }
-#endif
   RUNTIME_FUNCTION *lookUpSEHUnwindInfo(pint_t pc, pint_t *base) {
 #ifdef __arm__
     // Remove the thumb bit; FunctionEntry ranges don't include the thumb bit.
     pc &= ~1U;
 #endif
-#if !defined(_LIBUNWIND_TARGET_RISCV)
     // If pc points exactly at the end of the range, we might resolve the
     // next function instead. Decrement pc by 1 to fit inside the current
-    // function. RISC-V return PCs are normalized by
-    // setInfoBasedOnIPRegister(), using its two-byte minimum instruction size.
+    // function.
     pc -= 1;
-#endif
-#if defined(_LIBUNWIND_TARGET_PPC)
-    // The NT4 lookup takes only the PC; the table holds virtual addresses.
-    _dispContext.FunctionEntry = RtlLookupFunctionEntry(pc);
-    _dispContext.ImageBase = 0;
-#else
     _dispContext.FunctionEntry = RtlLookupFunctionEntry(pc,
                                                         &_dispContext.ImageBase,
                                                         _dispContext.HistoryTable);
-#endif
     *base = _dispContext.ImageBase;
     return _dispContext.FunctionEntry;
   }
   bool getInfoFromSEH(pint_t pc);
-#if defined(_LIBUNWIND_TARGET_PPC)
-  int stepWithSEHData() {
-    // The NT4 RtlVirtualUnwind returns the caller's control PC and leaves Iar
-    // unchanged. The handler of the frame came from its function table entry.
-    BOOLEAN inFunction = FALSE;
-    ULONG establisherFrame = 0;
-    ULONG controlPc = RtlVirtualUnwind(_dispContext.ControlPc, _dispContext.FunctionEntry, _dispContext.ContextRecord, &inFunction, &establisherFrame, nullptr, 0, 0xffffffffUL);
-    _dispContext.EstablisherFrame = establisherFrame;
-    _dispContext.ContextRecord->Iar = controlPc ? controlPc + 4 : 0;
-    _info.lsda = reinterpret_cast<unw_word_t>(_dispContext.HandlerData);
-    if (_dispContext.LanguageHandler) {
-      _info.handler = reinterpret_cast<unw_word_t>(__libunwind_seh_personality);
-    } else
-      _info.handler = 0;
-    return UNW_STEP_SUCCESS;
-  }
-#else
   int stepWithSEHData() {
     _dispContext.LanguageHandler = RtlVirtualUnwind(UNW_FLAG_UHANDLER,
                                                     _dispContext.ImageBase,
@@ -677,11 +605,10 @@ private:
       _info.handler = 0;
     return UNW_STEP_SUCCESS;
   }
-#endif
 
   A                   &_addressSpace;
   unw_proc_info_t      _info;
-  LIBUNWIND_DISPATCHER_CONTEXT _dispContext;
+  DISPATCHER_CONTEXT   _dispContext;
   CONTEXT              _msContext;
   UNWIND_HISTORY_TABLE _histTable;
   bool                 _unwindInfoMissing;
@@ -790,38 +717,6 @@ UnwindCursor<A, R>::UnwindCursor(unw_context_t *context, A &as)
   _msContext.Pc = r.getRegister(UNW_REG_IP);
   for (int i = UNW_AARCH64_V0; i <= UNW_ARM64_D31; ++i)
     _msContext.V[i - UNW_AARCH64_V0].D[0] = r.getFloatRegister(i);
-#elif defined(_LIBUNWIND_TARGET_RISCV)
-  for (int i = UNW_RISCV_X0; i <= UNW_RISCV_X31; ++i)
-    _msContext.X[i - UNW_RISCV_X0] = r.getRegister(i);
-  _msContext.Pc = r.getRegister(UNW_REG_IP);
-#if defined(__riscv_flen)
-  for (int i = UNW_RISCV_F0; i <= UNW_RISCV_F31; ++i) {
-#if __riscv_flen == 64
-    union {
-      uint64_t bits;
-      double value;
-    } reg;
-#elif __riscv_flen == 32
-    union {
-      uint32_t bits;
-      float value;
-    } reg;
-#else
-#error "Unsupported RISC-V floating-point register width"
-#endif
-    reg.value = r.getFloatRegister(i);
-    _msContext.F[i - UNW_RISCV_F0] = reg.bits;
-  }
-#endif
-#elif defined(_LIBUNWIND_TARGET_PPC)
-  // Windows NT PowerPC: Gpr0-Gpr31 and Fpr0-Fpr31 are contiguous.
-  for (int i = UNW_PPC_R0; i <= UNW_PPC_R31; ++i)
-    (&_msContext.Gpr0)[i - UNW_PPC_R0] = r.getRegister(i);
-  for (int i = UNW_PPC_F0; i <= UNW_PPC_F31; ++i)
-    (&_msContext.Fpr0)[i - UNW_PPC_F0] = r.getFloatRegister(i);
-  _msContext.Lr = r.getRegister(UNW_PPC_LR);
-  _msContext.Ctr = r.getRegister(UNW_PPC_CTR);
-  _msContext.Iar = r.getRegister(UNW_REG_IP);
 #endif
 }
 
@@ -850,11 +745,6 @@ bool UnwindCursor<A, R>::validReg(int regNum) {
     return true;
 #elif defined(_LIBUNWIND_TARGET_AARCH64)
   if (regNum >= UNW_AARCH64_X0 && regNum <= UNW_ARM64_X30) return true;
-#elif defined(_LIBUNWIND_TARGET_RISCV)
-  if (regNum >= UNW_RISCV_X0 && regNum <= UNW_RISCV_X31) return true;
-#elif defined(_LIBUNWIND_TARGET_PPC)
-  if (regNum >= UNW_PPC_R0 && regNum <= UNW_PPC_R31) return true;
-  if (regNum == UNW_PPC_LR || regNum == UNW_PPC_CTR) return true;
 #endif
   return false;
 }
@@ -905,50 +795,6 @@ unw_word_t UnwindCursor<A, R>::getReg(int regNum) {
   case UNW_REG_SP: return _msContext.Sp;
   case UNW_REG_IP: return _msContext.Pc;
   default: return _msContext.X[regNum - UNW_AARCH64_X0];
-#elif defined(_LIBUNWIND_TARGET_RISCV)
-  case UNW_REG_SP: return _msContext.Sp;
-  case UNW_REG_IP: return _msContext.Pc;
-  case UNW_RISCV_X0: return 0;
-  case UNW_RISCV_X1:
-  case UNW_RISCV_X2:
-  case UNW_RISCV_X3:
-  case UNW_RISCV_X4:
-  case UNW_RISCV_X5:
-  case UNW_RISCV_X6:
-  case UNW_RISCV_X7:
-  case UNW_RISCV_X8:
-  case UNW_RISCV_X9:
-  case UNW_RISCV_X10:
-  case UNW_RISCV_X11:
-  case UNW_RISCV_X12:
-  case UNW_RISCV_X13:
-  case UNW_RISCV_X14:
-  case UNW_RISCV_X15:
-  case UNW_RISCV_X16:
-  case UNW_RISCV_X17:
-  case UNW_RISCV_X18:
-  case UNW_RISCV_X19:
-  case UNW_RISCV_X20:
-  case UNW_RISCV_X21:
-  case UNW_RISCV_X22:
-  case UNW_RISCV_X23:
-  case UNW_RISCV_X24:
-  case UNW_RISCV_X25:
-  case UNW_RISCV_X26:
-  case UNW_RISCV_X27:
-  case UNW_RISCV_X28:
-  case UNW_RISCV_X29:
-  case UNW_RISCV_X30:
-  case UNW_RISCV_X31: return _msContext.X[regNum];
-#elif defined(_LIBUNWIND_TARGET_PPC)
-  case UNW_REG_SP: return _msContext.Gpr1;
-  case UNW_REG_IP: return _msContext.Iar;
-  case UNW_PPC_LR: return _msContext.Lr;
-  case UNW_PPC_CTR: return _msContext.Ctr;
-  default:
-    if (regNum >= UNW_PPC_R0 && regNum <= UNW_PPC_R31)
-      return (&_msContext.Gpr0)[regNum - UNW_PPC_R0];
-    break;
 #endif
   }
   _LIBUNWIND_ABORT("unsupported register");
@@ -1030,56 +876,9 @@ void UnwindCursor<A, R>::setReg(int regNum, unw_word_t value) {
   case UNW_AARCH64_X28:
   case UNW_AARCH64_FP:
   case UNW_AARCH64_LR: _msContext.X[regNum - UNW_ARM64_X0] = value; break;
-#elif defined(_LIBUNWIND_TARGET_RISCV)
-  case UNW_REG_SP: _msContext.Sp = value; break;
-  case UNW_REG_IP: _msContext.Pc = value; break;
-  case UNW_RISCV_X0: break;
-  case UNW_RISCV_X1:
-  case UNW_RISCV_X2:
-  case UNW_RISCV_X3:
-  case UNW_RISCV_X4:
-  case UNW_RISCV_X5:
-  case UNW_RISCV_X6:
-  case UNW_RISCV_X7:
-  case UNW_RISCV_X8:
-  case UNW_RISCV_X9:
-  case UNW_RISCV_X10:
-  case UNW_RISCV_X11:
-  case UNW_RISCV_X12:
-  case UNW_RISCV_X13:
-  case UNW_RISCV_X14:
-  case UNW_RISCV_X15:
-  case UNW_RISCV_X16:
-  case UNW_RISCV_X17:
-  case UNW_RISCV_X18:
-  case UNW_RISCV_X19:
-  case UNW_RISCV_X20:
-  case UNW_RISCV_X21:
-  case UNW_RISCV_X22:
-  case UNW_RISCV_X23:
-  case UNW_RISCV_X24:
-  case UNW_RISCV_X25:
-  case UNW_RISCV_X26:
-  case UNW_RISCV_X27:
-  case UNW_RISCV_X28:
-  case UNW_RISCV_X29:
-  case UNW_RISCV_X30:
-  case UNW_RISCV_X31: _msContext.X[regNum] = value; break;
-#elif defined(_LIBUNWIND_TARGET_PPC)
-  case UNW_REG_SP: _msContext.Gpr1 = value; break;
-  case UNW_REG_IP: _msContext.Iar = value; break;
-  case UNW_PPC_LR: _msContext.Lr = value; break;
-  case UNW_PPC_CTR: _msContext.Ctr = value; break;
-  default:
-    if (regNum >= UNW_PPC_R0 && regNum <= UNW_PPC_R31) {
-      (&_msContext.Gpr0)[regNum - UNW_PPC_R0] = value;
-      break;
-    }
-    _LIBUNWIND_ABORT("unsupported register");
-#else
-  default:
-    _LIBUNWIND_ABORT("unsupported register");
 #endif
+  default:
+    _LIBUNWIND_ABORT("unsupported register");
   }
 }
 
@@ -1090,10 +889,6 @@ bool UnwindCursor<A, R>::validFloatReg(int regNum) {
   if (regNum >= UNW_ARM_D0 && regNum <= UNW_ARM_D31) return true;
 #elif defined(_LIBUNWIND_TARGET_AARCH64)
   if (regNum >= UNW_AARCH64_V0 && regNum <= UNW_ARM64_D31) return true;
-#elif defined(_LIBUNWIND_TARGET_RISCV) && defined(__riscv_flen)
-  if (regNum >= UNW_RISCV_F0 && regNum <= UNW_RISCV_F31) return true;
-#elif defined(_LIBUNWIND_TARGET_PPC)
-  if (regNum >= UNW_PPC_F0 && regNum <= UNW_PPC_F31) return true;
 #else
   (void)regNum;
 #endif
@@ -1122,29 +917,6 @@ unw_fpreg_t UnwindCursor<A, R>::getFloatReg(int regNum) {
   _LIBUNWIND_ABORT("unsupported float register");
 #elif defined(_LIBUNWIND_TARGET_AARCH64)
   return _msContext.V[regNum - UNW_AARCH64_V0].D[0];
-#elif defined(_LIBUNWIND_TARGET_RISCV) && defined(__riscv_flen)
-  if (regNum >= UNW_RISCV_F0 && regNum <= UNW_RISCV_F31) {
-#if __riscv_flen == 64
-    union {
-      uint64_t bits;
-      double value;
-    } reg;
-#elif __riscv_flen == 32
-    union {
-      uint32_t bits;
-      float value;
-    } reg;
-#else
-#error "Unsupported RISC-V floating-point register width"
-#endif
-    reg.bits = _msContext.F[regNum - UNW_RISCV_F0];
-    return reg.value;
-  }
-  _LIBUNWIND_ABORT("unsupported float register");
-#elif defined(_LIBUNWIND_TARGET_PPC)
-  if (regNum >= UNW_PPC_F0 && regNum <= UNW_PPC_F31)
-    return (&_msContext.Fpr0)[regNum - UNW_PPC_F0];
-  _LIBUNWIND_ABORT("unsupported float register");
 #else
   (void)regNum;
   _LIBUNWIND_ABORT("float registers unimplemented");
@@ -1173,32 +945,6 @@ void UnwindCursor<A, R>::setFloatReg(int regNum, unw_fpreg_t value) {
   _LIBUNWIND_ABORT("unsupported float register");
 #elif defined(_LIBUNWIND_TARGET_AARCH64)
   _msContext.V[regNum - UNW_AARCH64_V0].D[0] = value;
-#elif defined(_LIBUNWIND_TARGET_RISCV) && defined(__riscv_flen)
-  if (regNum >= UNW_RISCV_F0 && regNum <= UNW_RISCV_F31) {
-#if __riscv_flen == 64
-    union {
-      uint64_t bits;
-      double value;
-    } reg;
-#elif __riscv_flen == 32
-    union {
-      uint32_t bits;
-      float value;
-    } reg;
-#else
-#error "Unsupported RISC-V floating-point register width"
-#endif
-    reg.value = value;
-    _msContext.F[regNum - UNW_RISCV_F0] = reg.bits;
-    return;
-  }
-  _LIBUNWIND_ABORT("unsupported float register");
-#elif defined(_LIBUNWIND_TARGET_PPC)
-  if (regNum >= UNW_PPC_F0 && regNum <= UNW_PPC_F31) {
-    (&_msContext.Fpr0)[regNum - UNW_PPC_F0] = value;
-    return;
-  }
-  _LIBUNWIND_ABORT("unsupported float register");
 #else
   (void)regNum;
   (void)value;
@@ -2465,24 +2211,7 @@ bool UnwindCursor<A, R>::getInfoFromSEH(pint_t pc) {
   _info.unwind_info_size = sizeof(RUNTIME_FUNCTION);
   _info.unwind_info = reinterpret_cast<unw_word_t>(unwindEntry);
   _info.extra = base;
-#if defined(_LIBUNWIND_TARGET_PPC)
-  // Windows NT PowerPC function tables hold virtual addresses, and the entry
-  // itself names the language handler and its data.
-  _info.start_ip = unwindEntry->BeginAddress;
-  _info.end_ip = unwindEntry->EndAddress;
-  if (pc != getLastPC()) {
-    _dispContext.HandlerData = unwindEntry->HandlerData;
-    _dispContext.LanguageHandler = unwindEntry->ExceptionHandler;
-    _dispContext.ScopeIndex = 0;
-    _info.lsda = reinterpret_cast<unw_word_t>(unwindEntry->HandlerData);
-    _info.handler = unwindEntry->ExceptionHandler
-                        ? reinterpret_cast<unw_word_t>(
-                              __libunwind_seh_personality)
-                        : 0;
-  }
-#else
   _info.start_ip = base + unwindEntry->BeginAddress;
-#endif
 #ifdef _LIBUNWIND_TARGET_X86_64
   _info.end_ip = base + unwindEntry->EndAddress;
   // Only fill in the handler and LSDA if they're stale.
@@ -2562,27 +2291,6 @@ bool UnwindCursor<A, R>::getInfoFromSEH(pint_t pc) {
         _info.handler = 0;
       }
     }
-  }
-#elif defined(_LIBUNWIND_TARGET_RISCV)
-  _info.end_ip = base + unwindEntry->EndAddress;
-  // RVUW owns the prologue/epilogue and chained-record rules. Query the
-  // canonical decoder with a context copy instead of duplicating those rules
-  // in libunwind merely to discover the language handler and its data.
-  if (pc != getLastPC()) {
-    CONTEXT probeContext = _msContext;
-    PVOID handlerData = nullptr;
-    ULONG64 establisherFrame = 0;
-    PEXCEPTION_ROUTINE languageHandler = RtlVirtualUnwind(
-        UNW_FLAG_UHANDLER, base, pc, unwindEntry, &probeContext, &handlerData,
-        &establisherFrame, nullptr);
-    _dispContext.HandlerData = handlerData;
-    _dispContext.LanguageHandler = languageHandler;
-    _dispContext.EstablisherFrame = establisherFrame;
-    _info.lsda = reinterpret_cast<unw_word_t>(handlerData);
-    _info.handler = languageHandler
-                        ? reinterpret_cast<unw_word_t>(
-                              __libunwind_seh_personality)
-                        : 0;
   }
 #endif
   setLastPC(pc);
@@ -3226,15 +2934,8 @@ void UnwindCursor<A, R>::setInfoBasedOnIPRegister(bool isReturnAddress) {
   // the return address is actually the start of the next function.
   // To disambiguate this, back up the pc when we know it is a return
   // address.
-  if (isReturnAddress) {
-#if defined(_LIBUNWIND_TARGET_RISCV)
-    // RISC-V return addresses can follow a 16-bit compressed instruction.
-    if (pc < 2) {
-      _unwindInfoMissing = true;
-      return;
-    }
-    pc -= 2;
-#elif defined(_AIX)
+  if (isReturnAddress)
+#if defined(_AIX)
     // PC needs to be a 4-byte aligned address to be able to look for a
     // word of 0 that indicates the start of the traceback table at the end
     // of a function on AIX.
@@ -3242,7 +2943,6 @@ void UnwindCursor<A, R>::setInfoBasedOnIPRegister(bool isReturnAddress) {
 #else
     --pc;
 #endif
-  }
 
 #if !(defined(_LIBUNWIND_SUPPORT_SEH_UNWIND) && defined(_WIN32)) &&            \
     !defined(_LIBUNWIND_SUPPORT_TBTAB_UNWIND)

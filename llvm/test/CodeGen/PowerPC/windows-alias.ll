@@ -1,6 +1,6 @@
 ; Copyright (c) 2026 Ahmed ARIF
 
-; RUN: llc -mtriple=powerpcle-pc-windows-gnu < %s | FileCheck %s
+; RUN: llc -mtriple=powerpcle-pc-windows-msvc < %s | FileCheck %s
 
 ; A function alias names the descriptor. Calls reference the "..name" code
 ; entry, so the alias also needs a code entry alias.
