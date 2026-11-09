@@ -79,6 +79,23 @@
 // FUCHSIA-SAME: "-target-feature" "+zbb"
 // FUCHSIA-SAME: "-target-feature" "+zbs"
 
+// Windows defaults to RVA22U64, which has no vector or RVA23-only extensions.
+// RUN: %clang --target=riscv64-pc-windows-msvc -### %s -fsyntax-only 2>&1 \
+// RUN:   | FileCheck %s -check-prefixes=WINDOWS,NORVA23
+// WINDOWS: "-target-feature" "+m"
+// WINDOWS-SAME: "-target-feature" "+a"
+// WINDOWS-SAME: "-target-feature" "+f"
+// WINDOWS-SAME: "-target-feature" "+d"
+// WINDOWS-SAME: "-target-feature" "+c"
+// WINDOWS-SAME: "-target-feature" "+zicbom"
+// WINDOWS-SAME: "-target-feature" "+zba"
+// WINDOWS-SAME: "-target-feature" "+zbb"
+// WINDOWS-SAME: "-target-feature" "+zbs"
+// NORVA23-NOT: "-target-feature" "+v"
+// NORVA23-NOT: "-target-feature" "+zicond"
+// NORVA23-NOT: "-target-feature" "+zfa"
+// NORVA23-NOT: "-target-feature" "+zcb"
+
 
 // RUN: %clang --target=riscv32-unknown-elf -### -march=rv32i %s -fsyntax-only 2>&1 | FileCheck %s -check-prefix=RVI
 // RUN: %clang --target=riscv32-unknown-elf -### -march=rv64i %s -fsyntax-only 2>&1 | FileCheck %s -check-prefix=RVI

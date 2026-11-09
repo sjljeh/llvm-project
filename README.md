@@ -9,30 +9,27 @@ Work is happening here on the main branch. I update the patch set when I see fit
 * Much improved compatibility in llvm-mc with IBM's PowerPC assembler (pasm.exe).  
 * Much improved compatibility in llvm-ml64 with Microsoft's AMD64 assembler (ml64.exe). Same for IA32 llvm-ml.  
 * Well-featured C++ EH4 / FH4 support in AMD64.  
-* MSVC-flavored PowerPC, MIPS, RISC-V and Alpha Windows support.  
-* Windows RISC-V, PowerPC and Alpha have SEH and C++ EH support.  
+* MSVC-flavored PowerPC, MIPS, and Alpha Windows support, including SEH.   
 * GNU-flavored PowerPC, MIPS and Alpha Windows assemblers.
-* Alpha Linux / NetBSD / OpenBSD targets.  
+* Linux / NetBSD / OpenBSD targets for Alpha.  
 * Broad lld-link compatibility fixes.  
 * New program llvm-ms-mc. Aims for compatibility with the Microsoft Message Compiler (mc.exe).  
 * Improved compatibility in llvm-rc against Microsoft's Resource Compiler (rc.exe).  
 * Misc improvements with MSVC-like template handling.  
 * Misc improvements with MSVC-like token parsing.  
-* Misc improvements with MSVC-like SEH for IA32 and AMD64.  
-* Clang-cl gains many MSVC intrinsics for multiple architectures. (IA32, AMD64, ARM64, Alpha, PPC)  
+* Misc improvements with MSVC-like SEH for ARM32, ARM64, IA32 and AMD64.  
+* A take at hypothetical RISC-V 64-bit Windows support, including SEH. Default target is RVA22.
+* Clang-cl gains many MSVC intrinsics for multiple architectures
 
 ### What is tested:
 * Removing all references to Clang in ReactOS and fully pretending to be MSVC and successfully assembling, compiling, linking and running AMD64/IA32 ReactOS and its automated tests, with the full suite of tools (llvm-ms-mc, llvm-rc, llvm-ml/ml64, lld-link, clang-cl, ...)  
 * Compiling and running userspace Windows SDK sample programs from the Alpha and MIPS SDKs and running them on emulated machines  
 
 ### What is NOT tested:  
-* Utilizing the llvm-armasm64 assembler in real-world programs.  
-* Anything related to PowerPC.  
-* A lot of other things!  
+* Most things. Expect bugs
 
 ### Items to be worked on in the future  
-* Improve MIPS support, i.e. C++ EH, SEH, assembler, further validate linker support.  
-* Bring up ARMv7 Windows support.  
+* Improve MIPS support, i.e. assembler, further validate linker support.  
 * Anything else that comes up.
 
 ### Prebuilt binaries?
