@@ -34,4 +34,9 @@ void function(void) {
 }
 // MS: const char *name = __FUNCTION__": suffix";
 
+// An empty argument pasted onto a number keeps the standard placemarker
+#define EMPTY
+#define CONV(dir, avg, opt) f16_##dir##8_##avg##opt
+empty_after_number CONV(h, , avx2) CONV(h, EMPTY, avx2) CONV(h, avg_, avx2)
+
 #endif

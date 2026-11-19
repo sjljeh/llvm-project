@@ -1463,7 +1463,7 @@ void SymbolTable::parseModuleDefs(StringRef path) {
 
   if (ctx.config.outputFile.empty())
     ctx.config.outputFile = std::string(saver().save(m.OutputFile));
-  else if (!ctx.config.mingw && !m.OutputFile.empty() &&
+  else if (!ctx.config.mingw && !m.ImportName.empty() &&
            !sys::path::filename(ctx.config.outputFile)
                 .equals_insensitive(sys::path::filename(m.OutputFile)))
     Warn(ctx) << "/out:" << sys::path::filename(m.OutputFile)

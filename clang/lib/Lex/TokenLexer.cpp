@@ -454,6 +454,16 @@ void TokenLexer::ExpandFunctionArguments() {
                                      Macro, ArgNo, PP))
       continue;
 
+    bool MSVCEmptyNumericPaste = false;
+    if (MSVCPreexpandNumericPaste) {
+      const Token *ArgTok = ActualArgs->getUnexpArgument(ArgNo);
+      const Token *ExpTok = ActualArgs->ArgNeedsPreexpansion(ArgTok, PP)
+                                ? &ActualArgs->getPreExpArgument(ArgNo, PP)[0]
+                                : ArgTok;
+      MSVCEmptyNumericPaste = ExpTok->is(tok::eof);
+      MSVCPreexpandNumericPaste = !MSVCEmptyNumericPaste;
+    }
+
     // If it is not the LHS/RHS of a ## operator, we must pre-expand the
     // argument and substitute the expanded tokens into the result.  This is
     // C99 6.10.3.1p1.
@@ -519,7 +529,8 @@ void TokenLexer::ExpandFunctionArguments() {
     // Okay, we have a token that is either the LHS or RHS of a paste (##)
     // argument.  It gets substituted as its non-pre-expanded tokens.
     const Token *ArgToks = ActualArgs->getUnexpArgument(ArgNo);
-    unsigned NumToks = MacroArgs::getArgLength(ArgToks);
+    unsigned NumToks =
+        MSVCEmptyNumericPaste ? 0 : MacroArgs::getArgLength(ArgToks);
     if (NumToks) {  // Not an empty argument?
       bool VaArgsPseudoPaste = false;
       // If this is the GNU ", ## __VA_ARGS__" extension, and we just learned
